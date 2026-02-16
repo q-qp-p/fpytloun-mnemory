@@ -197,6 +197,7 @@ def add_memory(
     pinned: bool | None = None,
     agent_id: str | None = None,
     infer: bool = True,
+    role: str = "user",
 ) -> str:
     """Store a memory about the user or agent.
 
@@ -226,19 +227,26 @@ def add_memory(
         pinned: If true, this memory loads at every conversation start via
                 get_core_memories. Use for essential facts and identity.
                 Optional — auto-classified if omitted.
-        agent_id: ONLY for memories specific to this agent (your identity,
-                  personality, agent-specific knowledge). Do NOT set for user
-                  facts, preferences, or context — those must be shared across
-                  all agents. Memories with agent_id are INVISIBLE to other
-                  agents. Use "self" to automatically resolve to your agent_id
-                  from the session (X-Agent-Id header). When in doubt, leave
-                  empty.
+        agent_id: For memories scoped to a specific agent. Set this for:
+                  (1) agent identity/personality (with role="assistant"), or
+                  (2) user preferences specific to this agent (with role="user").
+                  Memories with agent_id are INVISIBLE to other agents.
+                  Use "self" to resolve to your agent_id from the session.
+                  Do NOT set for general user facts shared across all agents.
                   Optional if pre-configured via X-Agent-Id header.
         infer: If true (default), the server uses LLM to extract key facts
                from content and check for duplicates/contradictions with
                existing memories. If false, content is stored as-is with only
                an embedding — much faster but skips dedup. Use infer=false
                when your content is already a clean, concise fact.
+        role: Who this memory is about. "user" (default) for facts about the
+              user — their preferences, personal info, context. "assistant"
+              for facts about the agent itself — identity, personality,
+              capabilities. When role="assistant", agent_id is required.
+              Use role="assistant" with agent_id="self" for agent identity.
+              Keep role="user" for everything else, including agent-scoped
+              user preferences (e.g., "User wants me to create commit
+              messages" with agent_id="self").
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -252,6 +260,7 @@ def add_memory(
             importance=importance,
             pinned=pinned,
             infer=infer,
+            role=role,
         )
         return json.dumps(result, default=str)
     except ValueError as e:
@@ -274,6 +283,7 @@ def add_memories(
     user_id: str | None = None,
     agent_id: str | None = None,
     infer: bool = True,
+    role: str = "user",
 ) -> str:
     """Store multiple memories in a single call (batch operation).
 
@@ -285,7 +295,7 @@ def add_memories(
     Args:
         memories: List of memory objects. Each must have "content" (str).
                   Optional per-item fields: memory_type, categories,
-                  importance, pinned. Example:
+                  importance, pinned, role. Example:
                   [{"content": "User lives in Prague", "categories": ["personal"]},
                    {"content": "Prefers dark mode", "importance": "high"}]
         user_id: User identifier (shared for all items). Optional if
@@ -297,6 +307,9 @@ def add_memories(
         infer: If true (default), each memory uses LLM fact extraction
                and dedup. If false, content is stored as-is (faster).
                Applies to all items in the batch.
+        role: Default role for all items ("user" or "assistant"). Can be
+              overridden per item via the "role" field in each memory object.
+              See add_memory for details on role semantics.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -331,6 +344,7 @@ def add_memories(
             continue
 
         try:
+            item_role = mem.get("role", role)
             result = service.add_memory(
                 mem["content"],
                 user_id=uid,
@@ -340,6 +354,7 @@ def add_memories(
                 importance=mem.get("importance"),
                 pinned=mem.get("pinned"),
                 infer=infer,
+                role=item_role,
             )
             # Check for error returned by add_memory (e.g., content too long)
             if result.get("error"):
@@ -379,6 +394,7 @@ def search_memories(
     user_id: str | None = None,
     memory_type: str | None = None,
     categories: list[str] | None = None,
+    role: str | None = None,
     limit: int = 10,
     agent_id: str | None = None,
 ) -> str:
@@ -399,6 +415,8 @@ def search_memories(
         user_id: User identifier. Optional if pre-configured via API key mapping.
         memory_type: Filter by type (preference/fact/episodic/procedural/context).
         categories: Filter by categories. "project" matches all project:* entries.
+        role: Filter by role — "user" for memories about the user, "assistant"
+              for memories about the agent. Omit to search all roles.
         limit: Max results to return (default 10).
         agent_id: Ignored when session agent is set (automatic dual-scope).
                   Only used as fallback for direct API callers without
@@ -417,6 +435,7 @@ def search_memories(
                 session_agent_id=session_aid,
                 memory_type=memory_type,
                 categories=categories,
+                role=role,
                 limit=limit,
             )
         else:
@@ -428,6 +447,7 @@ def search_memories(
                 agent_id=aid,
                 memory_type=memory_type,
                 categories=categories,
+                role=role,
                 limit=limit,
             )
         return _format_memories(results)
@@ -452,8 +472,9 @@ def get_core_memories(
     """Load essential context at the start of every conversation.
 
     Returns pinned memories organized by scope:
-    - Agent Identity: who you are, how you behave (if agent_id set)
-    - Agent Knowledge: things you've learned and researched (if agent_id set)
+    - Agent Identity: who you are, how you behave (role=assistant, agent-scoped)
+    - Agent Knowledge: things you've learned and researched (role=assistant)
+    - Agent Instructions: user preferences specific to you (role=user, agent-scoped)
     - User Facts: critical information about the user
     - User Preferences: how the user likes to interact
     - Recent Context: activity from the last N hours (chronological)
@@ -492,6 +513,7 @@ def list_memories(
     user_id: str | None = None,
     memory_type: str | None = None,
     categories: list[str] | None = None,
+    role: str | None = None,
     limit: int = 50,
     agent_id: str | None = None,
 ) -> str:
@@ -509,6 +531,8 @@ def list_memories(
         user_id: User identifier. Optional if pre-configured via API key mapping.
         memory_type: Filter by type (preference/fact/episodic/procedural/context).
         categories: Filter by categories.
+        role: Filter by role — "user" for memories about the user, "assistant"
+              for memories about the agent. Omit to list all roles.
         limit: Max results (default 50).
         agent_id: Ignored when session agent is set (automatic dual-scope).
                   Only used as fallback for direct API callers without
@@ -526,6 +550,7 @@ def list_memories(
                 session_agent_id=session_aid,
                 memory_type=memory_type,
                 categories=categories,
+                role=role,
                 limit=limit,
             )
         else:
@@ -536,6 +561,7 @@ def list_memories(
                 agent_id=aid,
                 memory_type=memory_type,
                 categories=categories,
+                role=role,
                 limit=limit,
             )
         return _format_memories(results)
@@ -869,6 +895,8 @@ def _format_memories(memories: list[dict]) -> str:
             entry["importance"] = metadata["importance"]
         if metadata.get("pinned"):
             entry["pinned"] = True
+        if metadata.get("role") and metadata["role"] != "user":
+            entry["role"] = metadata["role"]
         if metadata.get("artifacts"):
             entry["has_artifacts"] = True
             entry["artifact_count"] = len(metadata["artifacts"])

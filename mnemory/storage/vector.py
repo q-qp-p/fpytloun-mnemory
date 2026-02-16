@@ -90,6 +90,7 @@ class VectorStore:
         agent_id: str | None = None,
         metadata: dict | None = None,
         infer: bool = True,
+        role: str = "user",
     ) -> dict:
         """Add a memory via mem0.
 
@@ -101,12 +102,20 @@ class VectorStore:
             infer: If True (default), mem0 uses LLM for fact extraction and
                    deduplication. If False, content is stored as-is with only
                    an embedding call (much faster).
+            role: Message role for mem0. "user" (default) triggers user fact
+                  extraction. "assistant" triggers agent fact extraction
+                  (identity, personality, capabilities). With infer=False,
+                  the role is stored in the payload metadata.
         """
         kwargs: dict[str, Any] = {"user_id": user_id, "infer": infer}
         if agent_id:
             kwargs["agent_id"] = agent_id
         if metadata:
             kwargs["metadata"] = metadata
+
+        if role == "assistant":
+            messages = [{"role": "assistant", "content": content}]
+            return self.memory.add(messages, **kwargs)
         return self.memory.add(content, **kwargs)
 
     def search(

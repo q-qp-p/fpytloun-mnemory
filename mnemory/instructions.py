@@ -39,6 +39,23 @@ project context, conclusions, or anything worth remembering:
   with all metadata fields explicitly set: memory_type, categories,
   importance, pinned. This is rare but can happen with some LLM providers.
 
+## ROLE PARAMETER (add_memory / add_memories / search / list)
+The role parameter tells the server who the memory is about:
+- role="user" (default): Facts about the user — preferences, personal info,
+  context, decisions. Use for ALL user information, even when scoped to a
+  specific agent via agent_id.
+- role="assistant": Facts about you (the agent/assistant) — your identity,
+  personality, capabilities, knowledge. Requires agent_id to be set.
+
+When storing, role controls how the server extracts and classifies facts.
+When searching or listing, role filters results by who the memory is about.
+
+Examples:
+  "User lives in Prague"                    → role="user" (default), no agent_id
+  "User wants me to create commit messages" → role="user" (default), agent_id="self"
+  "Your name is Bob"                        → role="assistant", agent_id="self"
+  "You speak casually and use humor"        → role="assistant", agent_id="self"
+
 ## RECALLING MEMORIES (search_memories)
 Before answering questions that might benefit from personal context,
 search memories first. Use category and type filters to narrow results.
@@ -56,16 +73,18 @@ Other agents CANNOT see them. This is a visibility boundary.
 - Do NOT set agent_id for general user information: facts about the user,
   user preferences, personal context, decisions, or anything that should
   be available to all agents. Leave agent_id empty for these.
-- ONLY set agent_id="self" for memories that are specific to you as an
-  agent: your identity, your personality, your name, knowledge that only
-  you should have. The server resolves "self" to your actual agent_id
-  from the session (X-Agent-Id header).
+- Set agent_id="self" for memories specific to you as an agent:
+  (1) Your identity and personality → use role="assistant"
+  (2) User preferences that apply only to you → use role="user" (default)
+  The server resolves "self" to your actual agent_id from the session.
 - When in doubt, do NOT set agent_id. It is better for a memory to be
   shared than accidentally hidden from other agents.
 
 ### Searching and listing
 - Search and list automatically include both your agent memories and
   shared user memories. You don't need to pass agent_id.
+- Use role filter to narrow: role="assistant" for agent identity only,
+  role="user" for user facts only.
 - You CANNOT access other agents' memories — the server blocks this.
 
 ### Updating and deleting
@@ -73,10 +92,11 @@ Other agents CANNOT see them. This is a visibility boundary.
   memories. You CANNOT modify memories belonging to other agents.
 
 Examples:
-  "User lives in Prague" → do NOT set agent_id (shared user fact)
-  "User prefers dark mode" → do NOT set agent_id (shared preference)
-  "Your name is Bob" → set agent_id="self" (agent identity)
-  "You researched X and concluded Y" → set agent_id="self" (agent knowledge)
+  "User lives in Prague" → role="user", no agent_id (shared user fact)
+  "User prefers dark mode" → role="user", no agent_id (shared preference)
+  "User wants me to create commit messages" → role="user", agent_id="self"
+  "Your name is Bob" → role="assistant", agent_id="self" (agent identity)
+  "You researched X and concluded Y" → role="assistant", agent_id="self"
 
 ## ARTIFACTS (save_artifact, get_artifact)
 For detailed content too long for fast memory (research reports, analysis,

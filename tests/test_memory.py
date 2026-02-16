@@ -471,3 +471,262 @@ class TestClassificationErrorPropagation:
         # Should not be an error
         assert result.get("error") is not True
         service.vector.add.assert_called_once()
+
+
+# ── Role parameter ────────────────────────────────────────────────────
+
+
+class TestRoleParameter:
+    """Test the role parameter for user/agent extraction control."""
+
+    @staticmethod
+    def _make_service():
+        """Create a MemoryService with mocked backends."""
+        mock_config = MagicMock()
+        mock_config.memory.max_memory_length = 1000
+        mock_config.memory.max_artifact_size = 102400
+        mock_config.memory.max_core_context_length = 4000
+        mock_config.memory.default_recent_hours = 24
+        mock_config.memory.classify_cache_ttl = 300
+        mock_config.memory.core_memories_cache_ttl = 300
+        mock_config.memory.auto_classify = False
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        service.vector.add.return_value = {"results": []}
+        return service
+
+    def test_role_default_is_user(self):
+        """Default role should be 'user' and passed to vector store."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip")
+        service.vector.add.assert_called_once()
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["role"] == "user"
+
+    def test_role_user_explicit(self):
+        """Explicit role='user' should be passed through."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip", role="user")
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["role"] == "user"
+
+    def test_role_assistant_passed_through(self):
+        """role='assistant' should be passed to vector store."""
+        service = self._make_service()
+        service.add_memory(
+            content="Your name is Bob",
+            user_id="filip",
+            agent_id="bob",
+            role="assistant",
+        )
+        service.vector.add.assert_called_once()
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["role"] == "assistant"
+
+    def test_role_stored_in_metadata(self):
+        """role should be included in the metadata dict."""
+        service = self._make_service()
+        service.add_memory(
+            content="Your name is Bob",
+            user_id="filip",
+            agent_id="bob",
+            role="assistant",
+        )
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["metadata"]["role"] == "assistant"
+
+    def test_role_user_stored_in_metadata(self):
+        """role='user' should also be stored in metadata."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip")
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["metadata"]["role"] == "user"
+
+    def test_role_invalid_raises(self):
+        """Invalid role should raise ValueError."""
+        service = self._make_service()
+        with pytest.raises(ValueError, match="role must be 'user' or 'assistant'"):
+            service.add_memory(content="test", user_id="filip", role="system")
+
+    def test_role_assistant_without_agent_id_raises(self):
+        """role='assistant' without agent_id should raise ValueError."""
+        service = self._make_service()
+        with pytest.raises(ValueError, match="agent_id is required"):
+            service.add_memory(content="test", user_id="filip", role="assistant")
+
+    def test_role_user_with_agent_id_ok(self):
+        """role='user' with agent_id should work (agent-scoped user preference)."""
+        service = self._make_service()
+        service.add_memory(
+            content="User wants me to create commit messages",
+            user_id="filip",
+            agent_id="opencode",
+            role="user",
+        )
+        service.vector.add.assert_called_once()
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["role"] == "user"
+        assert kwargs["agent_id"] == "opencode"
+
+    def test_role_filter_in_search(self):
+        """role filter should be passed to vector store in search."""
+        service = self._make_service()
+        service.vector.search.return_value = {"results": []}
+        service.search_memories(query="test", user_id="filip", role="assistant")
+        service.vector.search.assert_called_once()
+        _, kwargs = service.vector.search.call_args
+        assert kwargs["filters"]["role"] == "assistant"
+
+    def test_role_filter_in_list(self):
+        """role filter should be passed to vector store in list."""
+        service = self._make_service()
+        service.vector.get_all.return_value = {"results": []}
+        service.list_memories(user_id="filip", role="user")
+        service.vector.get_all.assert_called_once()
+        _, kwargs = service.vector.get_all.call_args
+        assert kwargs["filters"]["role"] == "user"
+
+    def test_role_filter_invalid_in_search_raises(self):
+        """Invalid role filter in search should raise ValueError."""
+        service = self._make_service()
+        with pytest.raises(ValueError, match="role filter must be"):
+            service.search_memories(query="test", user_id="filip", role="system")
+
+    def test_role_filter_none_omitted(self):
+        """role=None should not add a filter."""
+        service = self._make_service()
+        service.vector.search.return_value = {"results": []}
+        service.search_memories(query="test", user_id="filip", role=None)
+        _, kwargs = service.vector.search.call_args
+        assert "role" not in (kwargs.get("filters") or {})
+
+
+# ── Core memories with role-based sections ────────────────────────────
+
+
+class TestCoreMemoriesRoleSections:
+    """Test that get_core_memories uses role for section organization."""
+
+    @staticmethod
+    def _make_service():
+        """Create a MemoryService with mocked backends."""
+        mock_config = MagicMock()
+        mock_config.memory.max_memory_length = 1000
+        mock_config.memory.max_artifact_size = 102400
+        mock_config.memory.max_core_context_length = 4000
+        mock_config.memory.default_recent_hours = 24
+        mock_config.memory.classify_cache_ttl = 300
+        mock_config.memory.core_memories_cache_ttl = 300
+        mock_config.memory.auto_classify = False
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        service.vector.get_recent_memories.return_value = []
+        return service
+
+    def test_agent_identity_section_from_assistant_role(self):
+        """Pinned agent memories with role=assistant should go to Agent Identity."""
+        service = self._make_service()
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "memory": "My name is Bob",
+                "agent_id": "bob",
+                "metadata": {
+                    "memory_type": "fact",
+                    "role": "assistant",
+                    "pinned": True,
+                },
+            },
+        ]
+        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        assert "## Agent Identity" in result
+        assert "My name is Bob" in result
+
+    def test_agent_instructions_section_from_user_role(self):
+        """Pinned agent memories with role=user should go to Agent Instructions."""
+        service = self._make_service()
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "memory": "User wants me to create commit messages",
+                "agent_id": "bob",
+                "metadata": {
+                    "memory_type": "preference",
+                    "role": "user",
+                    "pinned": True,
+                },
+            },
+        ]
+        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        assert "## Agent Instructions" in result
+        assert "User wants me to create commit messages" in result
+
+    def test_mixed_agent_memories_split_by_role(self):
+        """Agent memories should be split into Identity and Instructions by role."""
+        service = self._make_service()
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "memory": "My name is Bob",
+                "agent_id": "bob",
+                "metadata": {
+                    "memory_type": "fact",
+                    "role": "assistant",
+                    "pinned": True,
+                },
+            },
+            {
+                "memory": "User wants concise responses",
+                "agent_id": "bob",
+                "metadata": {
+                    "memory_type": "preference",
+                    "role": "user",
+                    "pinned": True,
+                },
+            },
+        ]
+        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        assert "## Agent Identity" in result
+        assert "My name is Bob" in result
+        assert "## Agent Instructions" in result
+        assert "User wants concise responses" in result
+
+    def test_legacy_memories_without_role_go_to_instructions(self):
+        """Memories without role field (legacy) should default to instructions."""
+        service = self._make_service()
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "memory": "Some old agent memory",
+                "agent_id": "bob",
+                "metadata": {
+                    "memory_type": "fact",
+                    "pinned": True,
+                    # No "role" field — legacy memory
+                },
+            },
+        ]
+        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        # Without role, defaults to "user" → Agent Instructions
+        assert "## Agent Instructions" in result
+        assert "Some old agent memory" in result
+
+    def test_agent_knowledge_section_from_assistant_role(self):
+        """Non-fact/preference agent memories with role=assistant go to Knowledge."""
+        service = self._make_service()
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "memory": "Researched washing machines, Samsung WW90T is best",
+                "agent_id": "bob",
+                "metadata": {
+                    "memory_type": "episodic",
+                    "role": "assistant",
+                    "pinned": True,
+                },
+            },
+        ]
+        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        assert "## Agent Knowledge" in result
+        assert "Researched washing machines" in result

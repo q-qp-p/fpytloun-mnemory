@@ -76,6 +76,7 @@ class MemoryService:
         importance: str | None = None,
         pinned: bool | None = None,
         infer: bool = True,
+        role: str = "user",
     ) -> dict:
         """Store a fast memory with metadata.
 
@@ -87,12 +88,22 @@ class MemoryService:
         (None), they are auto-classified by an LLM call if AUTO_CLASSIFY is
         enabled, or fall back to sensible defaults.
 
+        Args:
+            role: Message role controlling fact extraction. "user" (default)
+                  extracts facts about the user. "assistant" extracts facts
+                  about the agent (identity, personality, capabilities).
+                  Requires agent_id when set to "assistant".
+
         Returns the mem0 add result with memory IDs.
         """
         # Validate inputs
+        if role not in ("user", "assistant"):
+            raise ValueError("role must be 'user' or 'assistant'")
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
+        if role == "assistant" and not agent_id:
+            raise ValueError("agent_id is required when role='assistant'")
 
         max_len = self._config.memory.max_memory_length
         if len(content) > max_len:
@@ -158,6 +169,7 @@ class MemoryService:
             "categories": categories or [],
             "importance": importance,
             "pinned": pinned,
+            "role": role,
             "artifacts": [],
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         }
@@ -168,6 +180,7 @@ class MemoryService:
             agent_id=agent_id,
             metadata=metadata,
             infer=infer,
+            role=role,
         )
 
         # Invalidate caches — new memory may affect core memories or categories
@@ -187,6 +200,7 @@ class MemoryService:
         agent_id: str | None = None,
         memory_type: str | None = None,
         categories: list[str] | None = None,
+        role: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
         """Search memories with semantic similarity, filtered and reranked.
@@ -203,6 +217,10 @@ class MemoryService:
         if memory_type:
             memory_type = validate_memory_type(memory_type)
             filters["memory_type"] = memory_type
+        if role:
+            if role not in ("user", "assistant"):
+                raise ValueError("role filter must be 'user' or 'assistant'")
+            filters["role"] = role
 
         # Fetch extra for post-filtering and reranking
         fetch_limit = limit * 3
@@ -239,6 +257,7 @@ class MemoryService:
         session_agent_id: str,
         memory_type: str | None = None,
         categories: list[str] | None = None,
+        role: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
         """Search both agent-scoped and shared memories, merge and deduplicate.
@@ -256,6 +275,10 @@ class MemoryService:
         if memory_type:
             memory_type = validate_memory_type(memory_type)
             filters["memory_type"] = memory_type
+        if role:
+            if role not in ("user", "assistant"):
+                raise ValueError("role filter must be 'user' or 'assistant'")
+            filters["role"] = role
 
         fetch_limit = limit * 3
 
@@ -334,7 +357,7 @@ class MemoryService:
 
         sections: list[str] = []
 
-        # 1. Pinned agent memories (identity + knowledge)
+        # 1. Pinned agent memories (identity, knowledge, and agent-scoped instructions)
         if agent_id:
             agent_pinned = self.vector.get_pinned_memories(
                 user_id=user_id, agent_id=agent_id
@@ -344,17 +367,27 @@ class MemoryService:
             if agent_only:
                 identity = []
                 knowledge = []
+                instructions = []
                 for m in agent_only:
-                    mt = (m.get("metadata") or {}).get("memory_type", "fact")
+                    meta = m.get("metadata") or {}
+                    mt = meta.get("memory_type", "fact")
+                    mr = meta.get("role", "user")
                     text = m.get("memory", "")
-                    if mt in ("preference", "fact"):
-                        identity.append(f"- {text}")
+                    if mr == "assistant":
+                        # Memory about the agent itself
+                        if mt in ("preference", "fact"):
+                            identity.append(f"- {text}")
+                        else:
+                            knowledge.append(f"- {text}")
                     else:
-                        knowledge.append(f"- {text}")
+                        # Memory about the user, scoped to this agent
+                        instructions.append(f"- {text}")
                 if identity:
                     sections.append("## Agent Identity\n" + "\n".join(identity))
                 if knowledge:
                     sections.append("## Agent Knowledge\n" + "\n".join(knowledge))
+                if instructions:
+                    sections.append("## Agent Instructions\n" + "\n".join(instructions))
 
         # 2. Pinned user memories (no agent_id — shared across agents)
         user_pinned = self.vector.get_pinned_memories(
@@ -429,6 +462,7 @@ class MemoryService:
         agent_id: str | None = None,
         memory_type: str | None = None,
         categories: list[str] | None = None,
+        role: str | None = None,
         limit: int = 50,
     ) -> list[dict]:
         """List memories with optional filtering."""
@@ -440,6 +474,10 @@ class MemoryService:
         if memory_type:
             memory_type = validate_memory_type(memory_type)
             filters["memory_type"] = memory_type
+        if role:
+            if role not in ("user", "assistant"):
+                raise ValueError("role filter must be 'user' or 'assistant'")
+            filters["role"] = role
 
         result = self.vector.get_all(
             user_id=user_id,
@@ -468,6 +506,7 @@ class MemoryService:
         session_agent_id: str,
         memory_type: str | None = None,
         categories: list[str] | None = None,
+        role: str | None = None,
         limit: int = 50,
     ) -> list[dict]:
         """List both agent-scoped and shared memories, merge and deduplicate.
@@ -482,6 +521,10 @@ class MemoryService:
         if memory_type:
             memory_type = validate_memory_type(memory_type)
             filters["memory_type"] = memory_type
+        if role:
+            if role not in ("user", "assistant"):
+                raise ValueError("role filter must be 'user' or 'assistant'")
+            filters["role"] = role
 
         fetch_limit = limit * 2
 
