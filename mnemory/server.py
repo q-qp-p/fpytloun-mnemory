@@ -797,8 +797,12 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             if mapped_user_id:
                 _session_user_id.set(mapped_user_id)
             else:
-                # Fall back to X-User-Id header
-                header_uid = request.headers.get("x-user-id", "").strip()
+                # Fall back to identity headers (X-User-Id, then
+                # X-OpenWebUI-User-Email for Open WebUI integration)
+                header_uid = (
+                    request.headers.get("x-user-id", "").strip()
+                    or request.headers.get("x-openwebui-user-email", "").strip()
+                )
                 if header_uid:
                     _session_user_id.set(header_uid)
 
@@ -824,7 +828,10 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
     def _set_identity_from_headers(self, request: Request) -> None:
         """Set session identity from HTTP headers (no-auth mode)."""
-        header_uid = request.headers.get("x-user-id", "").strip()
+        header_uid = (
+            request.headers.get("x-user-id", "").strip()
+            or request.headers.get("x-openwebui-user-email", "").strip()
+        )
         if header_uid:
             _session_user_id.set(header_uid)
         header_aid = request.headers.get("x-agent-id", "").strip()

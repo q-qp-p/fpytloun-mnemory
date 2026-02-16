@@ -349,3 +349,111 @@ class TestListMemoriesDualScope:
             limit=3,
         )
         assert len(results) == 3
+
+
+# ── User identity header priority ─────────────────────────────────────
+
+
+class TestUserIdentityHeaders:
+    """Test the header priority chain for user_id resolution in the middleware."""
+
+    @staticmethod
+    def _make_request(headers: dict[str, str]):
+        """Create a mock Starlette Request with the given headers."""
+        mock_request = MagicMock()
+        # Starlette normalizes header names to lowercase; use a real dict
+        # so .get() works naturally (dict.get matches the Starlette API).
+        mock_request.headers = {k.lower(): v for k, v in headers.items()}
+        return mock_request
+
+    def test_x_user_id_takes_priority(self):
+        """X-User-Id should be used when both headers are present."""
+        from mnemory.server import APIKeyMiddleware, _session_user_id
+
+        middleware = object.__new__(APIKeyMiddleware)
+        request = self._make_request(
+            {
+                "X-User-Id": "filip",
+                "X-OpenWebUI-User-Email": "filip@example.com",
+            }
+        )
+
+        token = _session_user_id.set(None)
+        try:
+            middleware._set_identity_from_headers(request)
+            assert _session_user_id.get() == "filip"
+        finally:
+            _session_user_id.reset(token)
+
+    def test_openwebui_email_fallback(self):
+        """X-OpenWebUI-User-Email should be used when X-User-Id is absent."""
+        from mnemory.server import APIKeyMiddleware, _session_user_id
+
+        middleware = object.__new__(APIKeyMiddleware)
+        request = self._make_request({"X-OpenWebUI-User-Email": "filip@example.com"})
+
+        token = _session_user_id.set(None)
+        try:
+            middleware._set_identity_from_headers(request)
+            assert _session_user_id.get() == "filip@example.com"
+        finally:
+            _session_user_id.reset(token)
+
+    def test_empty_x_user_id_falls_through(self):
+        """Empty X-User-Id should fall through to X-OpenWebUI-User-Email."""
+        from mnemory.server import APIKeyMiddleware, _session_user_id
+
+        middleware = object.__new__(APIKeyMiddleware)
+        request = self._make_request(
+            {
+                "X-User-Id": "  ",
+                "X-OpenWebUI-User-Email": "filip@example.com",
+            }
+        )
+
+        token = _session_user_id.set(None)
+        try:
+            middleware._set_identity_from_headers(request)
+            assert _session_user_id.get() == "filip@example.com"
+        finally:
+            _session_user_id.reset(token)
+
+    def test_no_identity_headers(self):
+        """No identity headers → session user_id stays None."""
+        from mnemory.server import APIKeyMiddleware, _session_user_id
+
+        middleware = object.__new__(APIKeyMiddleware)
+        request = self._make_request({})
+
+        token = _session_user_id.set(None)
+        try:
+            middleware._set_identity_from_headers(request)
+            assert _session_user_id.get() is None
+        finally:
+            _session_user_id.reset(token)
+
+    def test_agent_id_still_read(self):
+        """X-Agent-Id should still be read alongside email fallback."""
+        from mnemory.server import (
+            APIKeyMiddleware,
+            _session_agent_id,
+            _session_user_id,
+        )
+
+        middleware = object.__new__(APIKeyMiddleware)
+        request = self._make_request(
+            {
+                "X-OpenWebUI-User-Email": "filip@example.com",
+                "X-Agent-Id": "open-webui",
+            }
+        )
+
+        uid_token = _session_user_id.set(None)
+        aid_token = _session_agent_id.set(None)
+        try:
+            middleware._set_identity_from_headers(request)
+            assert _session_user_id.get() == "filip@example.com"
+            assert _session_agent_id.get() == "open-webui"
+        finally:
+            _session_user_id.reset(uid_token)
+            _session_agent_id.reset(aid_token)

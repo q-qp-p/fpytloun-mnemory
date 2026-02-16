@@ -176,12 +176,13 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 ```
 
 - `"key": "username"` — authenticates AND binds `user_id=username` to the session
-- `"key": "*"` — authenticates only (wildcard), `user_id` must come from `X-User-Id` header or tool parameter
+- `"key": "*"` — authenticates only (wildcard), `user_id` must come from identity headers or tool parameter
 
 **Identity resolution priority (user_id):**
 1. API key mapping (non-wildcard) — most secure, cannot be overridden
-2. `X-User-Id` HTTP header — for wildcard keys or no-auth setups
-3. Tool parameter — backward compatible fallback
+2. `X-User-Id` HTTP header — explicit identity header
+3. `X-OpenWebUI-User-Email` HTTP header — automatic Open WebUI integration
+4. Tool parameter — backward compatible fallback
 
 **Agent ID** is set via the `X-Agent-Id` HTTP header per client connection:
 - Open WebUI: `X-Agent-Id: open-webui`
@@ -296,10 +297,25 @@ Memories with `pinned: true` are loaded at every conversation start via `get_cor
 1. Go to **Admin Settings > External Tools > Add Server**
 2. Type: **MCP (Streamable HTTP)**
 3. URL: `http://mnemory:8050/mcp` (same namespace) or `https://mem.example.com/mcp` (via ingress)
-4. Set headers: `Authorization: Bearer your-api-key` and `X-Agent-Id: open-webui`
-5. Enable tools on models: **Workspace > Models > Advanced Params > Function Calling: Native**
+4. Auth: **Bearer**, Key: `your-api-key`
+5. Custom headers: `X-Agent-Id: open-webui`
+6. Enable tools on models: **Workspace > Models > Advanced Params > Function Calling: Native**
 
-With `MCP_API_KEYS` configured, Open WebUI doesn't need to pass `user_id` in tool calls — it's resolved from the API key.
+**Multi-user setup** (recommended): Enable `ENABLE_FORWARD_USER_INFO_HEADERS=true` in Open WebUI so it forwards `X-OpenWebUI-User-Email` per user. Use a wildcard API key in mnemory — user identity is resolved automatically from the email header:
+
+```bash
+# Open WebUI environment
+ENABLE_FORWARD_USER_INFO_HEADERS=true
+
+# Mnemory environment
+MCP_API_KEYS='{"shared-openwebui-key": "*"}'
+```
+
+**Single-user setup**: Use a non-wildcard API key that binds directly to a user:
+
+```bash
+MCP_API_KEYS='{"your-api-key": "filip"}'
+```
 
 ### Claude Code / Opencode
 
