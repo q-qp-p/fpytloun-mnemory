@@ -25,9 +25,10 @@ from mnemory.config import ArtifactConfig
 logger = logging.getLogger(__name__)
 
 # Pattern for validating path components (user_id, memory_id, artifact_id, filename).
-# Allows alphanumeric, hyphens, underscores, dots, colons, and forward slashes
-# (for project:<name> style IDs) but rejects path traversal sequences.
-_SAFE_PATH_COMPONENT = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$")
+# Allows alphanumeric, hyphens, underscores, dots, colons, at signs, and forward
+# slashes (for project:<name> style IDs and email-based user_ids) but rejects
+# path traversal sequences.
+_SAFE_PATH_COMPONENT = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/@-]*$")
 
 
 def _validate_path_component(value: str, name: str) -> None:
@@ -42,7 +43,7 @@ def _validate_path_component(value: str, name: str) -> None:
         raise ValueError(
             f"{name} contains invalid characters: {value!r}. "
             "Only alphanumeric, hyphens, underscores, dots, colons, "
-            "and forward slashes are allowed."
+            "at signs, and forward slashes are allowed."
         )
 
 
