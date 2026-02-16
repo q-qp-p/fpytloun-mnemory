@@ -101,15 +101,25 @@ def _resolve_user_id(param_user_id: str | None = None) -> str:
 def _resolve_agent_id(param_agent_id: str | None = None) -> str | None:
     """Resolve agent_id with session-level protection.
 
+    Supports "self" as a sentinel value — resolves to the session's
+    agent_id from X-Agent-Id header. Raises ValueError if "self" is
+    used without a session agent.
+
     When X-Agent-Id header is set (session has an agent):
+    - param="self"  → returns session agent_id
     - param=None  → returns None (shared memory, no agent scope)
     - param=session value → returns session agent_id
     - param=different value → raises ValueError (cross-agent blocked)
 
     When X-Agent-Id is NOT set:
+    - param="self" → raises ValueError (no session agent to resolve)
     - returns param as-is (no protection, backward compatible)
     """
     session_aid = _session_agent_id.get()
+    if param_agent_id == "self":
+        if session_aid is None:
+            raise ValueError("agent_id='self' requires X-Agent-Id header to be set")
+        return session_aid
     if session_aid is None:
         # No session agent — pass through whatever the LLM sent
         return param_agent_id
@@ -132,8 +142,14 @@ def _resolve_agent_id_for_core(
     Unlike _resolve_agent_id, this auto-injects the session agent_id
     when the LLM doesn't pass one, because get_core_memories always
     needs the agent_id to load agent identity and knowledge.
+
+    Supports "self" sentinel — same as _resolve_agent_id.
     """
     session_aid = _session_agent_id.get()
+    if param_agent_id == "self":
+        if session_aid is None:
+            raise ValueError("agent_id='self' requires X-Agent-Id header to be set")
+        return session_aid
     if session_aid is None:
         return param_agent_id
     if param_agent_id is None:
@@ -214,7 +230,9 @@ def add_memory(
                   personality, agent-specific knowledge). Do NOT set for user
                   facts, preferences, or context — those must be shared across
                   all agents. Memories with agent_id are INVISIBLE to other
-                  agents. When in doubt, leave empty.
+                  agents. Use "self" to automatically resolve to your agent_id
+                  from the session (X-Agent-Id header). When in doubt, leave
+                  empty.
                   Optional if pre-configured via X-Agent-Id header.
         infer: If true (default), the server uses LLM to extract key facts
                from content and check for duplicates/contradictions with
@@ -274,6 +292,7 @@ def add_memories(
                  pre-configured via API key mapping.
         agent_id: Agent scope (shared for all items). Same rules as
                   add_memory — only set for agent-specific memories.
+                  Use "self" to resolve to your agent_id from the session.
                   Optional if pre-configured via X-Agent-Id header.
         infer: If true (default), each memory uses LLM fact extraction
                and dedup. If false, content is stored as-is (faster).
@@ -370,8 +389,10 @@ def search_memories(
     are ranked by relevance and importance. Memories with artifacts show
     has_artifacts: true — use get_artifact to fetch details.
 
-    By default (agent_id omitted), searches BOTH your agent-specific
-    memories AND shared user memories, merged and deduplicated.
+    When your session has an agent_id (via X-Agent-Id header), search
+    automatically returns BOTH your agent-specific memories AND shared
+    user memories, merged and deduplicated. You don't need to pass
+    agent_id for this.
 
     Args:
         query: What to search for (natural language).
@@ -379,17 +400,17 @@ def search_memories(
         memory_type: Filter by type (preference/fact/episodic/procedural/context).
         categories: Filter by categories. "project" matches all project:* entries.
         limit: Max results to return (default 10).
-        agent_id: Omit to search both agent + shared memories (recommended).
-                  Set to your agent_id to restrict to agent-scoped memories only.
-                  Cannot access other agents' memories.
+        agent_id: Ignored when session agent is set (automatic dual-scope).
+                  Only used as fallback for direct API callers without
+                  X-Agent-Id header.
     """
     try:
         uid = _resolve_user_id(user_id)
-        aid = _resolve_agent_id(agent_id)
         session_aid = _get_session_agent_id()
 
-        # Dual-scope: session has agent but LLM wants all visible memories
-        if session_aid and aid is None:
+        # When session has agent_id, always use dual-scope to return
+        # both agent-specific and shared user memories.
+        if session_aid:
             results = _get_service().search_memories_dual_scope(
                 query,
                 user_id=uid,
@@ -399,6 +420,8 @@ def search_memories(
                 limit=limit,
             )
         else:
+            # No session agent — use param for backward compat
+            aid = _resolve_agent_id(agent_id)
             results = _get_service().search_memories(
                 query,
                 user_id=uid,
@@ -477,25 +500,27 @@ def list_memories(
     Use this to review what's known about a user, find memories to
     update or delete, or browse by category/type.
 
-    By default (agent_id omitted), lists BOTH your agent-specific
-    memories AND shared user memories, merged and deduplicated.
+    When your session has an agent_id (via X-Agent-Id header), this
+    automatically returns BOTH your agent-specific memories AND shared
+    user memories, merged and deduplicated. You don't need to pass
+    agent_id for this.
 
     Args:
         user_id: User identifier. Optional if pre-configured via API key mapping.
         memory_type: Filter by type (preference/fact/episodic/procedural/context).
         categories: Filter by categories.
         limit: Max results (default 50).
-        agent_id: Omit to list both agent + shared memories (recommended).
-                  Set to your agent_id to restrict to agent-scoped memories only.
-                  Cannot access other agents' memories.
+        agent_id: Ignored when session agent is set (automatic dual-scope).
+                  Only used as fallback for direct API callers without
+                  X-Agent-Id header.
     """
     try:
         uid = _resolve_user_id(user_id)
-        aid = _resolve_agent_id(agent_id)
         session_aid = _get_session_agent_id()
 
-        # Dual-scope: session has agent but LLM wants all visible memories
-        if session_aid and aid is None:
+        # When session has agent_id, always use dual-scope to return
+        # both agent-specific and shared user memories.
+        if session_aid:
             results = _get_service().list_memories_dual_scope(
                 user_id=uid,
                 session_agent_id=session_aid,
@@ -504,6 +529,8 @@ def list_memories(
                 limit=limit,
             )
         else:
+            # No session agent — use param for backward compat
+            aid = _resolve_agent_id(agent_id)
             results = _get_service().list_memories(
                 user_id=uid,
                 agent_id=aid,
@@ -833,7 +860,7 @@ def _format_memories(memories: list[dict]) -> str:
         if "score" in mem:
             entry["score"] = round(mem["score"], 4)
 
-        metadata = mem.get("metadata", {})
+        metadata = mem.get("metadata") or {}
         if metadata.get("memory_type"):
             entry["type"] = metadata["memory_type"]
         if metadata.get("categories"):

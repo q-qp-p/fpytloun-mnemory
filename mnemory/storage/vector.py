@@ -190,7 +190,7 @@ class VectorStore:
             )
             mem = self.get_by_id(memory_id)
             if mem:
-                existing_meta = mem.get("metadata", {})
+                existing_meta = mem.get("metadata") or {}
                 existing_meta.update(metadata)
                 # mem0's update() only changes content, so we re-add with
                 # merged metadata. This triggers dedup but preserves metadata.

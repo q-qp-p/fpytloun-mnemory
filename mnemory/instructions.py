@@ -41,10 +41,9 @@ Before answering questions that might benefit from personal context,
 search memories first. Use category and type filters to narrow results.
 Results are ranked by relevance and importance.
 
-When searching, simply omit agent_id — the server automatically searches
-BOTH your agent-specific memories AND shared user memories, merging the
-results. Only pass agent_id explicitly if you want to restrict results
-to your agent-scoped memories only.
+Search and list automatically return BOTH your agent-specific memories
+AND shared user memories, merged and deduplicated. You don't need to
+pass agent_id — the server knows your identity from the session.
 
 ## agent_id SCOPING — READ CAREFULLY
 Memories with agent_id set are ONLY visible to that specific agent.
@@ -54,17 +53,16 @@ Other agents CANNOT see them. This is a visibility boundary.
 - Do NOT set agent_id for general user information: facts about the user,
   user preferences, personal context, decisions, or anything that should
   be available to all agents. Leave agent_id empty for these.
-- ONLY set agent_id for memories that are specific to you as an agent:
-  your identity, your personality, your name, knowledge that only you
-  should have.
+- ONLY set agent_id="self" for memories that are specific to you as an
+  agent: your identity, your personality, your name, knowledge that only
+  you should have. The server resolves "self" to your actual agent_id
+  from the session (X-Agent-Id header).
 - When in doubt, do NOT set agent_id. It is better for a memory to be
   shared than accidentally hidden from other agents.
 
 ### Searching and listing
-- Omit agent_id to search/list BOTH your agent memories AND shared
-  user memories (this is the default and recommended behavior).
-- Pass your agent_id explicitly to restrict to your agent-scoped
-  memories only.
+- Search and list automatically include both your agent memories and
+  shared user memories. You don't need to pass agent_id.
 - You CANNOT access other agents' memories — the server blocks this.
 
 ### Updating and deleting
@@ -74,8 +72,8 @@ Other agents CANNOT see them. This is a visibility boundary.
 Examples:
   "User lives in Prague" → do NOT set agent_id (shared user fact)
   "User prefers dark mode" → do NOT set agent_id (shared preference)
-  "Your name is Bob" → set agent_id (agent identity)
-  "You researched X and concluded Y" → set agent_id (agent knowledge)
+  "Your name is Bob" → set agent_id="self" (agent identity)
+  "You researched X and concluded Y" → set agent_id="self" (agent knowledge)
 
 ## ARTIFACTS (save_artifact, get_artifact)
 For detailed content too long for fast memory (research reports, analysis,
@@ -111,7 +109,8 @@ user_id and agent_id may be pre-configured at the connection level
   telling you to provide them.
 
 ## IMPORTANT
-- Do NOT set agent_id unless the memory is specific to you as an agent.
+- Use agent_id="self" ONLY when the memory is specific to you as an agent.
+  Do NOT set agent_id for user facts, preferences, or context.
 - Do NOT invent categories — use only predefined ones or project:<name>.
 - When updating outdated information, use update_memory to correct it.
 - Use delete_memory to remove incorrect or obsolete memories.

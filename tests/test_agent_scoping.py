@@ -76,6 +76,15 @@ class TestResolveAgentIdForCore:
         with pytest.raises(ValueError, match="Cannot use agent_id"):
             self._resolve("other-agent", session_agent_id="openwebui")
 
+    def test_self_with_session_resolves(self):
+        """agent_id='self' with session should resolve to session value."""
+        assert self._resolve("self", session_agent_id="openwebui") == "openwebui"
+
+    def test_self_without_session_raises(self):
+        """agent_id='self' without session should raise ValueError."""
+        with pytest.raises(ValueError, match="requires X-Agent-Id"):
+            self._resolve("self", session_agent_id=None)
+
 
 # ── _get_session_agent_id ──────────────────────────────────────────────
 
@@ -457,3 +466,154 @@ class TestUserIdentityHeaders:
         finally:
             _session_user_id.reset(uid_token)
             _session_agent_id.reset(aid_token)
+
+
+# ── agent_id="self" sentinel ───────────────────────────────────────────
+
+
+class TestResolveAgentIdSelf:
+    """Test agent_id='self' sentinel resolution."""
+
+    def _resolve(self, param_agent_id, session_agent_id=None):
+        from mnemory.server import _resolve_agent_id, _session_agent_id
+
+        token = _session_agent_id.set(session_agent_id)
+        try:
+            return _resolve_agent_id(param_agent_id)
+        finally:
+            _session_agent_id.reset(token)
+
+    def test_self_with_session_resolves(self):
+        """agent_id='self' with session agent should resolve to session value."""
+        assert self._resolve("self", session_agent_id="openwebui") == "openwebui"
+
+    def test_self_without_session_raises(self):
+        """agent_id='self' without session agent should raise ValueError."""
+        with pytest.raises(ValueError, match="requires X-Agent-Id"):
+            self._resolve("self", session_agent_id=None)
+
+    def test_self_is_case_sensitive(self):
+        """Only lowercase 'self' is the sentinel, not 'Self' or 'SELF'."""
+        # "Self" is treated as a regular agent_id, which differs from session
+        with pytest.raises(ValueError, match="Cannot use agent_id"):
+            self._resolve("Self", session_agent_id="openwebui")
+
+
+# ── None metadata safety ──────────────────────────────────────────────
+
+
+class TestNoneMetadataSafety:
+    """Test that memories with metadata=None don't crash."""
+
+    def test_format_memories_with_none_metadata(self):
+        """_format_memories should handle memories where metadata is None."""
+        import json
+
+        from mnemory.server import _format_memories
+
+        memories = [
+            {
+                "id": "mem-1",
+                "memory": "test fact",
+                "created_at": "2025-01-01T00:00:00",
+                "metadata": None,
+            },
+            {
+                "id": "mem-2",
+                "memory": "another fact",
+                "created_at": "2025-01-02T00:00:00",
+                # metadata key missing entirely
+            },
+        ]
+        result = json.loads(_format_memories(memories))
+        assert result["count"] == 2
+        assert result["results"][0]["memory"] == "test fact"
+        assert result["results"][1]["memory"] == "another fact"
+
+    def test_rerank_with_none_metadata(self):
+        """_rerank_by_importance should handle None metadata."""
+        from unittest.mock import patch
+
+        mock_config = MagicMock()
+        mock_config.memory.max_memory_length = 1000
+        mock_config.memory.max_artifact_size = 102400
+        mock_config.memory.max_core_context_length = 4000
+        mock_config.memory.default_recent_hours = 24
+        mock_config.memory.classify_cache_ttl = 300
+        mock_config.memory.core_memories_cache_ttl = 300
+        mock_config.memory.auto_classify = False
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        memories = [
+            {"id": "1", "memory": "test", "score": 0.9, "metadata": None},
+            {"id": "2", "memory": "test2", "score": 0.8},
+        ]
+        # Should not crash
+        result = service._rerank_by_importance(memories)
+        assert len(result) == 2
+
+
+# ── add_memories server-level validation ───────────────────────────────
+
+
+class TestAddMemoriesTool:
+    """Test the add_memories tool handler's validation logic."""
+
+    def _call(self, memories, user_id="filip", agent_id=None, infer=True):
+        """Call add_memories with mocked globals."""
+        import json
+        from unittest.mock import patch
+
+        from mnemory.server import _session_agent_id, _session_user_id, add_memories
+
+        uid_token = _session_user_id.set(user_id)
+        aid_token = _session_agent_id.set(agent_id)
+        try:
+            mock_service = MagicMock()
+            mock_service.add_memory.return_value = {
+                "results": [{"id": "mem-1", "event": "ADD"}]
+            }
+            with patch("mnemory.server._get_service", return_value=mock_service):
+                raw = add_memories(memories=memories, infer=infer)
+            return json.loads(raw), mock_service
+        finally:
+            _session_user_id.reset(uid_token)
+            _session_agent_id.reset(aid_token)
+
+    def test_empty_list_returns_error(self):
+        result, _ = self._call([])
+        assert result["error"] is True
+        assert "empty" in result["message"]
+
+    def test_exceeds_max_batch_size(self):
+        memories = [{"content": f"fact {i}"} for i in range(21)]
+        result, _ = self._call(memories)
+        assert result["error"] is True
+        assert "max 20" in result["message"].lower() or "Too many" in result["message"]
+
+    def test_missing_content_field(self):
+        memories = [{"memory_type": "fact"}]  # no "content"
+        result, _ = self._call(memories)
+        assert result["failed"] == 1
+        assert result["succeeded"] == 0
+        assert "content" in result["errors"][0]["message"].lower()
+
+    def test_mixed_success_and_failure(self):
+        memories = [
+            {"content": "valid fact"},
+            {"no_content_key": True},  # invalid
+            {"content": "another valid fact"},
+        ]
+        result, service = self._call(memories)
+        assert result["total"] == 3
+        assert result["succeeded"] == 2
+        assert result["failed"] == 1
+        assert service.add_memory.call_count == 2
+
+    def test_infer_false_passed_to_service(self):
+        memories = [{"content": "test"}]
+        _, service = self._call(memories, infer=False)
+        _, kwargs = service.add_memory.call_args
+        assert kwargs["infer"] is False

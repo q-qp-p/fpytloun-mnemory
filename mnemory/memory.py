@@ -219,7 +219,7 @@ class MemoryService:
                 m
                 for m in memories
                 if matches_category_filter(
-                    m.get("metadata", {}).get("categories", []), categories
+                    (m.get("metadata") or {}).get("categories", []), categories
                 )
             ]
 
@@ -288,7 +288,7 @@ class MemoryService:
                 m
                 for m in memories
                 if matches_category_filter(
-                    m.get("metadata", {}).get("categories", []), categories
+                    (m.get("metadata") or {}).get("categories", []), categories
                 )
             ]
 
@@ -342,7 +342,7 @@ class MemoryService:
                 identity = []
                 knowledge = []
                 for m in agent_only:
-                    mt = m.get("metadata", {}).get("memory_type", "fact")
+                    mt = (m.get("metadata") or {}).get("memory_type", "fact")
                     text = m.get("memory", "")
                     if mt in ("preference", "fact"):
                         identity.append(f"- {text}")
@@ -362,7 +362,7 @@ class MemoryService:
             prefs = []
             other = []
             for m in user_pinned:
-                mt = m.get("metadata", {}).get("memory_type", "fact")
+                mt = (m.get("metadata") or {}).get("memory_type", "fact")
                 text = m.get("memory", "")
                 if mt == "fact":
                     facts.append(f"- {text}")
@@ -452,7 +452,7 @@ class MemoryService:
                 m
                 for m in memories
                 if matches_category_filter(
-                    m.get("metadata", {}).get("categories", []), categories
+                    (m.get("metadata") or {}).get("categories", []), categories
                 )
             ]
 
@@ -512,7 +512,7 @@ class MemoryService:
                 m
                 for m in memories
                 if matches_category_filter(
-                    m.get("metadata", {}).get("categories", []), categories
+                    (m.get("metadata") or {}).get("categories", []), categories
                 )
             ]
 
@@ -635,7 +635,7 @@ class MemoryService:
             result = self.vector.get_all(user_id=user_id, agent_id=agent_id, limit=1000)
             for mem in result.get("results", []):
                 mem_id = mem.get("id")
-                if mem_id and mem.get("metadata", {}).get("artifacts"):
+                if mem_id and (mem.get("metadata") or {}).get("artifacts"):
                     try:
                         self.artifact.delete_all_for_memory(
                             user_id=user_id, memory_id=mem_id
@@ -728,7 +728,7 @@ class MemoryService:
         try:
             mem = self.vector.get_by_id(memory_id)
             current_artifacts = (
-                mem.get("metadata", {}).get("artifacts", []) if mem else []
+                (mem.get("metadata") or {}).get("artifacts", []) if mem else []
             )
 
             current_artifacts.append(meta.to_dict())
@@ -825,7 +825,7 @@ class MemoryService:
         """Get artifact metadata list from a memory's vector store entry."""
         mem = self.vector.get_by_id(memory_id)
         if mem:
-            return mem.get("metadata", {}).get("artifacts", [])
+            return (mem.get("metadata") or {}).get("artifacts", [])
         return []
 
     def _rerank_by_importance(self, memories: list[dict]) -> list[dict]:
@@ -835,7 +835,7 @@ class MemoryService:
         """
         for mem in memories:
             sim_score = mem.get("score", 0.0)
-            importance = mem.get("metadata", {}).get("importance", "normal")
+            importance = (mem.get("metadata") or {}).get("importance", "normal")
             imp_weight = IMPORTANCE_WEIGHTS.get(importance, 0.4)
             mem["_combined_score"] = sim_score * 0.7 + imp_weight * 0.3
 

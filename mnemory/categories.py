@@ -134,7 +134,7 @@ def count_categories(memories: list[dict]) -> dict[str, int]:
     """
     counts: dict[str, int] = {}
     for mem in memories:
-        metadata = mem.get("metadata", {})
+        metadata = mem.get("metadata") or {}
         cats = metadata.get("categories", [])
         if isinstance(cats, list):
             for cat in cats:
