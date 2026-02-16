@@ -99,14 +99,56 @@ def _resolve_user_id(param_user_id: str | None = None) -> str:
 
 
 def _resolve_agent_id(param_agent_id: str | None = None) -> str | None:
-    """Resolve agent_id from session context or tool parameter.
+    """Resolve agent_id with session-level protection.
 
-    Priority:
-    1. X-Agent-Id header (set by middleware)
-    2. Tool parameter
+    When X-Agent-Id header is set (session has an agent):
+    - param=None  → returns None (shared memory, no agent scope)
+    - param=session value → returns session agent_id
+    - param=different value → raises ValueError (cross-agent blocked)
+
+    When X-Agent-Id is NOT set:
+    - returns param as-is (no protection, backward compatible)
     """
     session_aid = _session_agent_id.get()
-    return session_aid or param_agent_id
+    if session_aid is None:
+        # No session agent — pass through whatever the LLM sent
+        return param_agent_id
+    # Session agent is set — enforce protection
+    if param_agent_id is None:
+        return None  # LLM wants shared/no agent scope
+    if param_agent_id == session_aid:
+        return session_aid
+    raise ValueError(
+        f"Cannot use agent_id '{param_agent_id}' — "
+        f"session is bound to agent '{session_aid}'"
+    )
+
+
+def _resolve_agent_id_for_core(
+    param_agent_id: str | None = None,
+) -> str | None:
+    """Resolve agent_id for get_core_memories (auto-injects session agent).
+
+    Unlike _resolve_agent_id, this auto-injects the session agent_id
+    when the LLM doesn't pass one, because get_core_memories always
+    needs the agent_id to load agent identity and knowledge.
+    """
+    session_aid = _session_agent_id.get()
+    if session_aid is None:
+        return param_agent_id
+    if param_agent_id is None:
+        return session_aid  # Auto-inject
+    if param_agent_id == session_aid:
+        return session_aid
+    raise ValueError(
+        f"Cannot use agent_id '{param_agent_id}' — "
+        f"session is bound to agent '{session_aid}'"
+    )
+
+
+def _get_session_agent_id() -> str | None:
+    """Get the session-level agent_id (from X-Agent-Id header), or None."""
+    return _session_agent_id.get()
 
 
 # ── MCP Server ────────────────────────────────────────────────────────
@@ -207,28 +249,43 @@ def search_memories(
     are ranked by relevance and importance. Memories with artifacts show
     has_artifacts: true — use get_artifact to fetch details.
 
+    By default (agent_id omitted), searches BOTH your agent-specific
+    memories AND shared user memories, merged and deduplicated.
+
     Args:
         query: What to search for (natural language).
         user_id: User identifier. Optional if pre-configured via API key mapping.
         memory_type: Filter by type (preference/fact/episodic/procedural/context).
         categories: Filter by categories. "project" matches all project:* entries.
         limit: Max results to return (default 10).
-        agent_id: Only set to find YOUR agent-specific memories. Omit to
-                  search shared user memories (the common case). Setting this
-                  restricts results to memories stored with this agent_id only.
-                  Optional if pre-configured via X-Agent-Id header.
+        agent_id: Omit to search both agent + shared memories (recommended).
+                  Set to your agent_id to restrict to agent-scoped memories only.
+                  Cannot access other agents' memories.
     """
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id(agent_id)
-        results = _get_service().search_memories(
-            query,
-            user_id=uid,
-            agent_id=aid,
-            memory_type=memory_type,
-            categories=categories,
-            limit=limit,
-        )
+        session_aid = _get_session_agent_id()
+
+        # Dual-scope: session has agent but LLM wants all visible memories
+        if session_aid and aid is None:
+            results = _get_service().search_memories_dual_scope(
+                query,
+                user_id=uid,
+                session_agent_id=session_aid,
+                memory_type=memory_type,
+                categories=categories,
+                limit=limit,
+            )
+        else:
+            results = _get_service().search_memories(
+                query,
+                user_id=uid,
+                agent_id=aid,
+                memory_type=memory_type,
+                categories=categories,
+                limit=limit,
+            )
         return _format_memories(results)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -268,7 +325,7 @@ def get_core_memories(
     """
     try:
         uid = _resolve_user_id(user_id)
-        aid = _resolve_agent_id(agent_id)
+        aid = _resolve_agent_id_for_core(agent_id)
         return _get_service().get_core_memories(
             user_id=uid,
             agent_id=aid,
@@ -299,24 +356,40 @@ def list_memories(
     Use this to review what's known about a user, find memories to
     update or delete, or browse by category/type.
 
+    By default (agent_id omitted), lists BOTH your agent-specific
+    memories AND shared user memories, merged and deduplicated.
+
     Args:
         user_id: User identifier. Optional if pre-configured via API key mapping.
         memory_type: Filter by type (preference/fact/episodic/procedural/context).
         categories: Filter by categories.
         limit: Max results (default 50).
-        agent_id: Filter to agent-specific memories only.
-                  Optional if pre-configured via X-Agent-Id header.
+        agent_id: Omit to list both agent + shared memories (recommended).
+                  Set to your agent_id to restrict to agent-scoped memories only.
+                  Cannot access other agents' memories.
     """
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id(agent_id)
-        results = _get_service().list_memories(
-            user_id=uid,
-            agent_id=aid,
-            memory_type=memory_type,
-            categories=categories,
-            limit=limit,
-        )
+        session_aid = _get_session_agent_id()
+
+        # Dual-scope: session has agent but LLM wants all visible memories
+        if session_aid and aid is None:
+            results = _get_service().list_memories_dual_scope(
+                user_id=uid,
+                session_agent_id=session_aid,
+                memory_type=memory_type,
+                categories=categories,
+                limit=limit,
+            )
+        else:
+            results = _get_service().list_memories(
+                user_id=uid,
+                agent_id=aid,
+                memory_type=memory_type,
+                categories=categories,
+                limit=limit,
+            )
         return _format_memories(results)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -344,6 +417,9 @@ def update_memory(
     Use when information has changed (user moved, changed job, updated
     a preference) or to correct/recategorize a memory.
 
+    You can only update your own agent-scoped memories and shared memories.
+    Updating another agent's memory will be blocked.
+
     Args:
         memory_id: ID of the memory to update.
         content: New content text (if changing). Max 1000 chars.
@@ -353,6 +429,9 @@ def update_memory(
         pinned: New pinned state (true/false).
     """
     try:
+        # Verify ownership: must be own agent's memory or shared
+        session_aid = _get_session_agent_id()
+        _get_service().verify_memory_access(memory_id, session_agent_id=session_aid)
         result = _get_service().update_memory(
             memory_id,
             content=content,
@@ -381,12 +460,18 @@ def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     Use when information is no longer relevant or the user explicitly
     asks to forget something.
 
+    You can only delete your own agent-scoped memories and shared memories.
+    Deleting another agent's memory will be blocked.
+
     Args:
         memory_id: ID of the memory to delete.
         user_id: User identifier. Optional if pre-configured via API key mapping.
     """
     try:
         uid = _resolve_user_id(user_id)
+        # Verify ownership: must be own agent's memory or shared
+        session_aid = _get_session_agent_id()
+        _get_service().verify_memory_access(memory_id, session_agent_id=session_aid)
         result = _get_service().delete_memory(memory_id, user_id=uid)
         return json.dumps(result)
     except ValueError as e:

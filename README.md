@@ -104,7 +104,7 @@ docker run -d \
   -p 8050:8050 \
   -e LLM_API_KEY=sk-your-key \
   -e LLM_BASE_URL=https://your-litellm-proxy/v1 \
-  -e LLM_MODEL=gpt-4.1-nano \
+  -e LLM_MODEL=gpt-5-mini \
   -e VECTOR_BACKEND=qdrant \
   -e QDRANT_HOST=qdrant.example.com \
   -e QDRANT_PORT=6333 \
@@ -128,7 +128,7 @@ All configuration is via environment variables:
 |---|---|---|
 | `LLM_API_KEY` | (required) | API key for LLM provider |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
-| `LLM_MODEL` | `gpt-4.1-nano` | LLM model for fact extraction (must support function calling) |
+| `LLM_MODEL` | `gpt-5-mini` | LLM model for fact extraction and deduplication |
 | `EMBED_MODEL` | `text-embedding-3-small` | Embedding model |
 | `EMBED_BASE_URL` | (falls back to `LLM_BASE_URL`) | Separate base URL for embeddings |
 | `EMBED_DIMS` | `1536` | Embedding dimensions |

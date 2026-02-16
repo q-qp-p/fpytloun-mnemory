@@ -32,13 +32,17 @@ project context, conclusions, or anything worth remembering:
 Before answering questions that might benefit from personal context,
 search memories first. Use category and type filters to narrow results.
 Results are ranked by relevance and importance.
-When searching, omit agent_id to find shared user memories. Only set
-agent_id if you specifically need your own agent-scoped memories.
+
+When searching, simply omit agent_id — the server automatically searches
+BOTH your agent-specific memories AND shared user memories, merging the
+results. Only pass agent_id explicitly if you want to restrict results
+to your agent-scoped memories only.
 
 ## agent_id SCOPING — READ CAREFULLY
 Memories with agent_id set are ONLY visible to that specific agent.
 Other agents CANNOT see them. This is a visibility boundary.
 
+### Storing memories
 - Do NOT set agent_id for general user information: facts about the user,
   user preferences, personal context, decisions, or anything that should
   be available to all agents. Leave agent_id empty for these.
@@ -47,6 +51,17 @@ Other agents CANNOT see them. This is a visibility boundary.
   should have.
 - When in doubt, do NOT set agent_id. It is better for a memory to be
   shared than accidentally hidden from other agents.
+
+### Searching and listing
+- Omit agent_id to search/list BOTH your agent memories AND shared
+  user memories (this is the default and recommended behavior).
+- Pass your agent_id explicitly to restrict to your agent-scoped
+  memories only.
+- You CANNOT access other agents' memories — the server blocks this.
+
+### Updating and deleting
+- You can update/delete your own agent-scoped memories and shared
+  memories. You CANNOT modify memories belonging to other agents.
 
 Examples:
   "User lives in Prague" → do NOT set agent_id (shared user fact)

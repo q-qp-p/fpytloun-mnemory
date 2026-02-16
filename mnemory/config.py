@@ -48,7 +48,7 @@ class VectorConfig:
 class LLMConfig:
     """LLM and embedding configuration."""
 
-    model: str = field(default_factory=lambda: _env("LLM_MODEL", "gpt-4.1-nano"))
+    model: str = field(default_factory=lambda: _env("LLM_MODEL", "gpt-5-mini"))
     base_url: str = field(
         default_factory=lambda: _env("LLM_BASE_URL", "https://api.openai.com/v1")
     )

@@ -28,6 +28,29 @@ class VectorStore:
         self.memory = Memory.from_config(self._mem0_config)
         self._qdrant_client = None
 
+        # Patch mem0's Qdrant vector store to handle vector=None correctly.
+        # mem0 calls update(vector=None) to update only metadata/session IDs
+        # (e.g., on NONE events with agent_id set), but the Qdrant
+        # implementation passes None to PointStruct which fails with
+        # validation errors. Use set_payload() for metadata-only updates.
+        if hasattr(self.memory, "vector_store") and hasattr(
+            self.memory.vector_store, "client"
+        ):
+            _original_vs_update = self.memory.vector_store.update
+            _vs = self.memory.vector_store
+
+            def _patched_vs_update(vector_id, vector=None, payload=None):
+                if vector is None and payload is not None:
+                    _vs.client.set_payload(
+                        collection_name=_vs.collection_name,
+                        payload=payload,
+                        points=[vector_id],
+                    )
+                else:
+                    _original_vs_update(vector_id, vector=vector, payload=payload)
+
+            self.memory.vector_store.update = _patched_vs_update
+
     @property
     def qdrant_client(self):
         """Lazy-initialized direct Qdrant client.

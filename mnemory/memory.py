@@ -124,7 +124,7 @@ class MemoryService:
     ) -> list[dict]:
         """Search memories with semantic similarity, filtered and reranked.
 
-        Fetches 2x limit from mem0, applies category/type post-filtering,
+        Fetches 3x limit from mem0, applies category/type post-filtering,
         reranks by combined similarity + importance score, returns top N.
         """
         user_id = _validate_id(user_id, "user_id")
@@ -162,6 +162,73 @@ class MemoryService:
         # Rerank by combined score: similarity * 0.7 + importance * 0.3
         memories = self._rerank_by_importance(memories)
 
+        return memories[:limit]
+
+    def search_memories_dual_scope(
+        self,
+        query: str,
+        *,
+        user_id: str,
+        session_agent_id: str,
+        memory_type: str | None = None,
+        categories: list[str] | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Search both agent-scoped and shared memories, merge and deduplicate.
+
+        Used when a session has an agent_id but the LLM doesn't pass one
+        (meaning: search everything I can see). Performs two searches:
+        1. Agent-scoped memories (agent_id=session_agent_id)
+        2. Shared memories (agent_id=None)
+        Then merges, deduplicates by memory ID, and reranks.
+        """
+        user_id = _validate_id(user_id, "user_id")
+        session_agent_id = _validate_id(session_agent_id, "agent_id")
+
+        filters = {}
+        if memory_type:
+            memory_type = validate_memory_type(memory_type)
+            filters["memory_type"] = memory_type
+
+        fetch_limit = limit * 3
+
+        # Search 1: agent-scoped memories
+        agent_result = self.vector.search(
+            query,
+            user_id=user_id,
+            agent_id=session_agent_id,
+            filters=filters if filters else None,
+            limit=fetch_limit,
+        )
+        # Search 2: shared memories (no agent_id)
+        shared_result = self.vector.search(
+            query,
+            user_id=user_id,
+            agent_id=None,
+            filters=filters if filters else None,
+            limit=fetch_limit,
+        )
+
+        # Merge and deduplicate by memory ID
+        seen_ids: set[str] = set()
+        memories: list[dict] = []
+        for mem in agent_result.get("results", []) + shared_result.get("results", []):
+            mid = mem.get("id")
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                memories.append(mem)
+
+        # Post-filter by categories
+        if categories:
+            memories = [
+                m
+                for m in memories
+                if matches_category_filter(
+                    m.get("metadata", {}).get("categories", []), categories
+                )
+            ]
+
+        memories = self._rerank_by_importance(memories)
         return memories[:limit]
 
     # ── Get Core Memories ─────────────────────────────────────────────
@@ -316,6 +383,99 @@ class MemoryService:
             ]
 
         return memories[:limit]
+
+    def list_memories_dual_scope(
+        self,
+        *,
+        user_id: str,
+        session_agent_id: str,
+        memory_type: str | None = None,
+        categories: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List both agent-scoped and shared memories, merge and deduplicate.
+
+        Used when a session has an agent_id but the LLM doesn't pass one
+        (meaning: list everything I can see).
+        """
+        user_id = _validate_id(user_id, "user_id")
+        session_agent_id = _validate_id(session_agent_id, "agent_id")
+
+        filters = {}
+        if memory_type:
+            memory_type = validate_memory_type(memory_type)
+            filters["memory_type"] = memory_type
+
+        fetch_limit = limit * 2
+
+        # Fetch 1: agent-scoped memories
+        agent_result = self.vector.get_all(
+            user_id=user_id,
+            agent_id=session_agent_id,
+            filters=filters if filters else None,
+            limit=fetch_limit,
+        )
+        # Fetch 2: shared memories (no agent_id)
+        shared_result = self.vector.get_all(
+            user_id=user_id,
+            agent_id=None,
+            filters=filters if filters else None,
+            limit=fetch_limit,
+        )
+
+        # Merge and deduplicate by memory ID
+        seen_ids: set[str] = set()
+        memories: list[dict] = []
+        for mem in agent_result.get("results", []) + shared_result.get("results", []):
+            mid = mem.get("id")
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                memories.append(mem)
+
+        # Post-filter by categories
+        if categories:
+            memories = [
+                m
+                for m in memories
+                if matches_category_filter(
+                    m.get("metadata", {}).get("categories", []), categories
+                )
+            ]
+
+        return memories[:limit]
+
+    # ── Ownership Verification ─────────────────────────────────────────
+
+    def verify_memory_access(
+        self,
+        memory_id: str,
+        *,
+        session_agent_id: str | None,
+    ) -> None:
+        """Verify the session agent can access a memory.
+
+        When session_agent_id is set, the memory must either:
+        - Have no agent_id (shared memory) — accessible by all agents
+        - Have agent_id == session_agent_id — own agent memory
+
+        Memories belonging to a different agent are blocked.
+
+        Raises ValueError if access is denied.
+        Does nothing if session_agent_id is None (no protection).
+        """
+        if session_agent_id is None:
+            return  # No session agent — no protection
+
+        mem = self.vector.get_by_id(memory_id)
+        if mem is None:
+            return  # Memory not found — let downstream handle 404
+
+        mem_agent_id = mem.get("agent_id")
+        if mem_agent_id and mem_agent_id != session_agent_id:
+            raise ValueError(
+                f"Cannot access memory '{memory_id}' — "
+                f"it belongs to agent '{mem_agent_id}'"
+            )
 
     # ── Update Memory ─────────────────────────────────────────────────
 
