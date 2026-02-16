@@ -65,36 +65,35 @@ Built on [mem0](https://github.com/mem0ai/mem0) for intelligent fact extraction 
 
 ## Quick Start
 
-### Local development (minimal setup)
-
 ```bash
-# Clone and install
 git clone https://github.com/fpytloun/mnemory.git
 cd mnemory
-pip install -e ".[all]"
-
-# Run with Chroma (local vector store) and filesystem artifacts
-export LLM_API_KEY="sk-your-openai-key"
-export VECTOR_BACKEND=chroma
-export CHROMA_PATH=./data/chroma
-export ARTIFACT_BACKEND=filesystem
-export ARTIFACT_PATH=./data/artifacts
-export HISTORY_DB_PATH=./data/history.db
-mnemory
+export OPENAI_API_KEY=sk-your-key
+docker-compose up -d
 ```
 
-The server starts at `http://localhost:8050` with the MCP endpoint at `http://localhost:8050/mcp`.
+The MCP endpoint is available at `http://localhost:8050/mcp`.
 
-### Docker
+### Alternative: Docker run
 
 ```bash
 docker run -d \
   -p 8050:8050 \
-  -e LLM_API_KEY=sk-your-key \
+  -e LLM_API_KEY=$OPENAI_API_KEY \
   -e VECTOR_BACKEND=chroma \
   -e ARTIFACT_BACKEND=filesystem \
   -v mnemory-data:/data \
   genunix/mnemory:latest
+```
+
+### Alternative: Local development
+
+```bash
+pip install -e ".[all]"
+export LLM_API_KEY=$OPENAI_API_KEY
+export VECTOR_BACKEND=chroma
+export ARTIFACT_BACKEND=filesystem
+mnemory
 ```
 
 ### Production (Qdrant + S3)
