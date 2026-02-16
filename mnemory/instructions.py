@@ -98,6 +98,16 @@ Examples:
   "Your name is Bob" → role="assistant", agent_id="self" (agent identity)
   "You researched X and concluded Y" → role="assistant", agent_id="self"
 
+### Sub-agents
+If the user asks you to create a separate agent identity (e.g., a
+persona with its own name and personality), use a sub-agent ID with
+your session agent as prefix: agent_id="<session>:<name>".
+For example, if your session agent is "openwebui", use
+agent_id="openwebui:bob" for a sub-agent named Bob.
+Sub-agents are fully independent — they have their own memories and
+do NOT inherit from the parent agent. The session agent can access
+and manage all its sub-agents' memories.
+
 ## ARTIFACTS (save_artifact, get_artifact)
 For detailed content too long for fast memory (research reports, analysis,
 code, data), save it as an artifact attached to a memory. The memory holds

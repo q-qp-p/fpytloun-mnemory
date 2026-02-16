@@ -577,6 +577,8 @@ class MemoryService:
         When session_agent_id is set, the memory must either:
         - Have no agent_id (shared memory) — accessible by all agents
         - Have agent_id == session_agent_id — own agent memory
+        - Have agent_id that is a sub-agent of session_agent_id
+          (e.g., memory agent_id="openwebui:bob", session="openwebui")
 
         Memories belonging to a different agent are blocked.
 
@@ -592,10 +594,13 @@ class MemoryService:
 
         mem_agent_id = mem.get("agent_id")
         if mem_agent_id and mem_agent_id != session_agent_id:
-            raise ValueError(
-                f"Cannot access memory '{memory_id}' — "
-                f"it belongs to agent '{mem_agent_id}'"
-            )
+            # Allow access to sub-agent memories (e.g., "openwebui:bob"
+            # is accessible from session "openwebui")
+            if not mem_agent_id.startswith(session_agent_id + ":"):
+                raise ValueError(
+                    f"Cannot access memory '{memory_id}' — "
+                    f"it belongs to agent '{mem_agent_id}'"
+                )
 
     # ── Update Memory ─────────────────────────────────────────────────
 

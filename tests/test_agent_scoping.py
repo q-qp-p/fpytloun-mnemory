@@ -617,3 +617,128 @@ class TestAddMemoriesTool:
         _, service = self._call(memories, infer=False)
         _, kwargs = service.add_memory.call_args
         assert kwargs["infer"] is False
+
+
+# ── Sub-agent support ─────────────────────────────────────────────────
+
+
+class TestSubAgentResolve:
+    """Test sub-agent prefix validation in _resolve_agent_id."""
+
+    def _resolve(self, param_agent_id, session_agent_id=None):
+        from mnemory.server import _resolve_agent_id, _session_agent_id
+
+        token = _session_agent_id.set(session_agent_id)
+        try:
+            return _resolve_agent_id(param_agent_id)
+        finally:
+            _session_agent_id.reset(token)
+
+    def test_sub_agent_allowed(self):
+        """Sub-agent with session prefix should be allowed."""
+        result = self._resolve("openwebui:bob", session_agent_id="openwebui")
+        assert result == "openwebui:bob"
+
+    def test_sub_agent_different_name(self):
+        """Different sub-agent names under same parent should work."""
+        assert (
+            self._resolve("openwebui:alice", session_agent_id="openwebui")
+            == "openwebui:alice"
+        )
+
+    def test_sub_agent_wrong_prefix_blocked(self):
+        """Sub-agent with different prefix should be blocked."""
+        with pytest.raises(ValueError, match="Cannot use agent_id"):
+            self._resolve("cursor:bob", session_agent_id="openwebui")
+
+    def test_sub_agent_partial_prefix_blocked(self):
+        """Partial prefix match should not be allowed (openwebui2:bob)."""
+        with pytest.raises(ValueError, match="Cannot use agent_id"):
+            self._resolve("openwebui2:bob", session_agent_id="openwebui")
+
+    def test_sub_agent_no_session_passthrough(self):
+        """Without session agent, sub-agent IDs pass through."""
+        result = self._resolve("openwebui:bob", session_agent_id=None)
+        assert result == "openwebui:bob"
+
+    def test_exact_match_still_works(self):
+        """Exact session match should still work alongside sub-agents."""
+        result = self._resolve("openwebui", session_agent_id="openwebui")
+        assert result == "openwebui"
+
+    def test_self_still_resolves_to_session(self):
+        """'self' should still resolve to session agent, not sub-agent."""
+        result = self._resolve("self", session_agent_id="openwebui")
+        assert result == "openwebui"
+
+    def test_none_still_returns_none(self):
+        """None should still return None (shared memory)."""
+        result = self._resolve(None, session_agent_id="openwebui")
+        assert result is None
+
+
+class TestSubAgentResolveForCore:
+    """Test sub-agent prefix validation in _resolve_agent_id_for_core."""
+
+    def _resolve(self, param_agent_id, session_agent_id=None):
+        from mnemory.server import _resolve_agent_id_for_core, _session_agent_id
+
+        token = _session_agent_id.set(session_agent_id)
+        try:
+            return _resolve_agent_id_for_core(param_agent_id)
+        finally:
+            _session_agent_id.reset(token)
+
+    def test_sub_agent_allowed(self):
+        """Sub-agent should be allowed in core memories resolution."""
+        result = self._resolve("openwebui:bob", session_agent_id="openwebui")
+        assert result == "openwebui:bob"
+
+    def test_sub_agent_wrong_prefix_blocked(self):
+        """Wrong prefix should be blocked."""
+        with pytest.raises(ValueError, match="Cannot use agent_id"):
+            self._resolve("cursor:bob", session_agent_id="openwebui")
+
+    def test_none_auto_injects_session(self):
+        """None should auto-inject session agent (not sub-agent)."""
+        result = self._resolve(None, session_agent_id="openwebui")
+        assert result == "openwebui"
+
+
+class TestSubAgentVerifyAccess:
+    """Test sub-agent access in verify_memory_access."""
+
+    @staticmethod
+    def _make_service(get_by_id_return=None):
+        service = object.__new__(MemoryService)
+        service.vector = MagicMock()
+        service.vector.get_by_id.return_value = get_by_id_return
+        service.artifact = MagicMock()
+        return service
+
+    def test_sub_agent_memory_accessible(self):
+        """Session agent should be able to access its sub-agent's memory."""
+        mem = {"id": "mem-1", "memory": "test", "agent_id": "openwebui:bob"}
+        service = self._make_service(get_by_id_return=mem)
+        # Should not raise
+        service.verify_memory_access("mem-1", session_agent_id="openwebui")
+
+    def test_other_sub_agent_memory_blocked(self):
+        """Sub-agent memory under different parent should be blocked."""
+        mem = {"id": "mem-1", "memory": "test", "agent_id": "cursor:bob"}
+        service = self._make_service(get_by_id_return=mem)
+        with pytest.raises(ValueError, match="Cannot access memory"):
+            service.verify_memory_access("mem-1", session_agent_id="openwebui")
+
+    def test_parent_memory_still_accessible(self):
+        """Parent agent's own memory should still be accessible."""
+        mem = {"id": "mem-1", "memory": "test", "agent_id": "openwebui"}
+        service = self._make_service(get_by_id_return=mem)
+        service.verify_memory_access("mem-1", session_agent_id="openwebui")
+
+    def test_partial_prefix_blocked(self):
+        """Partial prefix match should not grant access."""
+        mem = {"id": "mem-1", "memory": "test", "agent_id": "openwebui2:bob"}
+        service = self._make_service(get_by_id_return=mem)
+        with pytest.raises(ValueError, match="Cannot access memory"):
+            service.verify_memory_access("mem-1", session_agent_id="openwebui")

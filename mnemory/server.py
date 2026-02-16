@@ -98,6 +98,16 @@ def _resolve_user_id(param_user_id: str | None = None) -> str:
     )
 
 
+def _is_sub_agent(agent_id: str, session_agent_id: str) -> bool:
+    """Check if agent_id is a sub-agent of the session agent.
+
+    Sub-agents use a colon-separated prefix: if the session agent is
+    "openwebui", then "openwebui:bob" is a valid sub-agent. This allows
+    creating multiple independent agent identities under a single session.
+    """
+    return agent_id.startswith(session_agent_id + ":")
+
+
 def _resolve_agent_id(param_agent_id: str | None = None) -> str | None:
     """Resolve agent_id with session-level protection.
 
@@ -109,6 +119,7 @@ def _resolve_agent_id(param_agent_id: str | None = None) -> str | None:
     - param="self"  → returns session agent_id
     - param=None  → returns None (shared memory, no agent scope)
     - param=session value → returns session agent_id
+    - param="session:sub" → returns param (sub-agent allowed)
     - param=different value → raises ValueError (cross-agent blocked)
 
     When X-Agent-Id is NOT set:
@@ -128,6 +139,8 @@ def _resolve_agent_id(param_agent_id: str | None = None) -> str | None:
         return None  # LLM wants shared/no agent scope
     if param_agent_id == session_aid:
         return session_aid
+    if _is_sub_agent(param_agent_id, session_aid):
+        return param_agent_id
     raise ValueError(
         f"Cannot use agent_id '{param_agent_id}' — "
         f"session is bound to agent '{session_aid}'"
@@ -143,7 +156,7 @@ def _resolve_agent_id_for_core(
     when the LLM doesn't pass one, because get_core_memories always
     needs the agent_id to load agent identity and knowledge.
 
-    Supports "self" sentinel — same as _resolve_agent_id.
+    Supports "self" sentinel and sub-agents — same as _resolve_agent_id.
     """
     session_aid = _session_agent_id.get()
     if param_agent_id == "self":
@@ -156,6 +169,8 @@ def _resolve_agent_id_for_core(
         return session_aid  # Auto-inject
     if param_agent_id == session_aid:
         return session_aid
+    if _is_sub_agent(param_agent_id, session_aid):
+        return param_agent_id
     raise ValueError(
         f"Cannot use agent_id '{param_agent_id}' — "
         f"session is bound to agent '{session_aid}'"
