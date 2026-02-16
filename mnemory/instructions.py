@@ -18,13 +18,15 @@ and recent activity.
 When the user shares personal info, preferences, facts, decisions,
 project context, conclusions, or anything worth remembering:
 - Keep content concise (max 1000 chars). Store conclusions, not raw data.
-- Choose memory_type: preference, fact, episodic, procedural, or context.
-- Tag with categories from the PREDEFINED set (see CATEGORIES below).
-  Do NOT invent your own categories. Call list_categories if unsure.
-- Set importance: low/normal/high/critical. Critical memories get boosted
-  in search results.
-- Set pinned: true for memories that should always load at conversation
-  start (key facts, identity, core preferences).
+- Only "content" is required. All metadata fields (memory_type, categories,
+  importance, pinned) are OPTIONAL — the server auto-classifies them when
+  omitted. You can provide any combination; only missing fields are
+  auto-classified.
+- If you do set them: choose memory_type from preference, fact, episodic,
+  procedural, context. Tag with categories from the PREDEFINED set (see
+  CATEGORIES below). Set importance: low/normal/high/critical. Set pinned:
+  true for essential facts and identity.
+- Do NOT invent your own categories. Call list_categories if unsure.
 - For detailed content (research, analysis, logs), store a concise summary
   as the memory and attach the full content with save_artifact.
 

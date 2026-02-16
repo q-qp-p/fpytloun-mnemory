@@ -113,6 +113,9 @@ class ServerConfig:
     api_keys: dict[str, str] = field(
         default_factory=lambda: _parse_api_keys(_env("MCP_API_KEYS"))
     )
+    enable_delete_all: bool = field(
+        default_factory=lambda: _env_bool("ENABLE_DELETE_ALL", False)
+    )
 
 
 @dataclass
@@ -133,6 +136,12 @@ class MemoryConfig:
     )
     default_recent_hours: int = field(
         default_factory=lambda: _env_int("DEFAULT_RECENT_HOURS", 24)
+    )
+    auto_classify: bool = field(
+        default_factory=lambda: _env_bool("AUTO_CLASSIFY", True)
+    )
+    classify_cache_ttl: int = field(
+        default_factory=lambda: _env_int("CLASSIFY_CACHE_TTL", 300)
     )
 
 

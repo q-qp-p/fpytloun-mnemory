@@ -20,6 +20,7 @@ from mnemory.categories import (
     validate_importance,
     validate_memory_type,
 )
+from mnemory.classify import CategoryCache, classify_memory
 from mnemory.config import Config
 from mnemory.storage.artifact import ArtifactStore
 from mnemory.storage.vector import VectorStore
@@ -54,6 +55,9 @@ class MemoryService:
             config.artifact,
             max_artifact_size=config.memory.max_artifact_size,
         )
+        self._category_cache = CategoryCache(
+            ttl_seconds=config.memory.classify_cache_ttl,
+        )
 
     # ── Add Memory ────────────────────────────────────────────────────
 
@@ -63,15 +67,19 @@ class MemoryService:
         *,
         user_id: str,
         agent_id: str | None = None,
-        memory_type: str = "fact",
+        memory_type: str | None = None,
         categories: list[str] | None = None,
-        importance: str = "normal",
-        pinned: bool = False,
+        importance: str | None = None,
+        pinned: bool | None = None,
     ) -> dict:
         """Store a fast memory with metadata.
 
         Content is processed by mem0's LLM for fact extraction and
         deduplication. Max length is enforced.
+
+        When memory_type, categories, importance, or pinned are not provided
+        (None), they are auto-classified by an LLM call if AUTO_CLASSIFY is
+        enabled, or fall back to sensible defaults.
 
         Returns the mem0 add result with memory IDs.
         """
@@ -91,8 +99,48 @@ class MemoryService:
                 ),
             }
 
-        memory_type = validate_memory_type(memory_type)
-        importance = validate_importance(importance)
+        # Determine which fields need auto-classification
+        missing: set[str] = set()
+        if memory_type is None:
+            missing.add("memory_type")
+        if categories is None:
+            missing.add("categories")
+        if importance is None:
+            missing.add("importance")
+        if pinned is None:
+            missing.add("pinned")
+
+        if missing and self._config.memory.auto_classify:
+            available_cats = self._get_available_categories(user_id)
+            classified = classify_memory(
+                content,
+                missing_fields=missing,
+                llm_config=self._config.llm,
+                available_categories=available_cats,
+            )
+            if memory_type is None:
+                memory_type = classified.get("memory_type", "fact")
+            if categories is None:
+                categories = classified.get("categories", [])
+            if importance is None:
+                importance = classified.get("importance", "normal")
+            if pinned is None:
+                pinned = classified.get("pinned", False)
+        else:
+            # Defaults when auto_classify is off or all fields provided
+            if memory_type is None:
+                memory_type = "fact"
+            if categories is None:
+                categories = []
+            if importance is None:
+                importance = "normal"
+            if pinned is None:
+                pinned = False
+
+        # memory_type, importance, pinned are guaranteed non-None at this point
+        # (set by caller, classifier, or defaults above).
+        memory_type = validate_memory_type(memory_type)  # type: ignore[arg-type]
+        importance = validate_importance(importance)  # type: ignore[arg-type]
         if categories:
             categories = validate_categories(categories)
 
@@ -108,6 +156,11 @@ class MemoryService:
         result = self.vector.add(
             content, user_id=user_id, agent_id=agent_id, metadata=metadata
         )
+
+        # Invalidate category cache if new categories were added
+        if categories:
+            self._category_cache.invalidate(user_id)
+
         return result
 
     # ── Search Memories ───────────────────────────────────────────────
@@ -703,6 +756,33 @@ class MemoryService:
         return {"status": "deleted", "artifact_id": artifact_id, "memory_id": memory_id}
 
     # ── Private Helpers ───────────────────────────────────────────────
+
+    def _get_available_categories(self, user_id: str) -> list[str]:
+        """Get the list of available categories for auto-classification.
+
+        Returns predefined categories plus any dynamic project:* subcategories
+        found in the user's existing memories. Results are cached with TTL
+        to avoid querying the vector store on every add_memory call.
+        """
+        cached = self._category_cache.get(user_id)
+        if cached is not None:
+            return cached
+
+        # Start with predefined categories
+        categories = list(PREDEFINED_CATEGORIES.keys())
+
+        # Add dynamic subcategories from existing memories
+        try:
+            result = self.vector.get_all(user_id=user_id, limit=1000)
+            counts = count_categories(result.get("results", []))
+            for cat_name in sorted(counts.keys()):
+                if ":" in cat_name and cat_name not in categories:
+                    categories.append(cat_name)
+        except Exception:
+            logger.warning("Failed to fetch existing categories for classification")
+
+        self._category_cache.set(user_id, categories)
+        return categories
 
     def _get_artifacts_meta(self, user_id: str, memory_id: str) -> list[dict]:
         """Get artifact metadata list from a memory's vector store entry."""

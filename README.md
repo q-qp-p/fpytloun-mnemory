@@ -164,6 +164,7 @@ All configuration is via environment variables:
 | `MCP_PORT` | `8050` | Listen port |
 | `MCP_API_KEY` | | Single API key for authentication (empty = no auth) |
 | `MCP_API_KEYS` | | JSON dict mapping API keys to user IDs (see below) |
+| `ENABLE_DELETE_ALL` | `false` | Enable the `delete_all_memories` tool (destructive, disabled by default) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 #### Session-Level Identity (`MCP_API_KEYS`)
@@ -197,6 +198,8 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 | `MAX_ARTIFACT_SIZE` | `102400` | Max bytes per artifact (100KB) |
 | `MAX_CORE_CONTEXT_LENGTH` | `4000` | Max characters for get_core_memories response |
 | `DEFAULT_RECENT_HOURS` | `24` | Default hours for recent context in core memories |
+| `AUTO_CLASSIFY` | `true` | Auto-classify memory metadata (type, categories, importance, pinned) via LLM when not provided |
+| `CLASSIFY_CACHE_TTL` | `300` | TTL in seconds for the category cache used during auto-classification |
 
 ## Memory Model
 

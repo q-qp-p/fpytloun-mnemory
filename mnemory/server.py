@@ -175,10 +175,10 @@ mcp = FastMCP(
 def add_memory(
     content: str,
     user_id: str | None = None,
-    memory_type: str = "fact",
+    memory_type: str | None = None,
     categories: list[str] | None = None,
-    importance: str = "normal",
-    pinned: bool = False,
+    importance: str | None = None,
+    pinned: bool | None = None,
     agent_id: str | None = None,
 ) -> str:
     """Store a memory about the user or agent.
@@ -189,18 +189,26 @@ def add_memory(
     Content must be concise (max 1000 chars). For detailed content, store
     a summary here and attach the full content with save_artifact.
 
+    All metadata fields are OPTIONAL — if omitted, the server auto-classifies
+    them using an LLM. You can provide any combination of fields; only the
+    missing ones will be auto-classified.
+
     Args:
         content: The memory to store. Keep concise — conclusions, not raw data.
         user_id: User identifier. Optional if pre-configured via API key mapping.
         memory_type: One of: preference, fact, episodic, procedural, context.
+                     Optional — auto-classified if omitted.
         categories: Tags from the PREDEFINED set only. Do NOT invent categories.
                     Valid: personal, preferences, health, work, technical,
                     finance, home, vehicles, travel, entertainment, goals,
                     decisions, project. Use project:<name> for project-specific.
                     Call list_categories to see the full list.
+                    Optional — auto-classified if omitted.
         importance: low, normal, high, or critical. Affects search ranking.
+                    Optional — auto-classified if omitted.
         pinned: If true, this memory loads at every conversation start via
                 get_core_memories. Use for essential facts and identity.
+                Optional — auto-classified if omitted.
         agent_id: ONLY for memories specific to this agent (your identity,
                   personality, agent-specific knowledge). Do NOT set for user
                   facts, preferences, or context — those must be shared across
@@ -491,6 +499,7 @@ def delete_all_memories(user_id: str | None = None, agent_id: str | None = None)
     """Delete ALL memories for a user. Only use when explicitly requested.
 
     This is destructive and cannot be undone.
+    This tool is disabled by default. Set ENABLE_DELETE_ALL=true to enable.
 
     Args:
         user_id: User identifier. Optional if pre-configured via API key mapping.
@@ -759,53 +768,52 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if not has_auth:
             # No auth configured — still check identity headers
             self._set_identity_from_headers(request)
-            return await call_next(request)
-
-        # Extract token from Authorization: Bearer or X-API-Key header
-        token = self._extract_token(request)
-        if not token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-        # Try MCP_API_KEYS first (key -> user_id mapping)
-        mapped_user_id = None
-        if cfg.api_keys:
-            for key, uid in cfg.api_keys.items():
-                if hmac.compare_digest(token, key):
-                    # "*" means wildcard — auth OK but no user binding
-                    mapped_user_id = uid if uid != "*" else None
-                    break
-            else:
-                # Token not in api_keys — try legacy single key
-                if cfg.api_key and hmac.compare_digest(token, cfg.api_key):
-                    pass  # Auth OK, no user mapping
-                else:
-                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        elif cfg.api_key:
-            # Only legacy single key configured
-            if not hmac.compare_digest(token, cfg.api_key):
+        else:
+            # Extract token from Authorization: Bearer or X-API-Key header
+            token = self._extract_token(request)
+            if not token:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        # Set session identity
-        if mapped_user_id:
-            _session_user_id.set(mapped_user_id)
-        else:
-            # Fall back to X-User-Id header
-            header_uid = request.headers.get("x-user-id", "").strip()
-            if header_uid:
-                _session_user_id.set(header_uid)
+            # Try MCP_API_KEYS first (key -> user_id mapping)
+            mapped_user_id = None
+            if cfg.api_keys:
+                for key, uid in cfg.api_keys.items():
+                    if hmac.compare_digest(token, key):
+                        # "*" means wildcard — auth OK but no user binding
+                        mapped_user_id = uid if uid != "*" else None
+                        break
+                else:
+                    # Token not in api_keys — try legacy single key
+                    if cfg.api_key and hmac.compare_digest(token, cfg.api_key):
+                        pass  # Auth OK, no user mapping
+                    else:
+                        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            elif cfg.api_key:
+                # Only legacy single key configured
+                if not hmac.compare_digest(token, cfg.api_key):
+                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        # Agent ID from header
-        header_aid = request.headers.get("x-agent-id", "").strip()
-        if header_aid:
-            _session_agent_id.set(header_aid)
+            # Set session identity
+            if mapped_user_id:
+                _session_user_id.set(mapped_user_id)
+            else:
+                # Fall back to X-User-Id header
+                header_uid = request.headers.get("x-user-id", "").strip()
+                if header_uid:
+                    _session_user_id.set(header_uid)
 
-        response = await call_next(request)
+            # Agent ID from header
+            header_aid = request.headers.get("x-agent-id", "").strip()
+            if header_aid:
+                _session_agent_id.set(header_aid)
 
-        # Reset contextvars after request (defensive cleanup)
-        _session_user_id.set(None)
-        _session_agent_id.set(None)
-
-        return response
+        try:
+            return await call_next(request)
+        finally:
+            # Reset contextvars after request — ensures no identity leakage
+            # between requests, regardless of auth path taken.
+            _session_user_id.set(None)
+            _session_agent_id.set(None)
 
     def _extract_token(self, request: Request) -> str:
         """Extract API token from request headers."""
@@ -847,12 +855,25 @@ async def lifespan(app):
         if cfg.server.api_keys
         else ("api_key" if cfg.server.api_key else "disabled")
     )
+
+    # Remove delete_all_memories tool if disabled (default)
+    if not cfg.server.enable_delete_all:
+        try:
+            mcp.remove_tool("delete_all_memories")
+            logger.info(
+                "delete_all_memories tool disabled "
+                "(set ENABLE_DELETE_ALL=true to enable)"
+            )
+        except Exception:
+            pass  # Tool may not exist if already removed
+
     logger.info(
-        "mnemory starting (vector=%s, artifact=%s, port=%d, auth=%s)",
+        "mnemory starting (vector=%s, artifact=%s, port=%d, auth=%s, auto_classify=%s)",
         cfg.vector.backend,
         cfg.artifact.backend,
         cfg.server.port,
         auth_mode,
+        cfg.memory.auto_classify,
     )
     # Eagerly initialize the service so startup failures are caught early
     _get_service()
