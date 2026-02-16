@@ -7,6 +7,7 @@ infrastructure.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -82,6 +83,26 @@ class ArtifactConfig:
     )
 
 
+def _parse_api_keys(raw: str) -> dict[str, str]:
+    """Parse MCP_API_KEYS JSON into a dict mapping key -> user_id.
+
+    Format: {"api-key-1": "username", "api-key-2": "*"}
+    A value of "*" means the key authenticates but does not bind to a user_id.
+    """
+    if not raw:
+        return {}
+    try:
+        keys = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"MCP_API_KEYS is not valid JSON: {e}") from e
+    if not isinstance(keys, dict):
+        raise ValueError("MCP_API_KEYS must be a JSON object mapping key -> user_id")
+    for k, v in keys.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            raise ValueError("MCP_API_KEYS keys and values must be strings")
+    return keys
+
+
 @dataclass
 class ServerConfig:
     """MCP server configuration."""
@@ -89,6 +110,9 @@ class ServerConfig:
     host: str = field(default_factory=lambda: _env("MCP_HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: _env_int("MCP_PORT", 8050))
     api_key: str = field(default_factory=lambda: _env("MCP_API_KEY"))
+    api_keys: dict[str, str] = field(
+        default_factory=lambda: _parse_api_keys(_env("MCP_API_KEYS"))
+    )
 
 
 @dataclass

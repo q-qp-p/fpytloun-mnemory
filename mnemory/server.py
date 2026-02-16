@@ -6,12 +6,15 @@ Exposes 12 tools over Streamable HTTP for memory management:
 - list_categories
 - save_artifact, get_artifact, list_artifacts, delete_artifact
 
-Includes a /health endpoint and optional API key authentication.
+Includes a /health endpoint, optional API key authentication, and
+session-level identity resolution (user_id from API key mapping,
+agent_id from X-Agent-Id header).
 """
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import hmac
 import json
 import logging
@@ -39,6 +42,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mnemory")
 
+# ── Session Identity Context ──────────────────────────────────────────
+# Set by the auth middleware per-request, read by tool handlers via
+# _resolve_user_id / _resolve_agent_id helpers.
+
+_session_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "session_user_id", default=None
+)
+_session_agent_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "session_agent_id", default=None
+)
+
 # ── Configuration ─────────────────────────────────────────────────────
 # Lazy initialization: config and service are created on first access
 # to avoid import-time side effects (env var requirements, backend connections).
@@ -59,6 +73,40 @@ def _get_service():
     if _service is None:
         _service = MemoryService(_get_config())
     return _service
+
+
+# ── Identity Resolution ───────────────────────────────────────────────
+
+
+def _resolve_user_id(param_user_id: str | None = None) -> str:
+    """Resolve user_id from session context or tool parameter.
+
+    Priority:
+    1. API key mapping (set by middleware from MCP_API_KEYS, non-wildcard)
+    2. X-User-Id header (set by middleware)
+    3. Tool parameter (backward compat)
+    4. Error if none available
+    """
+    session_uid = _session_user_id.get()
+    if session_uid:
+        return session_uid
+    if param_user_id:
+        return param_user_id
+    raise ValueError(
+        "user_id is required — configure via API key mapping (MCP_API_KEYS), "
+        "X-User-Id header, or pass as tool parameter"
+    )
+
+
+def _resolve_agent_id(param_agent_id: str | None = None) -> str | None:
+    """Resolve agent_id from session context or tool parameter.
+
+    Priority:
+    1. X-Agent-Id header (set by middleware)
+    2. Tool parameter
+    """
+    session_aid = _session_agent_id.get()
+    return session_aid or param_agent_id
 
 
 # ── MCP Server ────────────────────────────────────────────────────────
@@ -84,7 +132,7 @@ mcp = FastMCP(
 @mcp.tool()
 def add_memory(
     content: str,
-    user_id: str,
+    user_id: str | None = None,
     memory_type: str = "fact",
     categories: list[str] | None = None,
     importance: str = "normal",
@@ -101,7 +149,7 @@ def add_memory(
 
     Args:
         content: The memory to store. Keep concise — conclusions, not raw data.
-        user_id: User identifier (required).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
         memory_type: One of: preference, fact, episodic, procedural, context.
         categories: Tags from the PREDEFINED set only. Do NOT invent categories.
                     Valid: personal, preferences, health, work, technical,
@@ -116,12 +164,15 @@ def add_memory(
                   facts, preferences, or context — those must be shared across
                   all agents. Memories with agent_id are INVISIBLE to other
                   agents. When in doubt, leave empty.
+                  Optional if pre-configured via X-Agent-Id header.
     """
     try:
+        uid = _resolve_user_id(user_id)
+        aid = _resolve_agent_id(agent_id)
         result = _get_service().add_memory(
             content,
-            user_id=user_id,
-            agent_id=agent_id,
+            user_id=uid,
+            agent_id=aid,
             memory_type=memory_type,
             categories=categories,
             importance=importance,
@@ -143,7 +194,7 @@ def add_memory(
 @mcp.tool()
 def search_memories(
     query: str,
-    user_id: str,
+    user_id: str | None = None,
     memory_type: str | None = None,
     categories: list[str] | None = None,
     limit: int = 10,
@@ -158,19 +209,22 @@ def search_memories(
 
     Args:
         query: What to search for (natural language).
-        user_id: User identifier (required).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
         memory_type: Filter by type (preference/fact/episodic/procedural/context).
         categories: Filter by categories. "project" matches all project:* entries.
         limit: Max results to return (default 10).
         agent_id: Only set to find YOUR agent-specific memories. Omit to
                   search shared user memories (the common case). Setting this
                   restricts results to memories stored with this agent_id only.
+                  Optional if pre-configured via X-Agent-Id header.
     """
     try:
+        uid = _resolve_user_id(user_id)
+        aid = _resolve_agent_id(agent_id)
         results = _get_service().search_memories(
             query,
-            user_id=user_id,
-            agent_id=agent_id,
+            user_id=uid,
+            agent_id=aid,
             memory_type=memory_type,
             categories=categories,
             limit=limit,
@@ -190,7 +244,7 @@ def search_memories(
 
 @mcp.tool()
 def get_core_memories(
-    user_id: str,
+    user_id: str | None = None,
     agent_id: str | None = None,
     recent_hours: int = 24,
 ) -> str:
@@ -206,15 +260,18 @@ def get_core_memories(
     IMPORTANT: Call this ONCE at the beginning of each new conversation.
 
     Args:
-        user_id: User identifier (required).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
         agent_id: Your agent identifier (if you have one). Loads agent-specific
                   identity and knowledge memories.
+                  Optional if pre-configured via X-Agent-Id header.
         recent_hours: How many hours back to include recent context (default 24).
     """
     try:
+        uid = _resolve_user_id(user_id)
+        aid = _resolve_agent_id(agent_id)
         return _get_service().get_core_memories(
-            user_id=user_id,
-            agent_id=agent_id,
+            user_id=uid,
+            agent_id=aid,
             recent_hours=recent_hours,
         )
     except ValueError as e:
@@ -231,7 +288,7 @@ def get_core_memories(
 
 @mcp.tool()
 def list_memories(
-    user_id: str,
+    user_id: str | None = None,
     memory_type: str | None = None,
     categories: list[str] | None = None,
     limit: int = 50,
@@ -243,16 +300,19 @@ def list_memories(
     update or delete, or browse by category/type.
 
     Args:
-        user_id: User identifier (required).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
         memory_type: Filter by type (preference/fact/episodic/procedural/context).
         categories: Filter by categories.
         limit: Max results (default 50).
         agent_id: Filter to agent-specific memories only.
+                  Optional if pre-configured via X-Agent-Id header.
     """
     try:
+        uid = _resolve_user_id(user_id)
+        aid = _resolve_agent_id(agent_id)
         results = _get_service().list_memories(
-            user_id=user_id,
-            agent_id=agent_id,
+            user_id=uid,
+            agent_id=aid,
             memory_type=memory_type,
             categories=categories,
             limit=limit,
@@ -315,7 +375,7 @@ def update_memory(
 
 
 @mcp.tool()
-def delete_memory(memory_id: str, user_id: str) -> str:
+def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     """Delete a specific memory and all its artifacts.
 
     Use when information is no longer relevant or the user explicitly
@@ -323,11 +383,14 @@ def delete_memory(memory_id: str, user_id: str) -> str:
 
     Args:
         memory_id: ID of the memory to delete.
-        user_id: User identifier (needed to locate artifacts).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
     """
     try:
-        result = _get_service().delete_memory(memory_id, user_id=user_id)
+        uid = _resolve_user_id(user_id)
+        result = _get_service().delete_memory(memory_id, user_id=uid)
         return json.dumps(result)
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
     except Exception:
         logger.exception("Error in delete_memory")
         return json.dumps(
@@ -339,18 +402,23 @@ def delete_memory(memory_id: str, user_id: str) -> str:
 
 
 @mcp.tool()
-def delete_all_memories(user_id: str, agent_id: str | None = None) -> str:
+def delete_all_memories(user_id: str | None = None, agent_id: str | None = None) -> str:
     """Delete ALL memories for a user. Only use when explicitly requested.
 
     This is destructive and cannot be undone.
 
     Args:
-        user_id: User identifier (required).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
         agent_id: If set, only delete memories for this agent scope.
+                  Optional if pre-configured via X-Agent-Id header.
     """
     try:
-        result = _get_service().delete_all_memories(user_id=user_id, agent_id=agent_id)
+        uid = _resolve_user_id(user_id)
+        aid = _resolve_agent_id(agent_id)
+        result = _get_service().delete_all_memories(user_id=uid, agent_id=aid)
         return json.dumps(result)
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
     except Exception:
         logger.exception("Error in delete_all_memories")
         return json.dumps(
@@ -362,7 +430,7 @@ def delete_all_memories(user_id: str, agent_id: str | None = None) -> str:
 
 
 @mcp.tool()
-def list_categories(user_id: str) -> str:
+def list_categories(user_id: str | None = None) -> str:
     """List all available memory categories with descriptions and counts.
 
     Shows predefined categories and any dynamic project:<name> categories.
@@ -371,10 +439,11 @@ def list_categories(user_id: str) -> str:
     project:<name> for project-specific scoping.
 
     Args:
-        user_id: User identifier (required).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
     """
     try:
-        result = _get_service().list_categories(user_id=user_id)
+        uid = _resolve_user_id(user_id)
+        result = _get_service().list_categories(user_id=uid)
         lines = []
         for cat in result["categories"]:
             count = cat["count"]
@@ -382,6 +451,8 @@ def list_categories(user_id: str) -> str:
             lines.append(f"  {cat['name']}{marker} — {cat['description']}")
         header = f"Categories ({result['total_memories']} total memories):"
         return header + "\n" + "\n".join(lines)
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
     except Exception:
         logger.exception("Error in list_categories")
         return json.dumps(
@@ -395,8 +466,8 @@ def list_categories(user_id: str) -> str:
 @mcp.tool()
 def save_artifact(
     memory_id: str,
-    user_id: str,
     content: str,
+    user_id: str | None = None,
     filename: str = "note.md",
     content_type: str = "text/markdown",
 ) -> str:
@@ -413,16 +484,17 @@ def save_artifact(
 
     Args:
         memory_id: ID of the parent fast memory.
-        user_id: User identifier (required).
         content: Text content or base64-encoded binary content.
+        user_id: User identifier. Optional if pre-configured via API key mapping.
         filename: Name for the artifact (default: note.md).
         content_type: MIME type (default: text/markdown). Use appropriate
                       type for binary content (image/png, application/pdf, etc.).
     """
     try:
+        uid = _resolve_user_id(user_id)
         result = _get_service().save_artifact(
             memory_id,
-            user_id=user_id,
+            user_id=uid,
             content=content,
             filename=filename,
             content_type=content_type,
@@ -444,7 +516,7 @@ def save_artifact(
 def get_artifact(
     memory_id: str,
     artifact_id: str,
-    user_id: str,
+    user_id: str | None = None,
     offset: int = 0,
     limit: int = 5000,
 ) -> str:
@@ -456,15 +528,16 @@ def get_artifact(
     Args:
         memory_id: ID of the parent fast memory.
         artifact_id: ID of the artifact to retrieve.
-        user_id: User identifier (required).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
         offset: Character offset for text, byte offset for binary (default 0).
         limit: Max characters/bytes to return (default 5000).
     """
     try:
+        uid = _resolve_user_id(user_id)
         result = _get_service().get_artifact(
             memory_id,
             artifact_id,
-            user_id=user_id,
+            user_id=uid,
             offset=offset,
             limit=limit,
         )
@@ -482,20 +555,23 @@ def get_artifact(
 
 
 @mcp.tool()
-def list_artifacts(memory_id: str, user_id: str) -> str:
+def list_artifacts(memory_id: str, user_id: str | None = None) -> str:
     """List all artifacts attached to a memory.
 
     Returns id, filename, content_type, size, and created_at for each.
 
     Args:
         memory_id: ID of the parent fast memory.
-        user_id: User identifier (required).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
     """
     try:
-        artifacts = _get_service().list_artifacts(memory_id, user_id=user_id)
+        uid = _resolve_user_id(user_id)
+        artifacts = _get_service().list_artifacts(memory_id, user_id=uid)
         if not artifacts:
             return json.dumps({"artifacts": [], "message": "No artifacts found."})
         return json.dumps({"artifacts": artifacts})
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
     except Exception:
         logger.exception("Error in list_artifacts")
         return json.dumps(
@@ -507,16 +583,19 @@ def list_artifacts(memory_id: str, user_id: str) -> str:
 
 
 @mcp.tool()
-def delete_artifact(memory_id: str, artifact_id: str, user_id: str) -> str:
+def delete_artifact(
+    memory_id: str, artifact_id: str, user_id: str | None = None
+) -> str:
     """Delete an artifact from a memory.
 
     Args:
         memory_id: ID of the parent fast memory.
         artifact_id: ID of the artifact to delete.
-        user_id: User identifier (required).
+        user_id: User identifier. Optional if pre-configured via API key mapping.
     """
     try:
-        result = _get_service().delete_artifact(memory_id, artifact_id, user_id=user_id)
+        uid = _resolve_user_id(user_id)
+        result = _get_service().delete_artifact(memory_id, artifact_id, user_id=uid)
         return json.dumps(result)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -571,32 +650,93 @@ def _format_memories(memories: list[dict]) -> str:
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
-    """Optional API key authentication middleware."""
+    """API key authentication and session identity middleware.
+
+    Authentication:
+    1. Check token against MCP_API_KEYS (JSON dict: key -> user_id)
+    2. Check token against MCP_API_KEY (single key, backward compat)
+    3. If neither is configured, auth is disabled
+    4. If configured but no match, return 401
+
+    Identity resolution (set as contextvars for tool handlers):
+    - user_id: from API key mapping (non-wildcard) or X-User-Id header
+    - agent_id: from X-Agent-Id header
+    """
 
     async def dispatch(self, request: Request, call_next):
         # Skip auth for health checks
         if request.url.path == "/health":
             return await call_next(request)
 
-        api_key = _get_config().server.api_key
-        if not api_key:
-            # No API key configured — auth disabled
+        cfg = _get_config().server
+        has_auth = bool(cfg.api_keys or cfg.api_key)
+
+        if not has_auth:
+            # No auth configured — still check identity headers
+            self._set_identity_from_headers(request)
             return await call_next(request)
 
-        # Check Authorization header (Bearer token) or X-API-Key header
-        auth_header = request.headers.get("authorization", "")
-        x_api_key = request.headers.get("x-api-key", "")
-
-        token = ""
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header[7:]
-        elif x_api_key:
-            token = x_api_key
-
-        if not hmac.compare_digest(token, api_key):
+        # Extract token from Authorization: Bearer or X-API-Key header
+        token = self._extract_token(request)
+        if not token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        return await call_next(request)
+        # Try MCP_API_KEYS first (key -> user_id mapping)
+        mapped_user_id = None
+        if cfg.api_keys:
+            for key, uid in cfg.api_keys.items():
+                if hmac.compare_digest(token, key):
+                    # "*" means wildcard — auth OK but no user binding
+                    mapped_user_id = uid if uid != "*" else None
+                    break
+            else:
+                # Token not in api_keys — try legacy single key
+                if cfg.api_key and hmac.compare_digest(token, cfg.api_key):
+                    pass  # Auth OK, no user mapping
+                else:
+                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        elif cfg.api_key:
+            # Only legacy single key configured
+            if not hmac.compare_digest(token, cfg.api_key):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Set session identity
+        if mapped_user_id:
+            _session_user_id.set(mapped_user_id)
+        else:
+            # Fall back to X-User-Id header
+            header_uid = request.headers.get("x-user-id", "").strip()
+            if header_uid:
+                _session_user_id.set(header_uid)
+
+        # Agent ID from header
+        header_aid = request.headers.get("x-agent-id", "").strip()
+        if header_aid:
+            _session_agent_id.set(header_aid)
+
+        response = await call_next(request)
+
+        # Reset contextvars after request (defensive cleanup)
+        _session_user_id.set(None)
+        _session_agent_id.set(None)
+
+        return response
+
+    def _extract_token(self, request: Request) -> str:
+        """Extract API token from request headers."""
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            return auth_header[7:]
+        return request.headers.get("x-api-key", "")
+
+    def _set_identity_from_headers(self, request: Request) -> None:
+        """Set session identity from HTTP headers (no-auth mode)."""
+        header_uid = request.headers.get("x-user-id", "").strip()
+        if header_uid:
+            _session_user_id.set(header_uid)
+        header_aid = request.headers.get("x-agent-id", "").strip()
+        if header_aid:
+            _session_agent_id.set(header_aid)
 
 
 async def health_check(request: Request) -> JSONResponse:
@@ -617,11 +757,17 @@ async def health_check(request: Request) -> JSONResponse:
 async def lifespan(app):
     """Application lifespan manager."""
     cfg = _get_config()
+    auth_mode = (
+        "api_keys"
+        if cfg.server.api_keys
+        else ("api_key" if cfg.server.api_key else "disabled")
+    )
     logger.info(
-        "mnemory starting (vector=%s, artifact=%s, port=%d)",
+        "mnemory starting (vector=%s, artifact=%s, port=%d, auth=%s)",
         cfg.vector.backend,
         cfg.artifact.backend,
         cfg.server.port,
+        auth_mode,
     )
     # Eagerly initialize the service so startup failures are caught early
     _get_service()

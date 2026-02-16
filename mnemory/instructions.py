@@ -77,8 +77,17 @@ Use project:<name> for project-scoped memories (e.g., project:myapp).
 If no predefined category fits, omit categories rather than making one up.
 Call list_categories to see the full list with descriptions and counts.
 
+## SESSION IDENTITY
+user_id and agent_id may be pre-configured at the connection level
+(via API key mapping and X-Agent-Id header). When pre-configured:
+- You do NOT need to pass user_id or agent_id to tool calls — they
+  are injected automatically from the session context.
+- If you do pass them, the session values take priority.
+- If you are unsure whether they are pre-configured, you can safely
+  omit them — the server will use session values or return an error
+  telling you to provide them.
+
 ## IMPORTANT
-- Always pass the correct user_id for the current user.
 - Do NOT set agent_id unless the memory is specific to you as an agent.
 - Do NOT invent categories — use only predefined ones or project:<name>.
 - When updating outdated information, use update_memory to correct it.

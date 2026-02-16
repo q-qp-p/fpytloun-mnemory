@@ -18,7 +18,8 @@ Built on [mem0](https://github.com/mem0ai/mem0) for intelligent fact extraction 
 - **Multi-user & multi-agent**: User isolation via `user_id`, agent-specific memories via `agent_id`
 - **Configurable backends**: Qdrant or Chroma for vectors, S3/MinIO or local filesystem for artifacts
 - **MCP native**: Streamable HTTP transport, works with Open WebUI (v0.6.31+), Claude Code, and any MCP client
-- **API key authentication**: Optional Bearer token or X-API-Key header auth
+- **Session-level identity**: API key → user_id mapping + X-Agent-Id header, so LLMs don't need to pass identity per tool call
+- **API key authentication**: Optional Bearer token or X-API-Key header auth, with multi-key support
 - **Health endpoint**: `/health` for Kubernetes probes
 
 ## Architecture
@@ -112,7 +113,7 @@ docker run -d \
   -e S3_ACCESS_KEY=admin \
   -e S3_SECRET_KEY=secret \
   -e S3_BUCKET=mnemory \
-  -e MCP_API_KEY=your-secret-api-key \
+  -e MCP_API_KEYS='{"your-api-key": "your-username"}' \
   -v mnemory-data:/data \
   genunix/mnemory:latest
 ```
@@ -161,8 +162,31 @@ All configuration is via environment variables:
 |---|---|---|
 | `MCP_HOST` | `0.0.0.0` | Listen host |
 | `MCP_PORT` | `8050` | Listen port |
-| `MCP_API_KEY` | | API key for authentication (empty = no auth) |
+| `MCP_API_KEY` | | Single API key for authentication (empty = no auth) |
+| `MCP_API_KEYS` | | JSON dict mapping API keys to user IDs (see below) |
 | `LOG_LEVEL` | `INFO` | Logging level |
+
+#### Session-Level Identity (`MCP_API_KEYS`)
+
+Map API keys to user IDs so the LLM doesn't need to pass `user_id` in every tool call:
+
+```bash
+MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
+```
+
+- `"key": "username"` — authenticates AND binds `user_id=username` to the session
+- `"key": "*"` — authenticates only (wildcard), `user_id` must come from `X-User-Id` header or tool parameter
+
+**Identity resolution priority (user_id):**
+1. API key mapping (non-wildcard) — most secure, cannot be overridden
+2. `X-User-Id` HTTP header — for wildcard keys or no-auth setups
+3. Tool parameter — backward compatible fallback
+
+**Agent ID** is set via the `X-Agent-Id` HTTP header per client connection:
+- Open WebUI: `X-Agent-Id: open-webui`
+- Claude Code: `X-Agent-Id: claude-code`
+
+`MCP_API_KEY` (single key) is kept for backward compatibility — it authenticates but does not bind to a user. If both `MCP_API_KEYS` and `MCP_API_KEY` are set, `MCP_API_KEYS` is checked first, then `MCP_API_KEY` as fallback.
 
 ### Memory Behavior
 
@@ -235,8 +259,8 @@ Memories with `pinned: true` are loaded at every conversation start via `get_cor
 
 ### Scoping
 
-- `user_id` (required): Every memory belongs to a user. Shared across all agents.
-- `agent_id` (optional): Set only for agent-specific memories (identity, personality, agent-learned knowledge). Different agents see different agent memories but share user memories.
+- `user_id` (required): Every memory belongs to a user. Shared across all agents. Can be set at session level via API key mapping (`MCP_API_KEYS`) or `X-User-Id` header, eliminating the need to pass it per tool call.
+- `agent_id` (optional): Set only for agent-specific memories (identity, personality, agent-learned knowledge). Different agents see different agent memories but share user memories. Can be set at session level via `X-Agent-Id` header.
 
 ## MCP Tools
 
@@ -268,8 +292,11 @@ Memories with `pinned: true` are loaded at every conversation start via `get_cor
 
 1. Go to **Admin Settings > External Tools > Add Server**
 2. Type: **MCP (Streamable HTTP)**
-3. URL: `http://mnemory.mnemory.svc.cluster.local:8050/mcp` (in-cluster) or `https://mem.example.com/mcp` (via ingress)
-4. Enable tools on models: **Workspace > Models > Advanced Params > Function Calling: Native**
+3. URL: `http://mnemory:8050/mcp` (same namespace) or `https://mem.example.com/mcp` (via ingress)
+4. Set headers: `Authorization: Bearer your-api-key` and `X-Agent-Id: open-webui`
+5. Enable tools on models: **Workspace > Models > Advanced Params > Function Calling: Native**
+
+With `MCP_API_KEYS` configured, Open WebUI doesn't need to pass `user_id` in tool calls — it's resolved from the API key.
 
 ### Claude Code / Opencode
 
@@ -282,16 +309,19 @@ Add to your MCP configuration:
       "type": "streamable-http",
       "url": "https://mem.example.com/mcp",
       "headers": {
-        "Authorization": "Bearer your-api-key"
+        "Authorization": "Bearer your-api-key",
+        "X-Agent-Id": "claude-code"
       }
     }
   }
 }
 ```
 
+With `MCP_API_KEYS` configured, the LLM doesn't need to pass `user_id` or `agent_id` — both are resolved from the API key mapping and `X-Agent-Id` header.
+
 ### Cursor / VS Code
 
-Add to MCP settings with the Streamable HTTP URL.
+Add to MCP settings with the Streamable HTTP URL. Set `Authorization` and `X-Agent-Id` headers.
 
 ## How It Works
 
