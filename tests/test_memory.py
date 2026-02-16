@@ -386,3 +386,88 @@ class TestBatchAdd:
         result = service.add_memory(content="x" * 1001, user_id="filip", infer=False)
         assert result.get("error") is True
         assert "too long" in result["message"].lower()
+
+
+# ── Classification error propagation ───────────────────────────────────
+
+
+class TestClassificationErrorPropagation:
+    """Test that ClassificationError from classify_memory is propagated as error dict."""
+
+    @staticmethod
+    def _make_service_with_auto_classify():
+        """Create a MemoryService with auto_classify enabled."""
+        mock_config = MagicMock()
+        mock_config.memory.max_memory_length = 1000
+        mock_config.memory.max_artifact_size = 102400
+        mock_config.memory.max_core_context_length = 4000
+        mock_config.memory.default_recent_hours = 24
+        mock_config.memory.classify_cache_ttl = 300
+        mock_config.memory.core_memories_cache_ttl = 300
+        mock_config.memory.auto_classify = True  # Enable auto-classification
+        mock_config.llm = MagicMock()
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        service.vector.add.return_value = {"results": [{"id": "mem-1", "event": "ADD"}]}
+        service.vector.get_all.return_value = {"results": []}
+        return service
+
+    @patch("mnemory.memory.classify_memory")
+    def test_classification_error_returns_error_dict(self, mock_classify):
+        """ClassificationError should be caught and returned as error dict."""
+        from mnemory.classify import ClassificationError
+
+        mock_classify.side_effect = ClassificationError(
+            "Auto-classification failed after retry. Please provide metadata explicitly."
+        )
+
+        service = self._make_service_with_auto_classify()
+
+        # Call add_memory without metadata (triggers classification)
+        result = service.add_memory(content="test content", user_id="filip")
+
+        assert result.get("error") is True
+        assert "Auto-classification failed" in result["message"]
+        assert "metadata explicitly" in result["message"]
+
+    @patch("mnemory.memory.classify_memory")
+    def test_classification_success_proceeds_normally(self, mock_classify):
+        """Successful classification should proceed to store memory."""
+        mock_classify.return_value = {
+            "memory_type": "fact",
+            "categories": ["work"],
+            "importance": "normal",
+            "pinned": False,
+        }
+
+        service = self._make_service_with_auto_classify()
+
+        result = service.add_memory(content="test content", user_id="filip")
+
+        # Should not be an error
+        assert result.get("error") is not True
+        # Vector store should have been called
+        service.vector.add.assert_called_once()
+
+    @patch("mnemory.memory.classify_memory")
+    def test_explicit_metadata_skips_classification(self, mock_classify):
+        """Providing all metadata should skip classification entirely."""
+        service = self._make_service_with_auto_classify()
+
+        result = service.add_memory(
+            content="test content",
+            user_id="filip",
+            memory_type="fact",
+            categories=["work"],
+            importance="normal",
+            pinned=False,
+        )
+
+        # Classification should not be called
+        mock_classify.assert_not_called()
+        # Should not be an error
+        assert result.get("error") is not True
+        service.vector.add.assert_called_once()

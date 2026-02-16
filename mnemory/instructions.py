@@ -35,6 +35,9 @@ project context, conclusions, or anything worth remembering:
   server to extract facts and detect duplicates/contradictions.
 - Use add_memories (batch) when storing multiple memories at once — it
   processes them in a single call, avoiding round-trip latency per item.
+- If add_memory returns an error about auto-classification failure, retry
+  with all metadata fields explicitly set: memory_type, categories,
+  importance, pinned. This is rare but can happen with some LLM providers.
 
 ## RECALLING MEMORIES (search_memories)
 Before answering questions that might benefit from personal context,

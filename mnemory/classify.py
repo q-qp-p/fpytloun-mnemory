@@ -28,6 +28,13 @@ from mnemory.config import LLMConfig
 
 logger = logging.getLogger(__name__)
 
+
+class ClassificationError(Exception):
+    """Raised when auto-classification fails after retry."""
+
+    pass
+
+
 # Defaults used when classification fails or is disabled.
 # NOTE: "categories" uses a tuple to prevent accidental mutation of the
 # shared default. _defaults_for() converts it to a fresh list for callers.
@@ -94,6 +101,47 @@ def _build_system_prompt(
     return "\n\n".join(parts)
 
 
+def _build_strict_retry_prompt(
+    missing_fields: set[str],
+    available_categories: list[str],
+) -> str:
+    """Build a stricter prompt for retry after first classification failure."""
+    parts = [
+        "IMPORTANT: Your previous response was invalid or empty. "
+        "You MUST return valid JSON this time.",
+        "Return a JSON object with EXACTLY these fields:",
+    ]
+
+    field_instructions = []
+    if "memory_type" in missing_fields:
+        types = ", ".join(VALID_MEMORY_TYPES)
+        field_instructions.append(
+            f'"memory_type": REQUIRED. Must be exactly one of: {types}'
+        )
+    if "categories" in missing_fields:
+        cats = ", ".join(available_categories[:15])  # Limit to avoid huge prompt
+        if len(available_categories) > 15:
+            cats += ", ..."
+        field_instructions.append(
+            f'"categories": REQUIRED. Array of strings from: [{cats}]. '
+            "Use [] if none apply."
+        )
+    if "importance" in missing_fields:
+        levels = ", ".join(IMPORTANCE_WEIGHTS.keys())
+        field_instructions.append(
+            f'"importance": REQUIRED. Must be exactly one of: {levels}'
+        )
+    if "pinned" in missing_fields:
+        field_instructions.append('"pinned": REQUIRED. Must be true or false')
+
+    parts.append("\n".join(f"- {fi}" for fi in field_instructions))
+    parts.append(
+        "Return ONLY the JSON object. No markdown code blocks, no explanation, "
+        "no additional text. Just the raw JSON."
+    )
+    return "\n\n".join(parts)
+
+
 # Cached OpenAI client — avoids creating a new HTTP connection pool per
 # classification call. Keyed by (base_url, api_key) to handle config changes.
 _openai_client: OpenAI | None = None
@@ -122,9 +170,8 @@ def classify_memory(
 ) -> dict[str, Any]:
     """Classify memory metadata using an LLM call.
 
-    Makes a single LLM call to classify all missing fields at once.
-    Returns a dict with only the requested fields, validated against
-    the known value sets. Falls back to defaults on any failure.
+    Makes up to 2 LLM calls (retry on first failure with stricter prompt).
+    Raises ClassificationError if both attempts fail.
 
     Args:
         content: The memory content to classify.
@@ -133,6 +180,12 @@ def classify_memory(
         llm_config: LLM configuration (model, base_url, api_key).
         available_categories: List of valid category names including
                               dynamic project:* subcategories.
+
+    Returns:
+        Dict with classified values for the requested fields.
+
+    Raises:
+        ClassificationError: If classification fails after retry.
     """
     if not missing_fields:
         return {}
@@ -140,8 +193,53 @@ def classify_memory(
     if available_categories is None:
         available_categories = list(PREDEFINED_CATEGORIES.keys())
 
-    system_prompt = _build_system_prompt(missing_fields, available_categories)
+    # First attempt with standard prompt
+    result = _attempt_classification(
+        content,
+        missing_fields,
+        llm_config,
+        available_categories,
+        system_prompt=_build_system_prompt(missing_fields, available_categories),
+        attempt=1,
+    )
+    if result is not None:
+        return result
 
+    # Retry with stricter prompt
+    logger.warning(
+        "Classification failed on first attempt, retrying with stricter prompt"
+    )
+    result = _attempt_classification(
+        content,
+        missing_fields,
+        llm_config,
+        available_categories,
+        system_prompt=_build_strict_retry_prompt(missing_fields, available_categories),
+        attempt=2,
+    )
+    if result is not None:
+        return result
+
+    # Both attempts failed
+    logger.error("Classification failed after retry")
+    raise ClassificationError(
+        "Auto-classification failed after retry. Please provide metadata explicitly: "
+        "memory_type (preference/fact/episodic/procedural/context), "
+        "categories (list from predefined set or project:<name>), "
+        "importance (low/normal/high/critical), "
+        "pinned (true/false)."
+    )
+
+
+def _attempt_classification(
+    content: str,
+    missing_fields: set[str],
+    llm_config: LLMConfig,
+    available_categories: list[str],
+    system_prompt: str,
+    attempt: int,
+) -> dict[str, Any] | None:
+    """Single classification attempt. Returns None on failure."""
     try:
         client = _get_openai_client(llm_config)
         response = client.chat.completions.create(
@@ -157,15 +255,20 @@ def classify_memory(
 
         raw = response.choices[0].message.content
         if not raw:
-            logger.warning("Empty classification response, using defaults")
-            return _defaults_for(missing_fields)
+            logger.warning("Empty classification response (attempt %d)", attempt)
+            return None
 
         result = json.loads(raw)
         return _validate_classification(result, missing_fields)
 
+    except json.JSONDecodeError as e:
+        logger.warning(
+            "Invalid JSON in classification response (attempt %d): %s", attempt, e
+        )
+        return None
     except Exception:
-        logger.exception("Classification LLM call failed, using defaults")
-        return _defaults_for(missing_fields)
+        logger.exception("Classification LLM call failed (attempt %d)", attempt)
+        return None
 
 
 def _validate_classification(

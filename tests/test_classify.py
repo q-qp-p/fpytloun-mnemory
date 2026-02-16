@@ -5,8 +5,11 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from mnemory.cache import TTLCache
 from mnemory.classify import (
+    ClassificationError,
     _build_system_prompt,
     _validate_classification,
     classify_memory,
@@ -191,47 +194,53 @@ class TestClassifyMemory:
         assert result["pinned"] is False
 
     @patch("mnemory.classify._get_openai_client")
-    def test_llm_failure_returns_defaults(self, mock_get_client):
+    def test_llm_failure_raises_after_retry(self, mock_get_client):
+        """Both attempts raise exception, raises ClassificationError."""
         mock_get_client.side_effect = Exception("Connection refused")
 
-        result = classify_memory(
-            "test content",
-            missing_fields={"memory_type", "importance"},
-            llm_config=self._make_llm_config(),
-        )
-        assert result["memory_type"] == "fact"
-        assert result["importance"] == "normal"
+        with pytest.raises(ClassificationError) as exc_info:
+            classify_memory(
+                "test content",
+                missing_fields={"memory_type", "importance"},
+                llm_config=self._make_llm_config(),
+            )
+        assert "Auto-classification failed" in str(exc_info.value)
 
     @patch("mnemory.classify._get_openai_client")
-    def test_empty_response_returns_defaults(self, mock_get_client):
+    def test_empty_response_raises_after_retry(self, mock_get_client):
+        """Both attempts return empty, raises ClassificationError."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content=""))]
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
         mock_get_client.return_value = mock_client
 
-        result = classify_memory(
-            "test content",
-            missing_fields={"memory_type", "categories"},
-            llm_config=self._make_llm_config(),
-        )
-        assert result["memory_type"] == "fact"
-        assert result["categories"] == []
+        with pytest.raises(ClassificationError) as exc_info:
+            classify_memory(
+                "test content",
+                missing_fields={"memory_type", "categories"},
+                llm_config=self._make_llm_config(),
+            )
+        assert "Auto-classification failed" in str(exc_info.value)
+        assert mock_client.chat.completions.create.call_count == 2
 
     @patch("mnemory.classify._get_openai_client")
-    def test_invalid_json_returns_defaults(self, mock_get_client):
+    def test_invalid_json_raises_after_retry(self, mock_get_client):
+        """Both attempts return invalid JSON, raises ClassificationError."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="not valid json"))]
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
         mock_get_client.return_value = mock_client
 
-        result = classify_memory(
-            "test content",
-            missing_fields={"memory_type"},
-            llm_config=self._make_llm_config(),
-        )
-        assert result["memory_type"] == "fact"
+        with pytest.raises(ClassificationError) as exc_info:
+            classify_memory(
+                "test content",
+                missing_fields={"memory_type"},
+                llm_config=self._make_llm_config(),
+            )
+        assert "Auto-classification failed" in str(exc_info.value)
+        assert mock_client.chat.completions.create.call_count == 2
 
     @patch("mnemory.classify._get_openai_client")
     def test_available_categories_passed_to_prompt(self, mock_get_client):
@@ -256,6 +265,149 @@ class TestClassifyMemory:
         messages = call_args[1]["messages"]
         system_msg = messages[0]["content"]
         assert "project:myapp" in system_msg
+
+
+# ── Classification retry behavior ──────────────────────────────────────
+
+
+class TestClassificationRetry:
+    """Tests for retry logic and ClassificationError."""
+
+    @staticmethod
+    def _make_llm_config():
+        return LLMConfig(
+            model="test-model",
+            base_url="http://localhost:1234/v1",
+            api_key="test-key",
+        )
+
+    @patch("mnemory.classify._get_openai_client")
+    def test_retry_on_empty_response_succeeds(self, mock_get_client):
+        """First call returns empty, retry succeeds."""
+        mock_client = MagicMock()
+        # First call: empty response
+        empty_response = MagicMock()
+        empty_response.choices = [MagicMock(message=MagicMock(content=""))]
+        # Second call: valid response
+        valid_response = MagicMock()
+        valid_response.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"memory_type": "fact", "importance": "normal"}'
+                )
+            )
+        ]
+        mock_client.chat.completions.create.side_effect = [
+            empty_response,
+            valid_response,
+        ]
+        mock_get_client.return_value = mock_client
+
+        result = classify_memory(
+            "test content",
+            missing_fields={"memory_type", "importance"},
+            llm_config=self._make_llm_config(),
+        )
+        assert result["memory_type"] == "fact"
+        assert result["importance"] == "normal"
+        assert mock_client.chat.completions.create.call_count == 2
+
+    @patch("mnemory.classify._get_openai_client")
+    def test_retry_on_invalid_json_succeeds(self, mock_get_client):
+        """First call returns invalid JSON, retry succeeds."""
+        mock_client = MagicMock()
+        invalid_response = MagicMock()
+        invalid_response.choices = [MagicMock(message=MagicMock(content="not json"))]
+        valid_response = MagicMock()
+        valid_response.choices = [
+            MagicMock(message=MagicMock(content='{"memory_type": "preference"}'))
+        ]
+        mock_client.chat.completions.create.side_effect = [
+            invalid_response,
+            valid_response,
+        ]
+        mock_get_client.return_value = mock_client
+
+        result = classify_memory(
+            "test content",
+            missing_fields={"memory_type"},
+            llm_config=self._make_llm_config(),
+        )
+        assert result["memory_type"] == "preference"
+        assert mock_client.chat.completions.create.call_count == 2
+
+    @patch("mnemory.classify._get_openai_client")
+    def test_retry_on_exception_succeeds(self, mock_get_client):
+        """First call raises exception, retry succeeds."""
+        mock_client = MagicMock()
+        valid_response = MagicMock()
+        valid_response.choices = [
+            MagicMock(message=MagicMock(content='{"memory_type": "episodic"}'))
+        ]
+        # First call raises, second succeeds
+        mock_client.chat.completions.create.side_effect = [
+            Exception("Temporary API error"),
+            valid_response,
+        ]
+        mock_get_client.return_value = mock_client
+
+        result = classify_memory(
+            "test content",
+            missing_fields={"memory_type"},
+            llm_config=self._make_llm_config(),
+        )
+        assert result["memory_type"] == "episodic"
+        assert mock_client.chat.completions.create.call_count == 2
+
+    @patch("mnemory.classify._get_openai_client")
+    def test_stricter_prompt_used_on_retry(self, mock_get_client):
+        """Verify retry uses stricter prompt with 'invalid' or 'MUST'."""
+        mock_client = MagicMock()
+        empty_response = MagicMock()
+        empty_response.choices = [MagicMock(message=MagicMock(content=""))]
+        valid_response = MagicMock()
+        valid_response.choices = [
+            MagicMock(message=MagicMock(content='{"memory_type": "fact"}'))
+        ]
+        mock_client.chat.completions.create.side_effect = [
+            empty_response,
+            valid_response,
+        ]
+        mock_get_client.return_value = mock_client
+
+        classify_memory(
+            "test content",
+            missing_fields={"memory_type"},
+            llm_config=self._make_llm_config(),
+        )
+
+        calls = mock_client.chat.completions.create.call_args_list
+        first_prompt = calls[0][1]["messages"][0]["content"]
+        second_prompt = calls[1][1]["messages"][0]["content"]
+        # First prompt should NOT mention "invalid" or be overly strict
+        assert "invalid" not in first_prompt.lower()
+        # Stricter prompt should mention "invalid" or "MUST"
+        assert "invalid" in second_prompt.lower() or "MUST" in second_prompt
+
+    @patch("mnemory.classify._get_openai_client")
+    def test_error_message_includes_field_guidance(self, mock_get_client):
+        """ClassificationError message should guide user on required fields."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = Exception("API error")
+        mock_get_client.return_value = mock_client
+
+        with pytest.raises(ClassificationError) as exc_info:
+            classify_memory(
+                "test content",
+                missing_fields={"memory_type", "categories", "importance", "pinned"},
+                llm_config=self._make_llm_config(),
+            )
+
+        error_msg = str(exc_info.value)
+        assert "memory_type" in error_msg
+        assert "categories" in error_msg
+        assert "importance" in error_msg
+        assert "pinned" in error_msg
 
 
 # ── TTLCache (category usage) ──────────────────────────────────────────

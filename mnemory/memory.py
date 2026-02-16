@@ -21,7 +21,7 @@ from mnemory.categories import (
     validate_importance,
     validate_memory_type,
 )
-from mnemory.classify import classify_memory
+from mnemory.classify import ClassificationError, classify_memory
 from mnemory.config import Config
 from mnemory.storage.artifact import ArtifactStore
 from mnemory.storage.vector import VectorStore
@@ -118,12 +118,15 @@ class MemoryService:
 
         if missing and self._config.memory.auto_classify:
             available_cats = self._get_available_categories(user_id)
-            classified = classify_memory(
-                content,
-                missing_fields=missing,
-                llm_config=self._config.llm,
-                available_categories=available_cats,
-            )
+            try:
+                classified = classify_memory(
+                    content,
+                    missing_fields=missing,
+                    llm_config=self._config.llm,
+                    available_categories=available_cats,
+                )
+            except ClassificationError as e:
+                return {"error": True, "message": str(e)}
             if memory_type is None:
                 memory_type = classified.get("memory_type", "fact")
             if categories is None:
