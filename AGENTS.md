@@ -14,7 +14,7 @@
 
 ```
 mnemory/
-├── server.py              # MCP server entry point, 12 tool definitions, health endpoint, auth middleware
+├── server.py              # MCP server entry point, 13 tool definitions, health endpoint, auth middleware
 ├── config.py              # Configuration from environment variables (dataclasses)
 ├── categories.py          # Predefined category registry, validation, matching logic
 ├── memory.py              # Business logic layer (orchestrates vector + artifact stores)
@@ -128,6 +128,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside mem0's 
 | `categories` | list[str] | Category tags |
 | `importance` | str | low, normal, high, critical |
 | `pinned` | bool | Whether to include in core memories |
+| `role` | str | "user" (default) or "assistant" — who the memory is about |
 | `artifacts` | list[dict] | Artifact metadata (id, filename, content_type, size, created_at) |
 | `created_at_utc` | str | Our own UTC timestamp (mem0 uses US/Pacific) |
 
@@ -161,3 +162,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside mem0's 
 - **Chroma fallback**: When using Chroma backend, advanced features (date filtering, metadata-only updates) fall back to less efficient implementations (get_all + post-filter, full rewrite). Qdrant is recommended for production.
 
 - **Artifact metadata**: Artifact references (id, filename, size, etc.) are stored in the fast memory's metadata in the vector store. The actual content is in S3/filesystem. Deleting a memory should also delete its artifacts.
+
+- **Role parameter**: The `role` parameter on `add_memory` controls which mem0 extraction prompt is used. When `role="assistant"`, content is passed to mem0 as `[{"role": "assistant", "content": ...}]`, triggering `AGENT_MEMORY_EXTRACTION_PROMPT`. When `role="user"` (default), content is passed as a plain string (wrapped as user role by mem0), triggering `USER_MEMORY_EXTRACTION_PROMPT`. This works with mem0's built-in `_should_use_agent_memory_extraction()` check. The `role` is also stored in metadata for filtering in search/list and for section organization in `get_core_memories`. Requires `agent_id` when set to `"assistant"`.
+
+- **Sub-agents**: Agent IDs support colon-separated namespacing (e.g., `openwebui:bob`). The session validation in `_resolve_agent_id()` allows any `agent_id` that starts with `session_agent_id + ":"`. Sub-agents are fully independent — no memory inheritance from the parent. The `_is_sub_agent()` helper in `server.py` encapsulates the prefix check. `verify_memory_access()` in `memory.py` also allows access to sub-agent memories from the parent session.

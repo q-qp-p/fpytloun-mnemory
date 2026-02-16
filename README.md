@@ -261,10 +261,43 @@ Memories with `pinned: true` are loaded at every conversation start via `get_cor
 - Agent identity ("Your name is Bob", "You speak casually")
 - Agent knowledge ("You researched X and concluded Y")
 
+### Role
+
+The `role` parameter on `add_memory` controls who the memory is about:
+
+| Role | Description | Example |
+|---|---|---|
+| `user` (default) | Facts about the user | "User lives in Prague", "User prefers dark mode" |
+| `assistant` | Facts about the agent itself | "Your name is Bob", "You speak casually" |
+
+When `role="assistant"`, the server passes content to mem0 as an assistant-role message, triggering mem0's agent-specific fact extraction prompt. When `role="user"` (default), user fact extraction is used. The `role` is stored in metadata and can be used as a filter in `search_memories` and `list_memories`.
+
+`get_core_memories` uses `role` to organize agent-scoped memories into sections:
+- **Agent Identity**: pinned, `role=assistant`, fact/preference type
+- **Agent Knowledge**: pinned, `role=assistant`, other types
+- **Agent Instructions**: pinned, `role=user`, agent-scoped (user preferences specific to this agent)
+
 ### Scoping
 
 - `user_id` (required): Every memory belongs to a user. Shared across all agents. Can be set at session level via API key mapping (`MCP_API_KEYS`) or `X-User-Id` header, eliminating the need to pass it per tool call.
-- `agent_id` (optional): Set only for agent-specific memories (identity, personality, agent-learned knowledge). Different agents see different agent memories but share user memories. Can be set at session level via `X-Agent-Id` header.
+- `agent_id` (optional): Set for agent-scoped memories. Two use cases:
+  - **Agent identity** (`role="assistant"`): The agent's name, personality, capabilities, knowledge.
+  - **Agent-scoped user preferences** (`role="user"`): User preferences that apply only to this agent (e.g., "User wants me to create commit messages").
+  
+  Different agents see different agent memories but share user memories. Can be set at session level via `X-Agent-Id` header.
+
+#### Sub-agents
+
+Sub-agents allow creating multiple independent agent identities under a single session. Use a colon-separated prefix matching the session's `X-Agent-Id`:
+
+```
+X-Agent-Id: openwebui          ← session agent
+agent_id: openwebui:bob        ← sub-agent "bob" (allowed)
+agent_id: openwebui:alice      ← sub-agent "alice" (allowed)
+agent_id: cursor:foo           ← different parent (blocked)
+```
+
+Sub-agents are fully independent — they have their own memories and do NOT inherit from the parent agent. The session agent can access and manage all its sub-agents' memories.
 
 ## MCP Tools
 
@@ -272,9 +305,9 @@ Memories with `pinned: true` are loaded at every conversation start via `get_cor
 
 | Tool | Description |
 |---|---|
-| `add_memory` | Store a memory with optional metadata and `infer` flag |
+| `add_memory` | Store a memory with optional metadata, `infer` flag, and `role` |
 | `add_memories` | Batch-add multiple memories in a single call |
-| `search_memories` | Semantic search with type/category filters, importance reranking |
+| `search_memories` | Semantic search with type/category/role filters, importance reranking |
 | `get_core_memories` | Load pinned + recent context at conversation start |
 | `list_memories` | List all/filtered memories |
 | `update_memory` | Update content or metadata of existing memory |
@@ -366,7 +399,10 @@ With `infer=false`, steps 2-3 are skipped — the content is embedded and stored
 ### Core Memories
 
 1. At conversation start, LLM calls `get_core_memories(user_id="filip", agent_id="bob")`
-2. Fetches all pinned memories for agent "bob" (identity, knowledge)
+2. Fetches all pinned memories for agent "bob", organized by `role`:
+   - **Agent Identity** (`role=assistant`, fact/preference): name, personality
+   - **Agent Knowledge** (`role=assistant`, other types): researched conclusions
+   - **Agent Instructions** (`role=user`): user preferences specific to this agent
 3. Fetches all pinned user memories (facts, preferences) — shared across agents
 4. Fetches recent context memories from last 24h
 5. Returns structured text injected into conversation context
