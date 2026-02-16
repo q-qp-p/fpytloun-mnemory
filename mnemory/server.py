@@ -95,7 +95,6 @@ def add_memory(
 
     Call this whenever the user shares personal information, preferences,
     facts, decisions, project context, or anything worth remembering.
-    For agent-specific memories (identity, learned knowledge), set agent_id.
 
     Content must be concise (max 1000 chars). For detailed content, store
     a summary here and attach the full content with save_artifact.
@@ -104,12 +103,19 @@ def add_memory(
         content: The memory to store. Keep concise — conclusions, not raw data.
         user_id: User identifier (required).
         memory_type: One of: preference, fact, episodic, procedural, context.
-        categories: Tags from predefined set. Use list_categories to discover.
-                    Use project:<name> for project-specific memories.
+        categories: Tags from the PREDEFINED set only. Do NOT invent categories.
+                    Valid: personal, preferences, health, work, technical,
+                    finance, home, vehicles, travel, entertainment, goals,
+                    decisions, project. Use project:<name> for project-specific.
+                    Call list_categories to see the full list.
         importance: low, normal, high, or critical. Affects search ranking.
         pinned: If true, this memory loads at every conversation start via
                 get_core_memories. Use for essential facts and identity.
-        agent_id: Set only for agent-specific memories (personality, knowledge).
+        agent_id: ONLY for memories specific to this agent (your identity,
+                  personality, agent-specific knowledge). Do NOT set for user
+                  facts, preferences, or context — those must be shared across
+                  all agents. Memories with agent_id are INVISIBLE to other
+                  agents. When in doubt, leave empty.
     """
     try:
         result = _get_service().add_memory(
@@ -156,7 +162,9 @@ def search_memories(
         memory_type: Filter by type (preference/fact/episodic/procedural/context).
         categories: Filter by categories. "project" matches all project:* entries.
         limit: Max results to return (default 10).
-        agent_id: Filter to agent-specific memories only.
+        agent_id: Only set to find YOUR agent-specific memories. Omit to
+                  search shared user memories (the common case). Setting this
+                  restricts results to memories stored with this agent_id only.
     """
     try:
         results = _get_service().search_memories(
@@ -358,7 +366,9 @@ def list_categories(user_id: str) -> str:
     """List all available memory categories with descriptions and counts.
 
     Shows predefined categories and any dynamic project:<name> categories.
-    Call this to discover what categories exist before searching or adding.
+    ALWAYS call this before tagging memories with categories. Categories
+    are PREDEFINED — do not use categories not in this list. Use
+    project:<name> for project-specific scoping.
 
     Args:
         user_id: User identifier (required).

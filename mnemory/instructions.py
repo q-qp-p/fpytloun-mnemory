@@ -19,8 +19,8 @@ When the user shares personal info, preferences, facts, decisions,
 project context, conclusions, or anything worth remembering:
 - Keep content concise (max 1000 chars). Store conclusions, not raw data.
 - Choose memory_type: preference, fact, episodic, procedural, or context.
-- Tag with categories from list_categories. Use project:<name> for
-  project-specific memories.
+- Tag with categories from the PREDEFINED set (see CATEGORIES below).
+  Do NOT invent your own categories. Call list_categories if unsure.
 - Set importance: low/normal/high/critical. Critical memories get boosted
   in search results.
 - Set pinned: true for memories that should always load at conversation
@@ -32,12 +32,27 @@ project context, conclusions, or anything worth remembering:
 Before answering questions that might benefit from personal context,
 search memories first. Use category and type filters to narrow results.
 Results are ranked by relevance and importance.
+When searching, omit agent_id to find shared user memories. Only set
+agent_id if you specifically need your own agent-scoped memories.
 
-## AGENT IDENTITY
-If you have an agent_id, you may have agent-specific memories that define
-your personality, name, behavior, and knowledge. These load automatically
-via get_core_memories. You can store things you learn with your agent_id
-to remember them as your own knowledge.
+## agent_id SCOPING — READ CAREFULLY
+Memories with agent_id set are ONLY visible to that specific agent.
+Other agents CANNOT see them. This is a visibility boundary.
+
+- Do NOT set agent_id for general user information: facts about the user,
+  user preferences, personal context, decisions, or anything that should
+  be available to all agents. Leave agent_id empty for these.
+- ONLY set agent_id for memories that are specific to you as an agent:
+  your identity, your personality, your name, knowledge that only you
+  should have.
+- When in doubt, do NOT set agent_id. It is better for a memory to be
+  shared than accidentally hidden from other agents.
+
+Examples:
+  "User lives in Prague" → do NOT set agent_id (shared user fact)
+  "User prefers dark mode" → do NOT set agent_id (shared preference)
+  "Your name is Bob" → set agent_id (agent identity)
+  "You researched X and concluded Y" → set agent_id (agent knowledge)
 
 ## ARTIFACTS (save_artifact, get_artifact)
 For detailed content too long for fast memory (research reports, analysis,
@@ -54,13 +69,18 @@ you need the details.
 - context: session/short-term, included in recent context automatically
 
 ## CATEGORIES
-Call list_categories to discover available categories before tagging.
-Predefined: personal, preferences, health, work, technical, finance,
-home, vehicles, travel, entertainment, goals, decisions, project.
+Categories are PREDEFINED. Do NOT invent your own categories.
+You MUST use categories from this list:
+  personal, preferences, health, work, technical, finance,
+  home, vehicles, travel, entertainment, goals, decisions, project
 Use project:<name> for project-scoped memories (e.g., project:myapp).
+If no predefined category fits, omit categories rather than making one up.
+Call list_categories to see the full list with descriptions and counts.
 
 ## IMPORTANT
 - Always pass the correct user_id for the current user.
+- Do NOT set agent_id unless the memory is specific to you as an agent.
+- Do NOT invent categories — use only predefined ones or project:<name>.
 - When updating outdated information, use update_memory to correct it.
 - Use delete_memory to remove incorrect or obsolete memories.
 """
