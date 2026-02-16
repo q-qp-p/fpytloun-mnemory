@@ -19,6 +19,7 @@ import os
 import sys
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -67,6 +68,13 @@ mcp = FastMCP(
     instructions=SERVER_INSTRUCTIONS,
     stateless_http=True,
     json_response=True,
+    # Disable DNS rebinding protection — mnemory runs behind a reverse
+    # proxy / ingress that handles host validation and TLS termination.
+    # Without this, the MCP SDK rejects requests with external Host
+    # headers (e.g., mem.fpy.cz) with HTTP 421.
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
 )
 
 

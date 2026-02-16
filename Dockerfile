@@ -2,15 +2,17 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies first for better layer caching.
-# Copy __init__.py and README.md alongside pyproject.toml so hatchling
-# can resolve the package version and readme during the build step.
+# Stage 1: Install dependencies only (cached layer).
+# Build a throwaway package from minimal source so pip resolves all deps,
+# then remove the incomplete package itself.
 COPY pyproject.toml README.md ./
 COPY mnemory/__init__.py mnemory/__init__.py
-RUN pip install --no-cache-dir ".[all]"
+RUN pip install --no-cache-dir ".[all]" \
+    && pip uninstall -y mnemory
 
-# Copy application code
+# Stage 2: Copy full source and install the package (no deps needed).
 COPY mnemory/ mnemory/
+RUN pip install --no-cache-dir --no-deps .
 
 # Create data directory for SQLite history and local artifacts
 RUN mkdir -p /data
