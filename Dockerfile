@@ -3,9 +3,9 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install dependencies first for better layer caching.
-# Copy __init__.py alongside pyproject.toml so hatchling can resolve
-# the package version during the build step.
-COPY pyproject.toml .
+# Copy __init__.py and README.md alongside pyproject.toml so hatchling
+# can resolve the package version and readme during the build step.
+COPY pyproject.toml README.md ./
 COPY mnemory/__init__.py mnemory/__init__.py
 RUN pip install --no-cache-dir ".[all]"
 

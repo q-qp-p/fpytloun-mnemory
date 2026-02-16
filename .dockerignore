@@ -11,5 +11,6 @@ venv/
 .mypy_cache/
 .pytest_cache/
 tests/
-*.md
+files/
+AGENTS.md
 LICENSE

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="files/banner.png" alt="mnemory banner" />
+</p>
+
 # mnemory
 
 A self-hosted, two-tier memory system for AI agents and assistants, exposed as an [MCP](https://modelcontextprotocol.io/) server over Streamable HTTP.
