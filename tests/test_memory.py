@@ -1,5 +1,7 @@
 """Tests for mnemory.memory module — pure logic that doesn't require backends."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from mnemory.memory import MemoryService, _validate_id
@@ -91,3 +93,173 @@ class TestRerankByImportance:
         result = self._rerank(memories)
         importances = [m["metadata"]["importance"] for m in result]
         assert importances == ["critical", "high", "normal", "low"]
+
+
+# ── Core memory cache ─────────────────────────────────────────────────
+
+
+class TestCoreMemoryCache:
+    """Test that get_core_memories uses caching and invalidation."""
+
+    @staticmethod
+    def _make_service():
+        """Create a MemoryService with mocked backends."""
+        mock_config = MagicMock()
+        mock_config.memory.max_memory_length = 1000
+        mock_config.memory.max_artifact_size = 102400
+        mock_config.memory.max_core_context_length = 4000
+        mock_config.memory.default_recent_hours = 24
+        mock_config.memory.classify_cache_ttl = 300
+        mock_config.memory.core_memories_cache_ttl = 300
+        mock_config.memory.auto_classify = False
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        # Mock vector store methods used by get_core_memories
+        service.vector = MagicMock()
+        service.vector.get_pinned_memories.return_value = []
+        service.vector.get_recent_memories.return_value = []
+
+        return service
+
+    def test_cache_hit_skips_queries(self):
+        """Second call should return cached result without querying."""
+        service = self._make_service()
+
+        # First call — queries the vector store
+        result1 = service.get_core_memories(user_id="filip")
+        assert result1 == "No core memories found."
+        assert service.vector.get_pinned_memories.call_count == 1
+
+        # Second call — should use cache
+        result2 = service.get_core_memories(user_id="filip")
+        assert result2 == "No core memories found."
+        # Still only 1 call — cache was used
+        assert service.vector.get_pinned_memories.call_count == 1
+
+    def test_different_users_separate_cache(self):
+        """Different user_ids should have separate cache entries."""
+        service = self._make_service()
+
+        service.get_core_memories(user_id="filip")
+        service.get_core_memories(user_id="alice")
+        # Two separate users = two separate queries
+        assert service.vector.get_pinned_memories.call_count == 2
+
+    def test_different_agent_ids_separate_cache(self):
+        """Different agent_ids should have separate cache entries."""
+        service = self._make_service()
+
+        service.get_core_memories(user_id="filip", agent_id="open-webui")
+        service.get_core_memories(user_id="filip", agent_id="claude")
+        # Two different agent_ids = separate cache entries
+        # Each call does 2 get_pinned_memories calls (agent + user)
+        assert service.vector.get_pinned_memories.call_count == 4
+
+    def test_add_memory_invalidates_cache(self):
+        """add_memory should invalidate the core cache for that user."""
+        service = self._make_service()
+        service.vector.add.return_value = {"results": []}
+
+        # Populate cache
+        service.get_core_memories(user_id="filip")
+        assert service.vector.get_pinned_memories.call_count == 1
+
+        # Add a memory — should invalidate
+        service.add_memory(content="test", user_id="filip")
+
+        # Next get_core_memories should query again
+        service.get_core_memories(user_id="filip")
+        assert service.vector.get_pinned_memories.call_count == 2
+
+    def test_delete_memory_invalidates_cache(self):
+        """delete_memory should invalidate the core cache for that user."""
+        service = self._make_service()
+
+        # Populate cache
+        service.get_core_memories(user_id="filip")
+        assert service.vector.get_pinned_memories.call_count == 1
+
+        # Delete a memory
+        service.delete_memory("mem-123", user_id="filip")
+
+        # Next get_core_memories should query again
+        service.get_core_memories(user_id="filip")
+        assert service.vector.get_pinned_memories.call_count == 2
+
+    def test_update_memory_invalidates_cache_for_user(self):
+        """update_memory with user_id should only invalidate that user's cache."""
+        service = self._make_service()
+
+        # Populate cache for two users
+        service.get_core_memories(user_id="filip")
+        service.get_core_memories(user_id="alice")
+        assert service.vector.get_pinned_memories.call_count == 2
+
+        # Update a memory for filip — only filip's cache invalidated
+        service.update_memory("mem-123", user_id="filip", content="updated")
+
+        # filip should re-query, alice should use cache
+        service.get_core_memories(user_id="filip")
+        service.get_core_memories(user_id="alice")
+        assert service.vector.get_pinned_memories.call_count == 3
+
+    def test_update_memory_clears_all_cache_without_user_id(self):
+        """update_memory without user_id should clear entire core cache."""
+        service = self._make_service()
+
+        # Populate cache for two users
+        service.get_core_memories(user_id="filip")
+        service.get_core_memories(user_id="alice")
+        assert service.vector.get_pinned_memories.call_count == 2
+
+        # Update without user_id — clears all core cache
+        service.update_memory("mem-123", content="updated")
+
+        # Both users should re-query
+        service.get_core_memories(user_id="filip")
+        service.get_core_memories(user_id="alice")
+        assert service.vector.get_pinned_memories.call_count == 4
+
+    def test_delete_all_invalidates_cache(self):
+        """delete_all_memories should invalidate the core cache."""
+        service = self._make_service()
+        service.vector.get_all.return_value = {"results": []}
+
+        # Populate cache
+        service.get_core_memories(user_id="filip")
+        assert service.vector.get_pinned_memories.call_count == 1
+
+        # Delete all
+        service.delete_all_memories(user_id="filip")
+
+        # Next get_core_memories should query again
+        service.get_core_memories(user_id="filip")
+        assert service.vector.get_pinned_memories.call_count == 2
+
+    def test_cache_disabled_when_ttl_zero(self):
+        """TTL=0 should effectively disable caching."""
+        mock_config = MagicMock()
+        mock_config.memory.max_memory_length = 1000
+        mock_config.memory.max_artifact_size = 102400
+        mock_config.memory.max_core_context_length = 4000
+        mock_config.memory.default_recent_hours = 24
+        mock_config.memory.classify_cache_ttl = 300
+        mock_config.memory.core_memories_cache_ttl = 0  # Disabled
+        mock_config.memory.auto_classify = False
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        service.vector.get_pinned_memories.return_value = []
+        service.vector.get_recent_memories.return_value = []
+
+        import time
+
+        service.get_core_memories(user_id="filip")
+        time.sleep(0.01)  # Ensure TTL=0 expires
+        service.get_core_memories(user_id="filip")
+        # Both calls should query (cache expired immediately)
+        assert service.vector.get_pinned_memories.call_count == 2

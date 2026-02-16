@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from typing import Any
 
 from openai import OpenAI
@@ -217,34 +216,3 @@ def _validate_classification(
         validated["pinned"] = bool(raw_pinned)
 
     return validated
-
-
-class CategoryCache:
-    """TTL-based cache for user category lists.
-
-    Avoids querying the vector store on every add_memory call when
-    auto-classification needs the list of existing categories.
-    """
-
-    def __init__(self, ttl_seconds: int = 300):
-        self._ttl = ttl_seconds
-        self._cache: dict[str, tuple[list[str], float]] = {}
-
-    def get(self, user_id: str) -> list[str] | None:
-        """Get cached categories for a user, or None if expired/missing."""
-        entry = self._cache.get(user_id)
-        if entry is None:
-            return None
-        categories, timestamp = entry
-        if time.monotonic() - timestamp > self._ttl:
-            del self._cache[user_id]
-            return None
-        return categories
-
-    def set(self, user_id: str, categories: list[str]) -> None:
-        """Cache categories for a user."""
-        self._cache[user_id] = (categories, time.monotonic())
-
-    def invalidate(self, user_id: str) -> None:
-        """Remove cached categories for a user."""
-        self._cache.pop(user_id, None)

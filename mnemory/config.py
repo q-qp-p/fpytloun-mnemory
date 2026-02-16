@@ -143,6 +143,9 @@ class MemoryConfig:
     classify_cache_ttl: int = field(
         default_factory=lambda: _env_int("CLASSIFY_CACHE_TTL", 300)
     )
+    core_memories_cache_ttl: int = field(
+        default_factory=lambda: _env_int("CORE_MEMORIES_CACHE_TTL", 300)
+    )
 
 
 @dataclass

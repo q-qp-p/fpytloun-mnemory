@@ -201,6 +201,7 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 | `DEFAULT_RECENT_HOURS` | `24` | Default hours for recent context in core memories |
 | `AUTO_CLASSIFY` | `true` | Auto-classify memory metadata (type, categories, importance, pinned) via LLM when not provided |
 | `CLASSIFY_CACHE_TTL` | `300` | TTL in seconds for the category cache used during auto-classification |
+| `CORE_MEMORIES_CACHE_TTL` | `300` | TTL in seconds for the core memories cache (get_core_memories). Set to 0 to disable. Invalidated on memory mutations. |
 
 ## Memory Model
 

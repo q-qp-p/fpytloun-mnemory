@@ -442,6 +442,7 @@ def update_memory(
         _get_service().verify_memory_access(memory_id, session_agent_id=session_aid)
         result = _get_service().update_memory(
             memory_id,
+            user_id=_session_user_id.get(),
             content=content,
             memory_type=memory_type,
             categories=categories,

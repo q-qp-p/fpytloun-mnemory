@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from mnemory.cache import TTLCache
 from mnemory.categories import (
     IMPORTANCE_WEIGHTS,
     PREDEFINED_CATEGORIES,
@@ -20,7 +21,7 @@ from mnemory.categories import (
     validate_importance,
     validate_memory_type,
 )
-from mnemory.classify import CategoryCache, classify_memory
+from mnemory.classify import classify_memory
 from mnemory.config import Config
 from mnemory.storage.artifact import ArtifactStore
 from mnemory.storage.vector import VectorStore
@@ -55,8 +56,11 @@ class MemoryService:
             config.artifact,
             max_artifact_size=config.memory.max_artifact_size,
         )
-        self._category_cache = CategoryCache(
+        self._category_cache: TTLCache[str, list[str]] = TTLCache(
             ttl_seconds=config.memory.classify_cache_ttl,
+        )
+        self._core_cache: TTLCache[tuple, str] = TTLCache(
+            ttl_seconds=config.memory.core_memories_cache_ttl,
         )
 
     # ── Add Memory ────────────────────────────────────────────────────
@@ -157,7 +161,8 @@ class MemoryService:
             content, user_id=user_id, agent_id=agent_id, metadata=metadata
         )
 
-        # Invalidate category cache if new categories were added
+        # Invalidate caches — new memory may affect core memories or categories
+        self._core_cache.invalidate_prefix(user_id)
         if categories:
             self._category_cache.invalidate(user_id)
 
@@ -309,6 +314,13 @@ class MemoryService:
         if recent_hours is None:
             recent_hours = self._config.memory.default_recent_hours
         recent_hours = int(recent_hours)
+
+        # Check cache
+        cache_key = (user_id, agent_id or "", recent_hours)
+        cached = self._core_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         max_len = self._config.memory.max_core_context_length
 
         sections: list[str] = []
@@ -380,7 +392,9 @@ class MemoryService:
             )
 
         if not sections:
-            return "No core memories found."
+            output = "No core memories found."
+            self._core_cache.set(cache_key, output)
+            return output
 
         output = "\n\n".join(sections)
 
@@ -394,6 +408,7 @@ class MemoryService:
             if len(output) > max_len:
                 output = output[: max_len - 20] + "\n\n[...truncated]"
 
+        self._core_cache.set(cache_key, output)
         return output
 
     # ── List Memories ─────────────────────────────────────────────────
@@ -536,6 +551,7 @@ class MemoryService:
         self,
         memory_id: str,
         *,
+        user_id: str | None = None,
         content: str | None = None,
         memory_type: str | None = None,
         categories: list[str] | None = None,
@@ -575,6 +591,12 @@ class MemoryService:
             metadata_updates["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
             self.vector.update_metadata(memory_id, metadata_updates)
 
+        # Invalidate core cache — updated memory may be pinned or recent.
+        if user_id:
+            self._core_cache.invalidate_prefix(user_id)
+        else:
+            self._core_cache.clear()
+
         return {"status": "updated", "memory_id": memory_id}
 
     # ── Delete Memory ─────────────────────────────────────────────────
@@ -590,6 +612,10 @@ class MemoryService:
             logger.warning("Failed to delete artifacts for %s: %s", memory_id, e)
 
         self.vector.delete(memory_id)
+
+        # Invalidate core cache for this user
+        self._core_cache.invalidate_prefix(user_id)
+
         return {"status": "deleted", "memory_id": memory_id}
 
     def delete_all_memories(self, *, user_id: str, agent_id: str | None = None) -> dict:
@@ -616,6 +642,11 @@ class MemoryService:
             logger.warning("Failed to enumerate memories for artifact cleanup: %s", e)
 
         self.vector.delete_all(user_id=user_id, agent_id=agent_id)
+
+        # Invalidate all caches for this user
+        self._core_cache.invalidate_prefix(user_id)
+        self._category_cache.invalidate(user_id)
+
         return {"status": "deleted_all", "user_id": user_id, "agent_id": agent_id}
 
     # ── List Categories ───────────────────────────────────────────────

@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock, patch
 
+from mnemory.cache import TTLCache
 from mnemory.classify import (
-    CategoryCache,
     _build_system_prompt,
     _validate_classification,
     classify_memory,
@@ -258,46 +258,46 @@ class TestClassifyMemory:
         assert "project:myapp" in system_msg
 
 
-# ── CategoryCache ──────────────────────────────────────────────────────
+# ── TTLCache (category usage) ──────────────────────────────────────────
 
 
 class TestCategoryCache:
     def test_get_miss(self):
-        cache = CategoryCache(ttl_seconds=60)
+        cache = TTLCache(ttl_seconds=60)
         assert cache.get("user1") is None
 
     def test_set_and_get(self):
-        cache = CategoryCache(ttl_seconds=60)
+        cache = TTLCache(ttl_seconds=60)
         cache.set("user1", ["personal", "work", "project:foo"])
         result = cache.get("user1")
         assert result == ["personal", "work", "project:foo"]
 
     def test_ttl_expiry(self):
-        cache = CategoryCache(ttl_seconds=0)  # Immediate expiry
+        cache = TTLCache(ttl_seconds=0)  # Immediate expiry
         cache.set("user1", ["personal"])
         # Sleep briefly to ensure monotonic clock advances
         time.sleep(0.01)
         assert cache.get("user1") is None
 
     def test_invalidate(self):
-        cache = CategoryCache(ttl_seconds=60)
+        cache = TTLCache(ttl_seconds=60)
         cache.set("user1", ["personal"])
         cache.invalidate("user1")
         assert cache.get("user1") is None
 
     def test_invalidate_nonexistent(self):
-        cache = CategoryCache(ttl_seconds=60)
+        cache = TTLCache(ttl_seconds=60)
         cache.invalidate("nonexistent")  # Should not raise
 
     def test_separate_users(self):
-        cache = CategoryCache(ttl_seconds=60)
+        cache = TTLCache(ttl_seconds=60)
         cache.set("user1", ["personal"])
         cache.set("user2", ["work"])
         assert cache.get("user1") == ["personal"]
         assert cache.get("user2") == ["work"]
 
     def test_overwrite(self):
-        cache = CategoryCache(ttl_seconds=60)
+        cache = TTLCache(ttl_seconds=60)
         cache.set("user1", ["personal"])
         cache.set("user1", ["work", "technical"])
         assert cache.get("user1") == ["work", "technical"]
