@@ -75,11 +75,13 @@ class MemoryService:
         categories: list[str] | None = None,
         importance: str | None = None,
         pinned: bool | None = None,
+        infer: bool = True,
     ) -> dict:
         """Store a fast memory with metadata.
 
         Content is processed by mem0's LLM for fact extraction and
-        deduplication. Max length is enforced.
+        deduplication when infer=True. When infer=False, content is
+        stored as-is with only an embedding call (much faster, no dedup).
 
         When memory_type, categories, importance, or pinned are not provided
         (None), they are auto-classified by an LLM call if AUTO_CLASSIFY is
@@ -158,7 +160,11 @@ class MemoryService:
         }
 
         result = self.vector.add(
-            content, user_id=user_id, agent_id=agent_id, metadata=metadata
+            content,
+            user_id=user_id,
+            agent_id=agent_id,
+            metadata=metadata,
+            infer=infer,
         )
 
         # Invalidate caches — new memory may affect core memories or categories

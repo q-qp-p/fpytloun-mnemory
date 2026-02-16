@@ -89,9 +89,20 @@ class VectorStore:
         user_id: str,
         agent_id: str | None = None,
         metadata: dict | None = None,
+        infer: bool = True,
     ) -> dict:
-        """Add a memory via mem0 (with fact extraction and deduplication)."""
-        kwargs: dict[str, Any] = {"user_id": user_id}
+        """Add a memory via mem0.
+
+        Args:
+            content: Memory content text.
+            user_id: User scope.
+            agent_id: Optional agent scope.
+            metadata: Custom metadata fields.
+            infer: If True (default), mem0 uses LLM for fact extraction and
+                   deduplication. If False, content is stored as-is with only
+                   an embedding call (much faster).
+        """
+        kwargs: dict[str, Any] = {"user_id": user_id, "infer": infer}
         if agent_id:
             kwargs["agent_id"] = agent_id
         if metadata:

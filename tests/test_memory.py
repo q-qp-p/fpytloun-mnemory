@@ -263,3 +263,126 @@ class TestCoreMemoryCache:
         service.get_core_memories(user_id="filip")
         # Both calls should query (cache expired immediately)
         assert service.vector.get_pinned_memories.call_count == 2
+
+
+# ── Infer parameter ───────────────────────────────────────────────────
+
+
+class TestInferParameter:
+    """Test that the infer parameter is passed through to the vector store."""
+
+    @staticmethod
+    def _make_service():
+        """Create a MemoryService with mocked backends."""
+        mock_config = MagicMock()
+        mock_config.memory.max_memory_length = 1000
+        mock_config.memory.max_artifact_size = 102400
+        mock_config.memory.max_core_context_length = 4000
+        mock_config.memory.default_recent_hours = 24
+        mock_config.memory.classify_cache_ttl = 300
+        mock_config.memory.core_memories_cache_ttl = 300
+        mock_config.memory.auto_classify = False
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        service.vector.add.return_value = {"results": []}
+        return service
+
+    def test_infer_true_by_default(self):
+        """Default add_memory should pass infer=True to vector store."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip")
+        service.vector.add.assert_called_once()
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["infer"] is True
+
+    def test_infer_false_passed_through(self):
+        """add_memory(infer=False) should pass infer=False to vector store."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip", infer=False)
+        service.vector.add.assert_called_once()
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["infer"] is False
+
+    def test_infer_true_explicit(self):
+        """add_memory(infer=True) should pass infer=True to vector store."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip", infer=True)
+        service.vector.add.assert_called_once()
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["infer"] is True
+
+
+# ── Batch add (add_memories tool) ─────────────────────────────────────
+
+
+class TestBatchAdd:
+    """Test the add_memories batch tool logic via MemoryService."""
+
+    @staticmethod
+    def _make_service():
+        """Create a MemoryService with mocked backends."""
+        mock_config = MagicMock()
+        mock_config.memory.max_memory_length = 1000
+        mock_config.memory.max_artifact_size = 102400
+        mock_config.memory.max_core_context_length = 4000
+        mock_config.memory.default_recent_hours = 24
+        mock_config.memory.classify_cache_ttl = 300
+        mock_config.memory.core_memories_cache_ttl = 300
+        mock_config.memory.auto_classify = False
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        service.vector.add.return_value = {"results": [{"id": "mem-1", "event": "ADD"}]}
+        return service
+
+    def test_batch_add_multiple_memories(self):
+        """Batch add should process each memory independently."""
+        service = self._make_service()
+
+        # Add 3 memories
+        for content in ["fact one", "fact two", "fact three"]:
+            service.add_memory(content=content, user_id="filip", infer=False)
+
+        assert service.vector.add.call_count == 3
+
+    def test_batch_add_passes_infer_false(self):
+        """Batch add with infer=False should pass it through for each item."""
+        service = self._make_service()
+
+        service.add_memory(content="test", user_id="filip", infer=False)
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["infer"] is False
+
+    def test_batch_add_with_metadata(self):
+        """Batch add should pass per-item metadata through."""
+        service = self._make_service()
+
+        service.add_memory(
+            content="test",
+            user_id="filip",
+            memory_type="fact",
+            categories=["work"],
+            importance="high",
+            pinned=True,
+            infer=False,
+        )
+
+        service.vector.add.assert_called_once()
+        _, kwargs = service.vector.add.call_args
+        assert kwargs["metadata"]["memory_type"] == "fact"
+        assert kwargs["metadata"]["categories"] == ["work"]
+        assert kwargs["metadata"]["importance"] == "high"
+        assert kwargs["metadata"]["pinned"] is True
+
+    def test_content_too_long_returns_error(self):
+        """Content exceeding max length should return an error dict."""
+        service = self._make_service()
+
+        result = service.add_memory(content="x" * 1001, user_id="filip", infer=False)
+        assert result.get("error") is True
+        assert "too long" in result["message"].lower()

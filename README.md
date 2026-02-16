@@ -34,12 +34,12 @@ Built on [mem0](https://github.com/mem0ai/mem0) for intelligent fact extraction 
 ┌──────────────────────────────────────────────────┐
 │                    mnemory                        │
 │                                                   │
-│  12 MCP Tools:                                    │
-│  add_memory, search_memories, get_core_memories,  │
-│  list_memories, update_memory, delete_memory,     │
-│  delete_all_memories, list_categories,            │
-│  save_artifact, get_artifact, list_artifacts,     │
-│  delete_artifact                                  │
+│  13 MCP Tools:                                    │
+│  add_memory, add_memories, search_memories,       │
+│  get_core_memories, list_memories, update_memory,  │
+│  delete_memory, delete_all_memories,              │
+│  list_categories, save_artifact, get_artifact,    │
+│  list_artifacts, delete_artifact                  │
 │                                                   │
 │  ┌─────────────────┐  ┌───────────────────────┐  │
 │  │  Fast Memory     │  │  Slow Memory          │  │
@@ -273,7 +273,8 @@ Memories with `pinned: true` are loaded at every conversation start via `get_cor
 
 | Tool | Description |
 |---|---|
-| `add_memory` | Store a memory with type, categories, importance, pinned flag |
+| `add_memory` | Store a memory with optional metadata and `infer` flag |
+| `add_memories` | Batch-add multiple memories in a single call |
 | `search_memories` | Semantic search with type/category filters, importance reranking |
 | `get_core_memories` | Load pinned + recent context at conversation start |
 | `list_memories` | List all/filtered memories |
@@ -352,6 +353,8 @@ Add to MCP settings with the Streamable HTTP URL. Set `Authorization` and `X-Age
 3. mem0 checks for duplicates/contradictions in existing memories
 4. If new: creates embedding, stores in Qdrant with metadata
 5. If update: merges with existing memory (e.g., "User now drives a Tesla Model 3")
+
+With `infer=false`, steps 2-3 are skipped — the content is embedded and stored directly. This is much faster (single embedding call vs. 2 LLM calls + embedding + vector search).
 
 ### Searching
 

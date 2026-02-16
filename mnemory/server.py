@@ -180,6 +180,7 @@ def add_memory(
     importance: str | None = None,
     pinned: bool | None = None,
     agent_id: str | None = None,
+    infer: bool = True,
 ) -> str:
     """Store a memory about the user or agent.
 
@@ -215,6 +216,11 @@ def add_memory(
                   all agents. Memories with agent_id are INVISIBLE to other
                   agents. When in doubt, leave empty.
                   Optional if pre-configured via X-Agent-Id header.
+        infer: If true (default), the server uses LLM to extract key facts
+               from content and check for duplicates/contradictions with
+               existing memories. If false, content is stored as-is with only
+               an embedding — much faster but skips dedup. Use infer=false
+               when your content is already a clean, concise fact.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -227,6 +233,7 @@ def add_memory(
             categories=categories,
             importance=importance,
             pinned=pinned,
+            infer=infer,
         )
         return json.dumps(result, default=str)
     except ValueError as e:
@@ -236,6 +243,112 @@ def add_memory(
         return json.dumps(
             {"error": True, "message": "Internal error processing add_memory"}
         )
+
+
+# ── Tool 1b: add_memories (batch) ─────────────────────────────────────
+
+MAX_BATCH_SIZE = 20
+
+
+@mcp.tool()
+def add_memories(
+    memories: list[dict],
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    infer: bool = True,
+) -> str:
+    """Store multiple memories in a single call (batch operation).
+
+    Use this instead of calling add_memory repeatedly when you have several
+    memories to store at once. Saves round-trip latency. Each memory is
+    processed independently — failures on individual items do not block
+    the rest.
+
+    Args:
+        memories: List of memory objects. Each must have "content" (str).
+                  Optional per-item fields: memory_type, categories,
+                  importance, pinned. Example:
+                  [{"content": "User lives in Prague", "categories": ["personal"]},
+                   {"content": "Prefers dark mode", "importance": "high"}]
+        user_id: User identifier (shared for all items). Optional if
+                 pre-configured via API key mapping.
+        agent_id: Agent scope (shared for all items). Same rules as
+                  add_memory — only set for agent-specific memories.
+                  Optional if pre-configured via X-Agent-Id header.
+        infer: If true (default), each memory uses LLM fact extraction
+               and dedup. If false, content is stored as-is (faster).
+               Applies to all items in the batch.
+    """
+    try:
+        uid = _resolve_user_id(user_id)
+        aid = _resolve_agent_id(agent_id)
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
+
+    if not memories:
+        return json.dumps({"error": True, "message": "memories list is empty"})
+
+    if len(memories) > MAX_BATCH_SIZE:
+        return json.dumps(
+            {
+                "error": True,
+                "message": f"Too many memories: {len(memories)} (max {MAX_BATCH_SIZE})",
+            }
+        )
+
+    service = _get_service()
+    results = []
+    errors = []
+
+    for i, mem in enumerate(memories):
+        if not isinstance(mem, dict) or "content" not in mem:
+            errors.append(
+                {
+                    "index": i,
+                    "error": True,
+                    "message": "Each memory must be an object with a 'content' field",
+                }
+            )
+            continue
+
+        try:
+            result = service.add_memory(
+                mem["content"],
+                user_id=uid,
+                agent_id=aid,
+                memory_type=mem.get("memory_type"),
+                categories=mem.get("categories"),
+                importance=mem.get("importance"),
+                pinned=mem.get("pinned"),
+                infer=infer,
+            )
+            # Check for error returned by add_memory (e.g., content too long)
+            if result.get("error"):
+                errors.append({"index": i, **result})
+            else:
+                results.append({"index": i, **result})
+        except ValueError as e:
+            errors.append({"index": i, "error": True, "message": str(e)})
+        except Exception:
+            logger.exception("Error in add_memories item %d", i)
+            errors.append(
+                {
+                    "index": i,
+                    "error": True,
+                    "message": f"Internal error processing item {i}",
+                }
+            )
+
+    return json.dumps(
+        {
+            "results": results,
+            "errors": errors,
+            "total": len(memories),
+            "succeeded": len(results),
+            "failed": len(errors),
+        },
+        default=str,
+    )
 
 
 # ── Tool 2: search_memories ──────────────────────────────────────────

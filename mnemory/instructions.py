@@ -14,7 +14,7 @@ Always call get_core_memories to load essential context about the user
 and yourself (if you have an agent_id). This returns pinned memories
 and recent activity.
 
-## STORING MEMORIES (add_memory)
+## STORING MEMORIES (add_memory / add_memories)
 When the user shares personal info, preferences, facts, decisions,
 project context, conclusions, or anything worth remembering:
 - Keep content concise (max 1000 chars). Store conclusions, not raw data.
@@ -29,6 +29,12 @@ project context, conclusions, or anything worth remembering:
 - Do NOT invent your own categories. Call list_categories if unsure.
 - For detailed content (research, analysis, logs), store a concise summary
   as the memory and attach the full content with save_artifact.
+- Set infer=false for faster storage when your content is already a clean,
+  concise fact. This skips LLM-based fact extraction and deduplication,
+  storing content verbatim. Use infer=true (default) when you want the
+  server to extract facts and detect duplicates/contradictions.
+- Use add_memories (batch) when storing multiple memories at once — it
+  processes them in a single call, avoiding round-trip latency per item.
 
 ## RECALLING MEMORIES (search_memories)
 Before answering questions that might benefit from personal context,
