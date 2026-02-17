@@ -785,11 +785,23 @@ You are a memory relevance scorer. Given a user's question and a list of \
 candidate memories, score each memory for relevance on a scale from 0.0 \
 to 1.0.
 
-Score guide:
-  0.8-1.0 = directly answers the question
-  0.5-0.7 = highly relevant context
+## Subject awareness
+
+Pay close attention to WHO or WHAT the memory is about. The subject \
+matters as much as the topic:
+- "User's family medical history" is NOT about "partner's family"
+- "User likes dogs" is NOT about "partner likes dogs"
+- "User's work project" is NOT about "partner's work"
+Match the specific subject asked about in the question, not just \
+topic keywords. Use the metadata tags (type, categories, role) for \
+additional context when the memory text is ambiguous.
+
+## Score guide
+
+  0.8-1.0 = directly answers the question (correct subject AND topic)
+  0.5-0.7 = highly relevant context (correct subject, related topic)
   0.3-0.5 = somewhat related, useful background
-  0.1-0.3 = tangentially related
+  0.1-0.3 = tangentially related or wrong subject
   0.0     = irrelevant
 
 The minimum relevance threshold is {threshold}. Memories scoring below \
@@ -841,12 +853,24 @@ def build_rerank_prompt(
     """
     system_prompt = _RERANK_SYSTEM_PROMPT.format(threshold=threshold)
 
-    # Build numbered memory list for the LLM
+    # Build memory list with metadata context for the LLM
     mem_lines = []
     for mem in memories:
         mid = mem.get("id", "?")
         text = mem.get("memory", "")
-        mem_lines.append(f"- [{mid}] {text}")
+        # Collect non-default metadata tags for disambiguation
+        metadata = mem.get("metadata") or {}
+        tags = []
+        if metadata.get("memory_type"):
+            tags.append(f"type: {metadata['memory_type']}")
+        if metadata.get("categories"):
+            tags.append(f"categories: {', '.join(metadata['categories'])}")
+        if metadata.get("importance") and metadata["importance"] != "normal":
+            tags.append(f"importance: {metadata['importance']}")
+        if metadata.get("role") and metadata["role"] != "user":
+            tags.append(f"role: {metadata['role']}")
+        tag_str = f" [{' | '.join(tags)}]" if tags else ""
+        mem_lines.append(f"- [{mid}] {text}{tag_str}")
     mem_text = "\n".join(mem_lines)
 
     user_content = f"Question: {question}\n\nMemories:\n{mem_text}"

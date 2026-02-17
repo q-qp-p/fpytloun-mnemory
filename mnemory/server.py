@@ -583,8 +583,11 @@ def search_memories(
 def find_memories(
     question: str,
     user_id: str | None = None,
-    limit: int = 10,
+    memory_type: str | None = None,
+    categories: list[str] | None = None,
     role: str | None = None,
+    limit: int = 10,
+    agent_id: str | None = None,
     include_decayed: bool = False,
 ) -> str:
     """Find memories relevant to a complex question using AI-powered search.
@@ -606,11 +609,19 @@ def find_memories(
     multiple vector searches, so it is slower and more expensive than
     search_memories. Use it when quality matters more than speed.
 
+    The response includes the generated search queries under "queries"
+    for transparency.
+
     Args:
         question: The user's question in natural language.
         user_id: User identifier. Optional if pre-configured via API key.
-        limit: Max results to return (default 10).
+        memory_type: Filter by type (preference/fact/episodic/procedural/context).
+        categories: Filter by categories. "project" matches all project:* entries.
         role: Filter by role — "user" or "assistant". Omit for all.
+        limit: Max results to return (default 10).
+        agent_id: Ignored when session agent is set (automatic dual-scope).
+                  Only used as fallback for direct API callers without
+                  X-Agent-Id header.
         include_decayed: If true, include expired/decayed memories in results.
                         Useful for browsing historical memories. Default false.
     """
@@ -618,15 +629,36 @@ def find_memories(
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
 
-        results = _get_service().find_memories(
-            question,
-            user_id=uid,
-            session_agent_id=session_aid,
-            limit=limit,
-            role=role,
-            include_decayed=include_decayed,
-        )
-        return _format_memories(results)
+        if session_aid:
+            result = _get_service().find_memories(
+                question,
+                user_id=uid,
+                session_agent_id=session_aid,
+                memory_type=memory_type,
+                categories=categories,
+                role=role,
+                limit=limit,
+                include_decayed=include_decayed,
+            )
+        else:
+            aid = _resolve_agent_id(agent_id)
+            result = _get_service().find_memories(
+                question,
+                user_id=uid,
+                agent_id=aid,
+                memory_type=memory_type,
+                categories=categories,
+                role=role,
+                limit=limit,
+                include_decayed=include_decayed,
+            )
+        memories = result.get("results", [])
+        queries = result.get("queries", [])
+        formatted = _format_memories(memories)
+        # Inject queries into the response JSON
+        response = json.loads(formatted)
+        response["queries"] = queries
+        return json.dumps(response, default=str)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
     except Exception:

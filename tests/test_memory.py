@@ -59,7 +59,9 @@ def _make_service(auto_classify=False, track_access=False):
 
     # Default: embedding returns a dummy vector
     service.vector.embedding.embed.return_value = [0.1] * 1536
-    service.vector.embedding.embed_batch.return_value = []
+    service.vector.embedding.embed_batch.side_effect = lambda texts: [
+        [0.1] * 1536 for _ in texts
+    ]
 
     return service
 
@@ -2633,11 +2635,16 @@ class TestFindMemories:
             },
         ]
 
-        results = service.find_memories(
+        result = service.find_memories(
             "What do I think about dogs?",
             user_id="filip",
             limit=2,
         )
+
+        # Should return dict with results and queries
+        assert "results" in result
+        assert "queries" in result
+        results = result["results"]
 
         # Should have 2 results, reranked by LLM relevance
         assert len(results) == 2
@@ -2666,14 +2673,15 @@ class TestFindMemories:
             ]
         }
 
-        results = service.find_memories(
+        result = service.find_memories(
             "What do I think about dogs?",
             user_id="filip",
             limit=5,
         )
 
         # Only 1 result, limit is 5 → skip reranking
-        assert len(results) == 1
+        assert len(result["results"]) == 1
+        assert result["queries"] == ["user dogs"]
         # LLM should only be called once (query generation, not reranking)
         assert service._llm.generate.call_count == 1
 
@@ -2724,14 +2732,14 @@ class TestFindMemories:
             },
         ]
 
-        results = service.find_memories(
+        result = service.find_memories(
             "test question",
             user_id="filip",
             limit=1,
         )
 
         # dup-mem should appear only once
-        ids = [r["id"] for r in results]
+        ids = [r["id"] for r in result["results"]]
         assert ids.count("dup-mem") <= 1
 
     def test_query_generation_failure_raises(self):
@@ -2848,13 +2856,13 @@ class TestFindMemories:
             },
         ]
 
-        results = service.find_memories(
+        result = service.find_memories(
             "test question",
             user_id="filip",
             limit=5,
         )
 
-        ids = [r["id"] for r in results]
+        ids = [r["id"] for r in result["results"]]
         assert "relevant" in ids
         assert "irrelevant" not in ids
 
@@ -2942,3 +2950,140 @@ class TestRerankPrompt:
 
         messages, _ = build_rerank_prompt("test", [], threshold=0.5)
         assert "0.5" in messages[0]["content"]
+
+    def test_subject_awareness_in_prompt(self):
+        """Rerank prompt should include subject-awareness instructions."""
+        from mnemory.prompts import build_rerank_prompt
+
+        messages, _ = build_rerank_prompt("test", [])
+        system = messages[0]["content"]
+        assert "Subject awareness" in system or "subject" in system.lower()
+        assert "WHO" in system
+
+    def test_metadata_included_in_memory_lines(self):
+        """Rerank prompt should include metadata tags for disambiguation."""
+        from mnemory.prompts import build_rerank_prompt
+
+        memories = [
+            {
+                "id": "m1",
+                "memory": "User likes cats",
+                "metadata": {
+                    "memory_type": "preference",
+                    "categories": ["personal"],
+                    "importance": "high",
+                    "role": "user",
+                },
+            },
+            {
+                "id": "m2",
+                "memory": "Assistant is friendly",
+                "metadata": {
+                    "memory_type": "fact",
+                    "categories": ["preferences"],
+                    "importance": "normal",
+                    "role": "assistant",
+                },
+            },
+        ]
+        messages, _ = build_rerank_prompt("test", memories)
+        user_content = messages[1]["content"]
+        # m1: type, categories, importance (high != normal), but role=user is default → omitted
+        assert "type: preference" in user_content
+        assert "categories: personal" in user_content
+        assert "importance: high" in user_content
+        # m2: type, categories, role=assistant (non-default), importance=normal → omitted
+        assert "type: fact" in user_content
+        assert "categories: preferences" in user_content
+        assert "role: assistant" in user_content
+
+    def test_default_metadata_omitted(self):
+        """Default metadata values (importance: normal, role: user) should be omitted."""
+        from mnemory.prompts import build_rerank_prompt
+
+        memories = [
+            {
+                "id": "m1",
+                "memory": "Simple fact",
+                "metadata": {
+                    "memory_type": "fact",
+                    "categories": [],
+                    "importance": "normal",
+                    "role": "user",
+                },
+            },
+        ]
+        messages, _ = build_rerank_prompt("test", memories)
+        user_content = messages[1]["content"]
+        # importance: normal and role: user should NOT appear
+        assert "importance:" not in user_content
+        assert "role:" not in user_content
+        # type should still appear
+        assert "type: fact" in user_content
+
+    def test_no_metadata_graceful(self):
+        """Memories without metadata should not crash."""
+        from mnemory.prompts import build_rerank_prompt
+
+        memories = [
+            {"id": "m1", "memory": "No metadata"},
+            {"id": "m2", "memory": "None metadata", "metadata": None},
+        ]
+        messages, _ = build_rerank_prompt("test", memories)
+        user_content = messages[1]["content"]
+        assert "No metadata" in user_content
+        assert "None metadata" in user_content
+
+
+# ── find_memories batch embedding ─────────────────────────────────────
+
+
+class TestFindMemoriesBatchEmbed:
+    """Test that find_memories uses batch embedding for performance."""
+
+    def test_uses_embed_batch_not_individual(self):
+        """find_memories should call embed_batch once, not embed per query."""
+        import json
+
+        service = _make_service()
+        service._llm.generate.return_value = json.dumps(
+            {"queries": ["query1", "query2", "query3"]}
+        )
+        service.vector.search.return_value = {"results": []}
+
+        service.find_memories("test question", user_id="filip")
+
+        # embed_batch should be called once with all queries
+        service.vector.embedding.embed_batch.assert_called_once_with(
+            ["query1", "query2", "query3"]
+        )
+        # Individual embed should NOT be called by find_memories
+        # (it may be called by search_memories internally, but with
+        # query_vector provided it should be skipped)
+
+    def test_query_vector_passed_to_search(self):
+        """Pre-computed vectors should be passed through to vector.search."""
+        import json
+
+        service = _make_service()
+        service._llm.generate.return_value = json.dumps({"queries": ["single query"]})
+        service.vector.search.return_value = {"results": []}
+        service.vector.embedding.embed_batch.side_effect = None
+        service.vector.embedding.embed_batch.return_value = [[0.5] * 1536]
+
+        service.find_memories("test question", user_id="filip")
+
+        # vector.search should receive the pre-computed vector
+        _, kwargs = service.vector.search.call_args
+        assert kwargs["query_vector"] == [0.5] * 1536
+
+    def test_empty_queries_after_validation(self):
+        """If all LLM queries are empty/invalid, return empty results."""
+        import json
+
+        service = _make_service()
+        service._llm.generate.return_value = json.dumps({"queries": ["", "  ", None]})
+
+        result = service.find_memories("test", user_id="filip")
+        assert result["results"] == []
+        assert result["queries"] == []

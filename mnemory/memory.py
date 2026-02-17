@@ -740,11 +740,17 @@ class MemoryService:
         role: str | None = None,
         limit: int = 10,
         include_decayed: bool = False,
+        query_vector: list[float] | None = None,
     ) -> list[dict]:
         """Search memories with semantic similarity, filtered and reranked.
 
         Uses Qdrant's query_points() with native TTL, category, and
         importance filtering via FormulaQuery reranking.
+
+        Args:
+            query_vector: Pre-computed embedding vector. If provided, skips
+                the embedding API call. Used by find_memories for batch
+                embedding optimization.
         """
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
@@ -775,6 +781,7 @@ class MemoryService:
             exclude_expired=True,
             include_decayed=include_decayed,
             similarity_weight=self._config.memory.search_similarity_weight,
+            query_vector=query_vector,
         )
 
         memories = result.get("results", [])
@@ -807,6 +814,7 @@ class MemoryService:
         role: str | None = None,
         limit: int = 10,
         include_decayed: bool = False,
+        query_vector: list[float] | None = None,
     ) -> list[dict]:
         """Search both agent-scoped and shared memories, merge and deduplicate.
 
@@ -815,6 +823,9 @@ class MemoryService:
         1. Agent-scoped memories (agent_id=session_agent_id)
         2. Shared memories (agent_id=None)
         Then merges, deduplicates by memory ID, and reranks.
+
+        When query_vector is provided, both searches reuse the same
+        pre-computed vector, avoiding redundant embedding API calls.
         """
         user_id = _validate_id(user_id, "user_id")
         session_agent_id = _validate_id(session_agent_id, "agent_id")
@@ -833,13 +844,14 @@ class MemoryService:
         if categories:
             expanded_categories = self._expand_category_filter(categories, user_id)
 
-        search_kwargs = {
+        search_kwargs: dict[str, Any] = {
             "filters": filters if filters else None,
             "categories": expanded_categories,
             "limit": limit,
             "exclude_expired": True,
             "include_decayed": include_decayed,
             "similarity_weight": self._config.memory.search_similarity_weight,
+            "query_vector": query_vector,
         }
 
         # Search 1: agent-scoped memories
@@ -900,10 +912,12 @@ class MemoryService:
         user_id: str,
         session_agent_id: str | None = None,
         agent_id: str | None = None,
+        memory_type: str | None = None,
+        categories: list[str] | None = None,
         limit: int = 10,
         role: str | None = None,
         include_decayed: bool = False,
-    ) -> list[dict]:
+    ) -> dict:
         """Find memories relevant to a complex question using AI-powered search.
 
         Generates multiple targeted search queries from the question,
@@ -915,12 +929,15 @@ class MemoryService:
             user_id: Required user scope.
             session_agent_id: Session agent for dual-scope search.
             agent_id: Fallback agent_id when no session agent.
+            memory_type: Optional memory type filter.
+            categories: Optional category filter.
             limit: Maximum results to return.
             role: Optional role filter ("user" or "assistant").
             include_decayed: If True, include expired/decayed memories.
 
         Returns:
-            List of memory dicts sorted by LLM-assessed relevance.
+            Dict with "results" (list of memory dicts sorted by relevance)
+            and "queries" (list of generated search queries).
 
         Raises:
             ValueError: If LLM calls fail (query generation or reranking).
@@ -949,31 +966,42 @@ class MemoryService:
             question[:100],
         )
 
-        # Step 2: Run each query through search, collect results
+        # Step 2: Batch embed all queries upfront (single API call)
+        valid_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
+        if not valid_queries:
+            return {"results": [], "queries": []}
+
+        query_vectors = self.vector.embedding.embed_batch(valid_queries)
+
+        # Step 3: Run each query through search, collect results
         per_query_limit = limit * 2
         merged_by_id: dict[str, dict] = {}
 
-        for q in queries:
-            if not isinstance(q, str) or not q.strip():
-                continue
+        for q, qvec in zip(valid_queries, query_vectors):
             try:
                 if session_agent_id:
                     results = self.search_memories_dual_scope(
-                        q.strip(),
+                        q,
                         user_id=user_id,
                         session_agent_id=session_agent_id,
+                        memory_type=memory_type,
+                        categories=categories,
                         role=role,
                         limit=per_query_limit,
                         include_decayed=include_decayed,
+                        query_vector=qvec,
                     )
                 else:
                     results = self.search_memories(
-                        q.strip(),
+                        q,
                         user_id=user_id,
                         agent_id=agent_id,
+                        memory_type=memory_type,
+                        categories=categories,
                         role=role,
                         limit=per_query_limit,
                         include_decayed=include_decayed,
+                        query_vector=qvec,
                     )
             except Exception:
                 logger.warning("find_memories: search failed for query '%s'", q)
@@ -994,19 +1022,19 @@ class MemoryService:
         logger.info(
             "find_memories: %d unique memories from %d queries",
             len(merged),
-            len(queries),
+            len(valid_queries),
         )
 
         if not merged:
-            return []
+            return {"results": [], "queries": valid_queries}
 
-        # Step 3: If few enough results, skip reranking
+        # Step 4: If few enough results, skip reranking
         if len(merged) <= limit:
             merged.sort(key=lambda m: m.get("score", 0), reverse=True)
             self._track_access(merged)
-            return merged
+            return {"results": merged, "queries": valid_queries}
 
-        # Step 4: LLM reranking with the original question as context
+        # Step 5: LLM reranking with the original question as context
         messages, schema = build_rerank_prompt(
             question,
             merged,
@@ -1043,7 +1071,7 @@ class MemoryService:
         reranked = reranked[:limit]
 
         self._track_access(reranked)
-        return reranked
+        return {"results": reranked, "queries": valid_queries}
 
     # ── Get Core Memories ─────────────────────────────────────────────
 

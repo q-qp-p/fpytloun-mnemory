@@ -223,6 +223,7 @@ class VectorStore:
         exclude_expired: bool = False,
         include_decayed: bool = False,
         similarity_weight: float = 0.9,
+        query_vector: list[float] | None = None,
     ) -> dict:
         """Semantic search with TTL, category, and importance filtering.
 
@@ -244,6 +245,9 @@ class VectorStore:
             similarity_weight: Weight for cosine similarity in the combined
                 score formula (0.0-1.0). Importance gets 1 - similarity_weight.
                 Default 0.9 (90% similarity, 10% importance).
+            query_vector: Pre-computed embedding vector. If provided, skips
+                the embedding API call. Used by find_memories for batch
+                embedding optimization.
 
         Returns:
             Dict with "results" key containing list of memory dicts.
@@ -257,8 +261,10 @@ class VectorStore:
 
         from mnemory.categories import IMPORTANCE_WEIGHTS
 
-        # 1. Embed the query
-        embeddings = self._embedding.embed(query)
+        # 1. Embed the query (skip if pre-computed vector provided)
+        embeddings = (
+            query_vector if query_vector is not None else self._embedding.embed(query)
+        )
 
         # 2. Build filter conditions
         must_conditions: list = [
