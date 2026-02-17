@@ -1,7 +1,8 @@
 """MCP server for mnemory.
 
-Exposes 12 tools over Streamable HTTP for memory management:
-- add_memory, search_memories, get_core_memories, list_memories
+Exposes 14 tools over Streamable HTTP for memory management:
+- initialize_memory (session init with instructions + core memories)
+- add_memory, add_memories, search_memories, get_core_memories, list_memories
 - update_memory, delete_memory, delete_all_memories
 - list_categories
 - save_artifact, get_artifact, list_artifacts, delete_artifact
@@ -32,7 +33,7 @@ from starlette.routing import Mount, Route
 
 from mnemory import __version__
 from mnemory.config import load_config
-from mnemory.instructions import build_instructions
+from mnemory.instructions import VALID_MODES, build_instructions
 from mnemory.memory import MemoryService
 
 logging.basicConfig(
@@ -197,6 +198,91 @@ mcp = FastMCP(
         enable_dns_rebinding_protection=False,
     ),
 )
+
+
+# ── Tool 0: initialize_memory ────────────────────────────────────────
+
+
+@mcp.tool()
+def initialize_memory(
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    recent_hours: int = 24,
+    mode: str | None = None,
+) -> str:
+    """ALWAYS call this at the start of every conversation to initialize memory.
+
+    Returns behavioral instructions for using memory tools effectively,
+    followed by your core memories (pinned facts, identity, recent context).
+
+    This is the recommended entry point for clients that do not inject MCP
+    server instructions into the system prompt (e.g., Open WebUI). If your
+    client DOES inject MCP server instructions (e.g., Claude Code, Cursor),
+    you can call get_core_memories directly instead to avoid redundant
+    instructions.
+
+    Args:
+        user_id: User identifier. Optional if pre-configured via API key mapping.
+        agent_id: Your agent identifier. Optional if pre-configured via
+                  X-Agent-Id header.
+        recent_hours: How many hours back to include recent context (default 24).
+        mode: Override instruction mode. One of: passive, proactive, personality.
+              If omitted, uses the server's INSTRUCTION_MODE setting.
+              - passive: Use memory when asked or clearly relevant
+              - proactive: Always search, proactively store, memory-first
+              - personality: Proactive + identity development for agents with
+                evolving personality
+    """
+    # Validate mode if provided
+    if mode is not None and mode not in VALID_MODES:
+        return json.dumps(
+            {
+                "error": True,
+                "message": f"Invalid mode: '{mode}'. Must be one of: {', '.join(VALID_MODES)}",
+            }
+        )
+
+    # Determine effective mode
+    effective_mode = mode if mode is not None else _get_config().server.instruction_mode
+
+    # Build instructions
+    instructions = build_instructions(effective_mode)
+
+    # Get core memories (fail gracefully)
+    core_memories = None
+    core_memories_error = None
+    try:
+        uid = _resolve_user_id(user_id)
+        aid = _resolve_agent_id_for_core(agent_id)
+        core_memories = _get_service().get_core_memories(
+            user_id=uid,
+            agent_id=aid,
+            recent_hours=recent_hours,
+        )
+    except ValueError as e:
+        core_memories_error = str(e)
+    except Exception:
+        logger.exception("Error getting core memories in initialize_memory")
+        core_memories_error = "Internal error loading core memories"
+
+    # Build response
+    parts = ["## MEMORY INSTRUCTIONS", "", instructions]
+
+    if core_memories is not None:
+        parts.extend(["", "---", "", "## CORE MEMORIES", "", core_memories])
+    elif core_memories_error:
+        parts.extend(
+            [
+                "",
+                "---",
+                "",
+                "## CORE MEMORIES",
+                "",
+                f"(Error loading core memories: {core_memories_error})",
+            ]
+        )
+
+    return "\n".join(parts)
 
 
 # ── Tool 1: add_memory ───────────────────────────────────────────────
@@ -500,6 +586,14 @@ def get_core_memories(
 ) -> str:
     """Load essential context at the start of every conversation.
 
+    If your client does NOT inject MCP server instructions into the system
+    prompt (e.g., Open WebUI), use initialize_memory instead — it returns
+    both behavioral instructions and core memories in one call.
+
+    If your client DOES inject MCP server instructions (e.g., Claude Code,
+    Cursor), call this tool directly to load memories without redundant
+    instructions.
+
     Returns pinned memories organized by scope:
     - Agent Identity: who you are, how you behave (role=assistant, agent-scoped)
     - Agent Knowledge: things you've learned and researched (role=assistant)
@@ -507,8 +601,6 @@ def get_core_memories(
     - User Facts: critical information about the user
     - User Preferences: how the user likes to interact
     - Recent Context: activity from the last N hours (chronological)
-
-    IMPORTANT: Call this ONCE at the beginning of each new conversation.
 
     Args:
         user_id: User identifier. Optional if pre-configured via API key mapping.

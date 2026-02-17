@@ -34,6 +34,9 @@ mnemory is now running at `http://localhost:8050/mcp`.
 3. URL: `http://mnemory:8050/mcp` (or `http://localhost:8050/mcp`)
 4. Custom headers: `X-Agent-Id: open-webui`
 5. Enable on your model: **Workspace > Models > Advanced Params > Function Calling: Native**
+6. Add to your model's system prompt: `Always call initialize_memory at the start of each conversation.`
+
+**Note**: Open WebUI doesn't inject MCP server instructions, so you need to tell the LLM to call `initialize_memory`. This tool returns behavioral instructions + core memories in one call.
 
 ### Claude Code / Opencode
 
@@ -96,7 +99,8 @@ Want an agent with its own evolving personality? See [openwebui-personality.md](
 
 ```
 Conversation start:
-  Agent calls get_core_memories()
+  Agent calls initialize_memory() [Open WebUI]
+    or get_core_memories() [Claude Code, Cursor]
   → Loads pinned facts: "Alex is a frontend developer in Berlin"
   → Loads recent context: "Working on MetricsHub dashboard"
 

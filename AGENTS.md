@@ -14,7 +14,7 @@
 
 ```
 mnemory/
-├── server.py              # MCP server entry point, 13 tool definitions, health endpoint, auth middleware
+├── server.py              # MCP server entry point, 14 tool definitions, health endpoint, auth middleware
 ├── config.py              # Configuration from environment variables (dataclasses)
 ├── categories.py          # Predefined category registry, validation, matching logic
 ├── memory.py              # Business logic layer (orchestrates vector + artifact stores)

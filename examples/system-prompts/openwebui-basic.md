@@ -1,6 +1,6 @@
 # Open WebUI — Basic Memory-Enhanced Agent
 
-A minimal setup where mnemory enhances any Open WebUI model with persistent memory. No custom system prompt needed — mnemory's server instructions handle memory behavior automatically.
+A minimal setup where mnemory enhances any Open WebUI model with persistent memory.
 
 ## Setup
 
@@ -25,30 +25,39 @@ A minimal setup where mnemory enhances any Open WebUI model with persistent memo
 
 ## System Prompt
 
-With `INSTRUCTION_MODE=proactive` (the default), the system prompt can be minimal. mnemory's server instructions tell the LLM to search before answering, store new information proactively, and call `get_core_memories` at conversation start.
+**Important**: Open WebUI does not inject MCP server instructions into the LLM's system prompt — it only exposes tool descriptions. You need to tell the LLM to initialize memory.
+
+### Minimal (recommended)
 
 ```
 You are a helpful assistant.
+
+Always call initialize_memory at the start of each conversation.
 ```
 
-That's it. The memory behavior is automatic.
+The `initialize_memory` tool returns behavioral instructions and core memories in one call, so the LLM knows how to use memory tools effectively.
 
-### Optional: Add personality flavor
+### With personality flavor
 
 ```
 You are a helpful assistant. You are friendly, concise, and practical.
 You remember things about the user across conversations and use that
 context to give better, more personalized answers.
+
+Always call initialize_memory at the start of each conversation.
 ```
 
 ## How It Works
 
-1. **Conversation start**: The LLM calls `get_core_memories` and loads pinned user facts and recent context.
-2. **During conversation**: The LLM searches memories before answering relevant questions and stores new information the user shares.
+1. **Conversation start**: The LLM calls `initialize_memory`, which returns:
+   - Behavioral instructions (how to use memory tools)
+   - Core memories (pinned user facts, recent context)
+2. **During conversation**: Following the instructions, the LLM searches memories before answering relevant questions and stores new information the user shares.
 3. **Over time**: The agent builds up knowledge about the user — preferences, facts, projects, decisions — making every conversation more personalized.
 
 ## Notes
 
 - The `X-Agent-Id: open-webui` header means agent-scoped memories (like agent identity) are tied to Open WebUI. Other clients (Claude Code, Cursor) have their own agent scope but share user memories.
-- With `proactive` mode, the LLM is instructed to search and store without being asked. If you prefer manual control, set `INSTRUCTION_MODE=passive` on the mnemory server.
+- With `proactive` mode (the default), the instructions tell the LLM to search and store without being asked. If you prefer manual control, set `INSTRUCTION_MODE=passive` on the mnemory server.
 - All user memories are shared across agents by default. Only agent-scoped memories (identity, agent-specific preferences) are isolated.
+- For clients that DO inject MCP server instructions (Claude Code, Cursor), you can skip `initialize_memory` and call `get_core_memories` directly.

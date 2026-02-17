@@ -121,6 +121,12 @@ With `MCP_API_KEYS` configured, the LLM doesn't need to pass `user_id` or `agent
 5. Custom headers: `X-Agent-Id: open-webui`
 6. Enable tools on models: **Workspace > Models > Advanced Params > Function Calling: Native**
 
+**Note on MCP instructions**: Open WebUI does not inject MCP server instructions into the LLM's system prompt — it only exposes tool descriptions. For optimal proactive memory behavior, add this to your model's system prompt:
+
+> Always call initialize_memory at the start of each conversation.
+
+Or use the full system prompt templates in [examples/system-prompts/](examples/system-prompts/).
+
 **Multi-user setup** (recommended): Enable `ENABLE_FORWARD_USER_INFO_HEADERS=true` in Open WebUI so it forwards `X-OpenWebUI-User-Email` per user. Use a wildcard API key in mnemory — user identity is resolved automatically from the email header:
 
 ```bash
@@ -420,6 +426,12 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 
 ## MCP Tools
 
+### Session Initialization
+
+| Tool | Description |
+|---|---|
+| `initialize_memory` | **Start here.** Returns behavioral instructions + core memories. Use for clients that don't inject MCP server instructions (e.g., Open WebUI). |
+
 ### Memory Operations
 
 | Tool | Description |
@@ -427,7 +439,7 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 | `add_memory` | Store a memory with optional metadata, `infer` flag, and `role` |
 | `add_memories` | Batch-add multiple memories in a single call |
 | `search_memories` | Semantic search with type/category/role filters, importance reranking |
-| `get_core_memories` | Load pinned + recent context at conversation start |
+| `get_core_memories` | Load pinned + recent context at conversation start. Use for clients that inject MCP server instructions (e.g., Claude Code). |
 | `list_memories` | List all/filtered memories |
 | `update_memory` | Update content or metadata of existing memory |
 | `delete_memory` | Delete a memory and its artifacts |
@@ -493,11 +505,11 @@ With `infer=false`, steps 2-3 are skipped — the content is embedded and stored
 ┌──────────────────────────────────────────────────┐
 │                    mnemory                        │
 │                                                   │
-│  13 MCP Tools:                                    │
-│  add_memory, add_memories, search_memories,       │
-│  get_core_memories, list_memories, update_memory,  │
-│  delete_memory, delete_all_memories,              │
-│  list_categories, save_artifact, get_artifact,    │
+│  14 MCP Tools:                                    │
+│  initialize_memory, add_memory, add_memories,    │
+│  search_memories, get_core_memories, list_memories│
+│  update_memory, delete_memory, delete_all_memories│
+│  list_categories, save_artifact, get_artifact,   │
 │  list_artifacts, delete_artifact                  │
 │                                                   │
 │  ┌─────────────────┐  ┌───────────────────────┐  │
