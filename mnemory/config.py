@@ -126,6 +126,9 @@ class ServerConfig:
     enable_delete_all: bool = field(
         default_factory=lambda: _env_bool("ENABLE_DELETE_ALL", False)
     )
+    instruction_mode: str = field(
+        default_factory=lambda: _env("INSTRUCTION_MODE", "proactive")
+    )
 
 
 @dataclass
@@ -248,6 +251,11 @@ class Config:
             raise ValueError(f"Unsupported VECTOR_BACKEND: {self.vector.backend}")
         if self.artifact.backend not in ("s3", "filesystem"):
             raise ValueError(f"Unsupported ARTIFACT_BACKEND: {self.artifact.backend}")
+        if self.server.instruction_mode not in ("passive", "proactive", "personality"):
+            raise ValueError(
+                f"Unsupported INSTRUCTION_MODE: {self.server.instruction_mode}. "
+                "Must be one of: passive, proactive, personality"
+            )
         if self.artifact.backend == "s3":
             if not self.artifact.s3_access_key or not self.artifact.s3_secret_key:
                 raise ValueError(

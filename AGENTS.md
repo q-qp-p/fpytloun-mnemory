@@ -19,7 +19,7 @@ mnemory/
 ├── categories.py          # Predefined category registry, validation, matching logic
 ├── memory.py              # Business logic layer (orchestrates vector + artifact stores)
 ├── ttl.py                 # TTL (Time-To-Live) utility functions for memory expiration
-├── instructions.py        # MCP server instructions text (system prompt for LLMs)
+├── instructions.py        # Configurable MCP server instructions (passive/proactive/personality modes)
 └── storage/
     ├── vector.py          # Vector store abstraction (mem0 wrapper + direct Qdrant helpers)
     └── artifact.py        # Artifact store abstraction (S3 and filesystem backends)
@@ -35,6 +35,7 @@ mnemory/
 | **TTL** | `ttl.py` | Expiration calculation, decay detection, reinforcement metadata |
 | **Vector Storage** | `storage/vector.py` | mem0 wrapper + direct Qdrant client for advanced queries |
 | **Artifact Storage** | `storage/artifact.py` | S3/MinIO and filesystem backends for binary artifacts |
+| **Instructions** | `instructions.py` | Configurable MCP server instructions (passive/proactive/personality modes) |
 | **Configuration** | `config.py` | Environment variable parsing, mem0 config construction |
 
 ### Key design decisions

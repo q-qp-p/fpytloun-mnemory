@@ -32,7 +32,7 @@ from starlette.routing import Mount, Route
 
 from mnemory import __version__
 from mnemory.config import load_config
-from mnemory.instructions import SERVER_INSTRUCTIONS
+from mnemory.instructions import build_instructions
 from mnemory.memory import MemoryService
 
 logging.basicConfig(
@@ -186,7 +186,7 @@ def _get_session_agent_id() -> str | None:
 
 mcp = FastMCP(
     "mnemory",
-    instructions=SERVER_INSTRUCTIONS,
+    instructions=build_instructions(os.environ.get("INSTRUCTION_MODE", "proactive")),
     stateless_http=True,
     json_response=True,
     # Disable DNS rebinding protection — mnemory runs behind a reverse

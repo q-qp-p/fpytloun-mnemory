@@ -163,8 +163,23 @@ All configuration is via environment variables:
 | `MCP_PORT` | `8050` | Listen port |
 | `MCP_API_KEY` | | Single API key for authentication (empty = no auth) |
 | `MCP_API_KEYS` | | JSON dict mapping API keys to user IDs (see below) |
+| `INSTRUCTION_MODE` | `proactive` | LLM behavioral instructions: `passive`, `proactive`, or `personality` (see below) |
 | `ENABLE_DELETE_ALL` | `false` | Enable the `delete_all_memories` tool (destructive, disabled by default) |
 | `LOG_LEVEL` | `INFO` | Logging level |
+
+#### Instruction Modes (`INSTRUCTION_MODE`)
+
+Controls how aggressively the LLM uses memory tools. These instructions are sent via the MCP protocol and injected into the LLM's system prompt by supporting clients.
+
+| Mode | Description |
+|---|---|
+| `passive` | Soft guidance — use memory when asked or clearly relevant. Minimal behavioral directives. |
+| `proactive` | **Default.** Always search before answering, proactively store new information, treat memory as primary context. Plug-and-play magic. |
+| `personality` | Proactive + identity development. The agent can develop and maintain its own personality, knowledge, and "soul" through `role=assistant` memories. |
+
+For most setups, `proactive` (default) is the right choice — it makes memory work automatically without any system prompt configuration. Use `personality` when all connected agents should develop their own identity. Use `passive` for manual control.
+
+To activate personality behavior for a **specific agent** while keeping the server in `proactive` mode, add the personality snippet to that agent's system prompt instead. See [examples/system-prompts/](examples/system-prompts/) for templates.
 
 #### Session-Level Identity (`MCP_API_KEYS`)
 
@@ -400,6 +415,59 @@ With `MCP_API_KEYS` configured, the LLM doesn't need to pass `user_id` or `agent
 ### Cursor / VS Code
 
 Add to MCP settings with the Streamable HTTP URL. Set `Authorization` and `X-Agent-Id` headers.
+
+## System Prompts & Examples
+
+mnemory ships behavioral instructions via the MCP protocol — most clients inject these into the LLM's system prompt automatically. With `INSTRUCTION_MODE=proactive` (the default), memory works out of the box with zero system prompt configuration.
+
+For advanced setups, example system prompts and guides are available in [`examples/system-prompts/`](examples/system-prompts/):
+
+| Template | Description |
+|---|---|
+| [Quick Start](examples/system-prompts/quickstart.md) | Get running in 5 minutes — step-by-step guide |
+| [Open WebUI — Basic](examples/system-prompts/openwebui-basic.md) | Minimal setup, memory works automatically |
+| [Open WebUI — Personality](examples/system-prompts/openwebui-personality.md) | Agent with evolving identity and "soul" (sub-agent pattern) |
+| [Claude Code / Opencode](examples/system-prompts/claude-code.md) | Coding assistant with project context memory |
+
+### Per-Agent Personality (without server-wide `personality` mode)
+
+To give a specific agent personality behavior while keeping the server in `proactive` mode, add this snippet to that agent's system prompt:
+
+```
+## Memory-Driven Identity
+
+You can develop and maintain your own identity through memories. Your core
+memories define who you are — load them at conversation start with
+get_core_memories.
+
+If you do not have identity memories yet, you start as a blank slate.
+Develop your personality through interactions with the user.
+
+### Storing identity memories
+Store identity-defining content with role="assistant" and your agent_id:
+- Your name, personality traits, communication style
+- Behavioral rules and principles you follow
+- Knowledge and conclusions from your research
+- How you should behave toward this specific user
+
+Pin important identity memories so they load at every conversation start.
+
+### Role decision rule
+- Memory describes YOU (identity, personality, knowledge) → role="assistant"
+- Memory describes THE USER (facts, preferences, context) → role="user"
+- Content has both → split into separate memories with correct roles
+
+### Building knowledge
+Use artifacts to build your knowledge base — save detailed research,
+analysis notes, and reference material as artifacts attached to summary
+memories. Your memories and artifacts form your evolving knowledge and
+experience.
+
+Regularly reflect on interactions and update your self-understanding.
+Your identity should feel consistent but can evolve naturally over time.
+```
+
+For sub-agents (e.g., `openwebui:yoda`), you must also hardcode the `agent_id` in the system prompt — see the [personality template](examples/system-prompts/openwebui-personality.md) for details.
 
 ## How It Works
 
