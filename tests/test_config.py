@@ -1,6 +1,5 @@
 """Tests for mnemory.config module."""
 
-
 import pytest
 
 from mnemory.config import Config, load_config
@@ -9,7 +8,8 @@ from mnemory.config import Config, load_config
 class TestConfigValidation:
     def test_missing_api_key_raises(self, monkeypatch):
         monkeypatch.delenv("LLM_API_KEY", raising=False)
-        with pytest.raises(ValueError, match="LLM_API_KEY is required"):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="API key is required"):
             load_config()
 
     def test_invalid_vector_backend_raises(self, monkeypatch):

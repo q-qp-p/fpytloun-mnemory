@@ -4,12 +4,7 @@ services:
     ports:
       - "8050:8050"
     environment:
-      - LLM_API_KEY=${OPENAI_API_KEY}
-      - VECTOR_BACKEND=chroma
-      - ARTIFACT_BACKEND=filesystem
-      - CHROMA_PATH=/data/chroma
-      - ARTIFACT_PATH=/data/artifacts
-      - HISTORY_DB_PATH=/data/history.db
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
       - mnemory-data:/data
     restart: unless-stopped

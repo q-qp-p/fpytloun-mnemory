@@ -14,7 +14,9 @@ RUN pip install --no-cache-dir ".[all]" \
 COPY mnemory/ mnemory/
 RUN pip install --no-cache-dir --no-deps .
 
-# Create data directory for SQLite history and local artifacts
+# Data directory for vector store, artifacts, and history.
+# Override ~/.mnemory default so Docker volumes mount cleanly at /data.
+ENV DATA_DIR=/data
 RUN mkdir -p /data
 
 EXPOSE 8050

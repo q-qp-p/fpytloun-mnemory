@@ -4,23 +4,26 @@ Get a memory-enhanced AI assistant running in 5 minutes.
 
 ## Step 1: Start mnemory
 
+mnemory picks up `OPENAI_API_KEY` from your environment automatically and stores data in `~/.mnemory/`.
+
+**Using uvx (recommended):**
 ```bash
-git clone https://github.com/fpytloun/mnemory.git
-cd mnemory
+uvx "mnemory[chroma]"
+```
+
+**Using Docker:**
+```bash
 export OPENAI_API_KEY=sk-your-key
 docker-compose up -d
 ```
 
-mnemory is now running at `http://localhost:8050/mcp`.
-
-**Alternative** (no Docker):
+**Using pip:**
 ```bash
-pip install mnemory[all]
-export LLM_API_KEY=$OPENAI_API_KEY
-export VECTOR_BACKEND=chroma
-export ARTIFACT_BACKEND=filesystem
+pip install "mnemory[chroma]"
 mnemory
 ```
+
+mnemory is now running at `http://localhost:8050/mcp`.
 
 ## Step 2: Connect Your Client
 

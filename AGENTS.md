@@ -60,13 +60,8 @@ mnemory/
 # Install with all optional dependencies
 pip install -e ".[all,dev]"
 
-# Run with minimal config (Chroma + filesystem)
+# Run with minimal config (uses OPENAI_API_KEY, data in ~/.mnemory/)
 export LLM_API_KEY=sk-your-key
-export VECTOR_BACKEND=chroma
-export ARTIFACT_BACKEND=filesystem
-export CHROMA_PATH=./data/chroma
-export ARTIFACT_PATH=./data/artifacts
-export HISTORY_DB_PATH=./data/history.db
 mnemory
 
 # Or run the module directly

@@ -1,15 +1,21 @@
 """Configuration management for mnemory.
 
 All settings are loaded from environment variables with sensible defaults.
-This allows running locally with minimal config or in Kubernetes with full
-infrastructure.
+Defaults are optimized for local development — just set OPENAI_API_KEY and
+run. Override for production (Qdrant, S3, API keys).
+
+Data is stored in ~/.mnemory by default (override with DATA_DIR env var).
+In Docker, DATA_DIR is set to /data for volume mounting.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
+
+logger = logging.getLogger("mnemory")
 
 
 def _env(key: str, default: str = "") -> str:
@@ -34,11 +40,42 @@ def _env_int_or_none(key: str, default: int | None = None) -> int | None:
     return int(raw)
 
 
+def _data_dir() -> str:
+    """Resolve base data directory.
+
+    Priority: DATA_DIR env var > ~/.mnemory
+    In Docker, the Dockerfile sets DATA_DIR=/data for volume mounting.
+    Locally, defaults to ~/.mnemory for clean, predictable storage.
+    """
+    raw = os.environ.get("DATA_DIR", "")
+    if raw:
+        return raw
+    return os.path.join(os.path.expanduser("~"), ".mnemory")
+
+
+def _llm_api_key() -> str:
+    """Resolve LLM API key with fallback chain.
+
+    Priority: LLM_API_KEY > OPENAI_API_KEY
+    """
+    return _env("LLM_API_KEY") or _env("OPENAI_API_KEY")
+
+
+def _llm_base_url() -> str:
+    """Resolve LLM base URL with fallback chain.
+
+    Priority: LLM_BASE_URL > OPENAI_API_BASE > default OpenAI URL
+    """
+    return (
+        _env("LLM_BASE_URL") or _env("OPENAI_API_BASE") or "https://api.openai.com/v1"
+    )
+
+
 @dataclass
 class VectorConfig:
     """Vector store configuration."""
 
-    backend: str = field(default_factory=lambda: _env("VECTOR_BACKEND", "qdrant"))
+    backend: str = field(default_factory=lambda: _env("VECTOR_BACKEND", "chroma"))
 
     # Qdrant settings
     qdrant_host: str = field(default_factory=lambda: _env("QDRANT_HOST", "localhost"))
@@ -48,9 +85,11 @@ class VectorConfig:
         default_factory=lambda: _env("QDRANT_COLLECTION", "mnemory")
     )
 
-    # Chroma settings (local alternative)
+    # Chroma settings (default for local development)
     chroma_path: str = field(
-        default_factory=lambda: _env("CHROMA_PATH", "/data/chroma")
+        default_factory=lambda: (
+            _env("CHROMA_PATH") or os.path.join(_data_dir(), "chroma")
+        )
     )
 
 
@@ -59,10 +98,8 @@ class LLMConfig:
     """LLM and embedding configuration."""
 
     model: str = field(default_factory=lambda: _env("LLM_MODEL", "gpt-5-mini"))
-    base_url: str = field(
-        default_factory=lambda: _env("LLM_BASE_URL", "https://api.openai.com/v1")
-    )
-    api_key: str = field(default_factory=lambda: _env("LLM_API_KEY"))
+    base_url: str = field(default_factory=_llm_base_url)
+    api_key: str = field(default_factory=_llm_api_key)
     temperature: float = 0.1
 
     embed_model: str = field(
@@ -76,7 +113,7 @@ class LLMConfig:
 class ArtifactConfig:
     """Artifact store configuration."""
 
-    backend: str = field(default_factory=lambda: _env("ARTIFACT_BACKEND", "s3"))
+    backend: str = field(default_factory=lambda: _env("ARTIFACT_BACKEND", "filesystem"))
 
     # S3 / MinIO settings
     s3_endpoint: str = field(
@@ -87,9 +124,11 @@ class ArtifactConfig:
     s3_bucket: str = field(default_factory=lambda: _env("S3_BUCKET", "mnemory"))
     s3_region: str = field(default_factory=lambda: _env("S3_REGION"))
 
-    # Filesystem settings (local alternative)
+    # Filesystem settings (default for local development)
     filesystem_path: str = field(
-        default_factory=lambda: _env("ARTIFACT_PATH", "/data/artifacts")
+        default_factory=lambda: (
+            _env("ARTIFACT_PATH") or os.path.join(_data_dir(), "artifacts")
+        )
     )
 
 
@@ -136,7 +175,9 @@ class MemoryConfig:
     """Memory behavior configuration."""
 
     history_db_path: str = field(
-        default_factory=lambda: _env("HISTORY_DB_PATH", "/data/history.db")
+        default_factory=lambda: (
+            _env("HISTORY_DB_PATH") or os.path.join(_data_dir(), "history.db")
+        )
     )
     max_memory_length: int = field(
         default_factory=lambda: _env_int("MAX_MEMORY_LENGTH", 1000)
@@ -209,7 +250,7 @@ class Config:
                 "provider": "openai",
                 "config": {
                     "model": self.llm.embed_model,
-                    "openai_base_url": self.llm.embed_base_url or self.llm.base_url,
+                    "openai_base_url": (self.llm.embed_base_url or self.llm.base_url),
                     "api_key": self.llm.api_key,
                     "embedding_dims": self.llm.embed_dims,
                 },
@@ -226,7 +267,10 @@ class Config:
             }
             if self.vector.qdrant_api_key:
                 vs_config["api_key"] = self.vector.qdrant_api_key
-            config["vector_store"] = {"provider": "qdrant", "config": vs_config}
+            config["vector_store"] = {
+                "provider": "qdrant",
+                "config": vs_config,
+            }
         elif self.vector.backend == "chroma":
             config["vector_store"] = {
                 "provider": "chroma",
@@ -246,14 +290,19 @@ class Config:
     def validate(self) -> None:
         """Validate that required configuration is present."""
         if not self.llm.api_key:
-            raise ValueError("LLM_API_KEY is required")
+            raise ValueError("API key is required. Set LLM_API_KEY or OPENAI_API_KEY.")
         if self.vector.backend not in ("qdrant", "chroma"):
             raise ValueError(f"Unsupported VECTOR_BACKEND: {self.vector.backend}")
         if self.artifact.backend not in ("s3", "filesystem"):
             raise ValueError(f"Unsupported ARTIFACT_BACKEND: {self.artifact.backend}")
-        if self.server.instruction_mode not in ("passive", "proactive", "personality"):
+        if self.server.instruction_mode not in (
+            "passive",
+            "proactive",
+            "personality",
+        ):
             raise ValueError(
-                f"Unsupported INSTRUCTION_MODE: {self.server.instruction_mode}. "
+                f"Unsupported INSTRUCTION_MODE: "
+                f"{self.server.instruction_mode}. "
                 "Must be one of: passive, proactive, personality"
             )
         if self.artifact.backend == "s3":
@@ -265,7 +314,16 @@ class Config:
 
 
 def load_config() -> Config:
-    """Load and validate configuration from environment variables."""
+    """Load and validate configuration from environment variables.
+
+    Creates the data directory (~/.mnemory by default) if it doesn't exist.
+    """
     config = Config()
     config.validate()
+
+    # Ensure data directory exists
+    data_dir = _data_dir()
+    os.makedirs(data_dir, exist_ok=True)
+    logger.debug("Data directory: %s", data_dir)
+
     return config

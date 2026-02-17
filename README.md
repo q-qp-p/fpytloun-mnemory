@@ -4,156 +4,236 @@
 
 # mnemory
 
-A self-hosted, two-tier memory system for AI agents and assistants, exposed as an [MCP](https://modelcontextprotocol.io/) server over Streamable HTTP.
+Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://modelcontextprotocol.io/) server that adds personalization and long-term memory to any AI assistant — Claude Code, Open WebUI, Opencode, Cursor, or any MCP-compatible client.
 
-Built on [mem0](https://github.com/mem0ai/mem0) for intelligent fact extraction and deduplication, with an artifact store for detailed content. Works with any MCP-compatible client: Open WebUI, Claude Code, Opencode, Cursor, VS Code, and more.
+**Plug and play.** Connect mnemory and your agent immediately starts remembering user preferences, facts, decisions, and context across conversations. No system prompt changes needed.
 
-## Features
+**Self-hosted and secure.** Your data stays on your infrastructure. No cloud dependencies, no third-party access to your memories.
 
-- **Two-tier memory**: Fast memory (vector-searchable facts in Qdrant/Chroma) + slow memory (detailed artifacts in S3/filesystem)
-- **Intelligent storage**: mem0-powered fact extraction, deduplication, and contradiction resolution
-- **Structured memory model**: Memory types (preference, fact, episodic, procedural, context), predefined categories with project namespacing, importance levels
-- **Core memories**: Pinned memories + recent context loaded at conversation start for agent identity and user context
-- **Artifact store**: Attach detailed content (research reports, analysis, code, images) to memories, retrieved on demand with pagination
-- **Multi-user & multi-agent**: User isolation via `user_id`, agent-specific memories via `agent_id`
-- **Configurable backends**: Qdrant or Chroma for vectors, S3/MinIO or local filesystem for artifacts
-- **MCP native**: Streamable HTTP transport, works with Open WebUI (v0.6.31+), Claude Code, and any MCP client
-- **Session-level identity**: API key → user_id mapping + X-Agent-Id header, so LLMs don't need to pass identity per tool call
-- **API key authentication**: Optional Bearer token or X-API-Key header auth, with multi-key support
-- **Health endpoint**: `/health` for Kubernetes probes
+**Intelligent.** Built on [mem0](https://github.com/mem0ai/mem0) for LLM-driven fact extraction, deduplication, and contradiction resolution. Memories are semantically searchable, automatically categorized, and expire naturally when no longer relevant.
 
-## Architecture
+## Table of Contents
 
-```
-┌──────────────────────────────────────────────────┐
-│                  MCP Clients                      │
-│  Open WebUI, Claude Code, Opencode, Cursor, ...  │
-└──────────────────────┬───────────────────────────┘
-                       │ Streamable HTTP (/mcp)
-                       ▼
-┌──────────────────────────────────────────────────┐
-│                    mnemory                        │
-│                                                   │
-│  13 MCP Tools:                                    │
-│  add_memory, add_memories, search_memories,       │
-│  get_core_memories, list_memories, update_memory,  │
-│  delete_memory, delete_all_memories,              │
-│  list_categories, save_artifact, get_artifact,    │
-│  list_artifacts, delete_artifact                  │
-│                                                   │
-│  ┌─────────────────┐  ┌───────────────────────┐  │
-│  │  Fast Memory     │  │  Slow Memory          │  │
-│  │  (mem0 + Qdrant) │  │  (S3/MinIO or FS)     │  │
-│  │  Searchable      │  │  Detailed artifacts   │  │
-│  │  facts/summaries │  │  retrieved on demand   │  │
-│  └────────┬─────────┘  └───────────┬───────────┘  │
-└───────────┼────────────────────────┼──────────────┘
-            │                        │
-            ▼                        ▼
-     ┌────────────┐          ┌──────────────┐
-     │   Qdrant   │          │  S3 / MinIO  │
-     │ or Chroma  │          │  or local FS │
-     └────────────┘          └──────────────┘
-            │
-            ▼
-     ┌────────────┐
-     │  LiteLLM   │
-     │ or OpenAI  │
-     │(LLM+embed) │
-     └────────────┘
-```
+- [Quick Start](#quick-start)
+- [Client Configuration](#client-configuration)
+- [System Prompts & Examples](#system-prompts--examples)
+- [Configuration](#configuration)
+- [Memory Model](#memory-model)
+- [MCP Tools](#mcp-tools)
+- [How It Works](#how-it-works)
+- [Architecture](#architecture)
+- [Development](#development)
 
 ## Quick Start
 
+mnemory needs an OpenAI-compatible API key for LLM and embeddings. It picks up `OPENAI_API_KEY` from your environment automatically.
+
+### Using uvx (recommended)
+
 ```bash
-git clone https://github.com/fpytloun/mnemory.git
-cd mnemory
+uvx "mnemory[chroma]"
+```
+
+That's it. mnemory starts on `http://localhost:8050/mcp`, stores data in `~/.mnemory/`.
+
+Now connect your client — for **Claude Code** or **Opencode**, add to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "mnemory": {
+      "type": "streamable-http",
+      "url": "http://localhost:8050/mcp",
+      "headers": {
+        "X-Agent-Id": "claude-code"
+      }
+    }
+  }
+}
+```
+
+Start a new conversation. Memory works automatically.
+
+### Using Docker
+
+```bash
 export OPENAI_API_KEY=sk-your-key
 docker-compose up -d
 ```
 
-The MCP endpoint is available at `http://localhost:8050/mcp`.
-
-### Alternative: Docker run
+### Using pip
 
 ```bash
-docker run -d \
-  -p 8050:8050 \
-  -e LLM_API_KEY=$OPENAI_API_KEY \
-  -e VECTOR_BACKEND=chroma \
-  -e ARTIFACT_BACKEND=filesystem \
-  -v mnemory-data:/data \
-  genunix/mnemory:latest
-```
-
-### Alternative: Local development
-
-```bash
-pip install -e ".[all]"
-export LLM_API_KEY=$OPENAI_API_KEY
-export VECTOR_BACKEND=chroma
-export ARTIFACT_BACKEND=filesystem
+pip install "mnemory[chroma]"
 mnemory
 ```
 
 ### Production (Qdrant + S3)
 
+For production, use Qdrant for vectors and S3/MinIO for artifacts:
+
 ```bash
 docker run -d \
   -p 8050:8050 \
-  -e LLM_API_KEY=sk-your-key \
+  -e OPENAI_API_KEY=sk-your-key \
   -e LLM_BASE_URL=https://your-litellm-proxy/v1 \
   -e LLM_MODEL=gpt-5-mini \
   -e VECTOR_BACKEND=qdrant \
   -e QDRANT_HOST=qdrant.example.com \
-  -e QDRANT_PORT=6333 \
   -e ARTIFACT_BACKEND=s3 \
   -e S3_ENDPOINT=http://minio.example.com:9000 \
   -e S3_ACCESS_KEY=admin \
   -e S3_SECRET_KEY=secret \
-  -e S3_BUCKET=mnemory \
   -e MCP_API_KEYS='{"your-api-key": "your-username"}' \
   -v mnemory-data:/data \
   genunix/mnemory:latest
 ```
 
+## Client Configuration
+
+### Claude Code / Opencode
+
+Add to your MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "mnemory": {
+      "type": "streamable-http",
+      "url": "https://mem.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer your-api-key",
+        "X-Agent-Id": "claude-code"
+      }
+    }
+  }
+}
+```
+
+With `MCP_API_KEYS` configured, the LLM doesn't need to pass `user_id` or `agent_id` — both are resolved from the API key mapping and `X-Agent-Id` header.
+
+### Open WebUI (v0.6.31+)
+
+1. Go to **Admin Settings > External Tools > Add Server**
+2. Type: **MCP (Streamable HTTP)**
+3. URL: `http://mnemory:8050/mcp` (same namespace) or `https://mem.example.com/mcp` (via ingress)
+4. Auth: **Bearer**, Key: `your-api-key`
+5. Custom headers: `X-Agent-Id: open-webui`
+6. Enable tools on models: **Workspace > Models > Advanced Params > Function Calling: Native**
+
+**Multi-user setup** (recommended): Enable `ENABLE_FORWARD_USER_INFO_HEADERS=true` in Open WebUI so it forwards `X-OpenWebUI-User-Email` per user. Use a wildcard API key in mnemory — user identity is resolved automatically from the email header:
+
+```bash
+# Open WebUI environment
+ENABLE_FORWARD_USER_INFO_HEADERS=true
+
+# Mnemory environment
+MCP_API_KEYS='{"shared-openwebui-key": "*"}'
+```
+
+**Single-user setup**: Use a non-wildcard API key that binds directly to a user:
+
+```bash
+MCP_API_KEYS='{"your-api-key": "filip"}'
+```
+
+### Cursor / VS Code
+
+Add to MCP settings with the Streamable HTTP URL. Set `Authorization` and `X-Agent-Id` headers.
+
+## System Prompts & Examples
+
+mnemory ships behavioral instructions via the MCP protocol — most clients inject these into the LLM's system prompt automatically. With `INSTRUCTION_MODE=proactive` (the default), memory works out of the box with zero system prompt configuration.
+
+For advanced setups, example system prompts and guides are available in [`examples/system-prompts/`](examples/system-prompts/):
+
+| Template | Description |
+|---|---|
+| [Quick Start](examples/system-prompts/quickstart.md) | Get running in 5 minutes — step-by-step guide |
+| [Open WebUI — Basic](examples/system-prompts/openwebui-basic.md) | Minimal setup, memory works automatically |
+| [Open WebUI — Personality](examples/system-prompts/openwebui-personality.md) | Agent with evolving identity and "soul" (sub-agent pattern) |
+| [Claude Code / Opencode](examples/system-prompts/claude-code.md) | Coding assistant with project context memory |
+
+### Per-Agent Personality (without server-wide `personality` mode)
+
+To give a specific agent personality behavior while keeping the server in `proactive` mode, add the personality snippet to that agent's system prompt. See [examples/system-prompts/openwebui-personality.md](examples/system-prompts/openwebui-personality.md) for the full template, or use this snippet:
+
+```
+## Memory-Driven Identity
+
+Your personality and knowledge are stored in memory. At the start of every
+conversation, call get_core_memories to load your identity and context.
+If you have no identity memories yet, you start as a blank slate — develop
+your personality through interactions.
+
+### Storing identity memories
+
+Store identity-defining content with role="assistant" and your agent_id:
+- Your personality traits and communication style
+- Behavioral rules and principles you follow
+- Knowledge and conclusions from your research
+- How you should behave toward this specific user
+
+Pin important identity memories so they load at every conversation start.
+
+### Role decision rule
+
+- Memory describes YOU (identity, personality, knowledge) → role="assistant", agent_id=your_agent_id
+- Memory describes THE USER (facts, preferences, context) → role="user"
+- Memory describes user preference specific to THIS agent → role="user", agent_id=your_agent_id
+- Content has both → split into separate memories with correct roles
+
+### Building knowledge
+
+Use artifacts to build your knowledge base — save detailed research,
+analysis notes, and reference material as artifacts attached to summary
+memories. Your memories and artifacts form your evolving knowledge and
+experience.
+
+Regularly reflect on interactions and update your self-understanding.
+Your identity should feel consistent but can evolve naturally over time.
+```
+
+For sub-agents (e.g., `openwebui:yoda`), you must also hardcode the `agent_id` in the system prompt — see the [personality template](examples/system-prompts/openwebui-personality.md) for details.
+
 ## Configuration
 
-All configuration is via environment variables:
+All configuration is via environment variables. Defaults are optimized for local development — just set `OPENAI_API_KEY` and run.
+
+Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In Docker, `DATA_DIR` is set to `/data` for volume mounting.
 
 ### LLM & Embeddings
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_API_KEY` | (required) | API key for LLM provider |
-| `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
+| `OPENAI_API_KEY` | | OpenAI API key (also used as fallback for `LLM_API_KEY`) |
+| `OPENAI_API_BASE` | | OpenAI-compatible API base URL (also used as fallback for `LLM_BASE_URL`) |
+| `LLM_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for LLM provider |
+| `LLM_BASE_URL` | (falls back to `OPENAI_API_BASE`, then `https://api.openai.com/v1`) | OpenAI-compatible API base URL |
 | `LLM_MODEL` | `gpt-5-mini` | LLM model for fact extraction and deduplication |
 | `EMBED_MODEL` | `text-embedding-3-small` | Embedding model |
 | `EMBED_BASE_URL` | (falls back to `LLM_BASE_URL`) | Separate base URL for embeddings |
 | `EMBED_DIMS` | `1536` | Embedding dimensions |
 
-### Vector Store
+### Data Storage
 
 | Variable | Default | Description |
 |---|---|---|
-| `VECTOR_BACKEND` | `qdrant` | Vector store backend: `qdrant` or `chroma` |
+| `DATA_DIR` | `~/.mnemory` | Base data directory (all paths below default to subdirectories of this) |
+| `VECTOR_BACKEND` | `chroma` | Vector store backend: `chroma` (local) or `qdrant` (production) |
+| `CHROMA_PATH` | `{DATA_DIR}/chroma` | Chroma local storage path |
 | `QDRANT_HOST` | `localhost` | Qdrant host |
 | `QDRANT_PORT` | `6333` | Qdrant port |
 | `QDRANT_API_KEY` | | Qdrant API key (optional) |
 | `QDRANT_COLLECTION` | `mnemory` | Qdrant collection name |
-| `CHROMA_PATH` | `/data/chroma` | Chroma local storage path |
-
-### Artifact Store
-
-| Variable | Default | Description |
-|---|---|---|
-| `ARTIFACT_BACKEND` | `s3` | Artifact backend: `s3` or `filesystem` |
+| `ARTIFACT_BACKEND` | `filesystem` | Artifact backend: `filesystem` (local) or `s3` (production) |
+| `ARTIFACT_PATH` | `{DATA_DIR}/artifacts` | Local filesystem path for artifacts |
 | `S3_ENDPOINT` | `http://localhost:9000` | S3/MinIO endpoint URL |
 | `S3_ACCESS_KEY` | (required for s3) | S3 access key |
 | `S3_SECRET_KEY` | (required for s3) | S3 secret key |
 | `S3_BUCKET` | `mnemory` | S3 bucket name |
 | `S3_REGION` | | S3 region (optional) |
-| `ARTIFACT_PATH` | `/data/artifacts` | Local filesystem path for artifacts |
+| `HISTORY_DB_PATH` | `{DATA_DIR}/history.db` | SQLite history database path |
 
 ### Server
 
@@ -208,7 +288,6 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 
 | Variable | Default | Description |
 |---|---|---|
-| `HISTORY_DB_PATH` | `/data/history.db` | SQLite history database path |
 | `MAX_MEMORY_LENGTH` | `1000` | Max characters for fast memory content |
 | `MAX_ARTIFACT_SIZE` | `102400` | Max bytes per artifact (100KB) |
 | `MAX_CORE_CONTEXT_LENGTH` | `4000` | Max characters for get_core_memories response |
@@ -364,117 +443,12 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 | `list_artifacts` | List artifacts on a memory |
 | `delete_artifact` | Remove an artifact |
 
-## Client Configuration
-
-### Open WebUI (v0.6.31+)
-
-1. Go to **Admin Settings > External Tools > Add Server**
-2. Type: **MCP (Streamable HTTP)**
-3. URL: `http://mnemory:8050/mcp` (same namespace) or `https://mem.example.com/mcp` (via ingress)
-4. Auth: **Bearer**, Key: `your-api-key`
-5. Custom headers: `X-Agent-Id: open-webui`
-6. Enable tools on models: **Workspace > Models > Advanced Params > Function Calling: Native**
-
-**Multi-user setup** (recommended): Enable `ENABLE_FORWARD_USER_INFO_HEADERS=true` in Open WebUI so it forwards `X-OpenWebUI-User-Email` per user. Use a wildcard API key in mnemory — user identity is resolved automatically from the email header:
-
-```bash
-# Open WebUI environment
-ENABLE_FORWARD_USER_INFO_HEADERS=true
-
-# Mnemory environment
-MCP_API_KEYS='{"shared-openwebui-key": "*"}'
-```
-
-**Single-user setup**: Use a non-wildcard API key that binds directly to a user:
-
-```bash
-MCP_API_KEYS='{"your-api-key": "filip"}'
-```
-
-### Claude Code / Opencode
-
-Add to your MCP configuration:
-
-```json
-{
-  "mcpServers": {
-    "mnemory": {
-      "type": "streamable-http",
-      "url": "https://mem.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer your-api-key",
-        "X-Agent-Id": "claude-code"
-      }
-    }
-  }
-}
-```
-
-With `MCP_API_KEYS` configured, the LLM doesn't need to pass `user_id` or `agent_id` — both are resolved from the API key mapping and `X-Agent-Id` header.
-
-### Cursor / VS Code
-
-Add to MCP settings with the Streamable HTTP URL. Set `Authorization` and `X-Agent-Id` headers.
-
-## System Prompts & Examples
-
-mnemory ships behavioral instructions via the MCP protocol — most clients inject these into the LLM's system prompt automatically. With `INSTRUCTION_MODE=proactive` (the default), memory works out of the box with zero system prompt configuration.
-
-For advanced setups, example system prompts and guides are available in [`examples/system-prompts/`](examples/system-prompts/):
-
-| Template | Description |
-|---|---|
-| [Quick Start](examples/system-prompts/quickstart.md) | Get running in 5 minutes — step-by-step guide |
-| [Open WebUI — Basic](examples/system-prompts/openwebui-basic.md) | Minimal setup, memory works automatically |
-| [Open WebUI — Personality](examples/system-prompts/openwebui-personality.md) | Agent with evolving identity and "soul" (sub-agent pattern) |
-| [Claude Code / Opencode](examples/system-prompts/claude-code.md) | Coding assistant with project context memory |
-
-### Per-Agent Personality (without server-wide `personality` mode)
-
-To give a specific agent personality behavior while keeping the server in `proactive` mode, add this snippet to that agent's system prompt:
-
-```
-## Memory-Driven Identity
-
-You can develop and maintain your own identity through memories. Your core
-memories define who you are — load them at conversation start with
-get_core_memories.
-
-If you do not have identity memories yet, you start as a blank slate.
-Develop your personality through interactions with the user.
-
-### Storing identity memories
-Store identity-defining content with role="assistant" and your agent_id:
-- Your name, personality traits, communication style
-- Behavioral rules and principles you follow
-- Knowledge and conclusions from your research
-- How you should behave toward this specific user
-
-Pin important identity memories so they load at every conversation start.
-
-### Role decision rule
-- Memory describes YOU (identity, personality, knowledge) → role="assistant"
-- Memory describes THE USER (facts, preferences, context) → role="user"
-- Content has both → split into separate memories with correct roles
-
-### Building knowledge
-Use artifacts to build your knowledge base — save detailed research,
-analysis notes, and reference material as artifacts attached to summary
-memories. Your memories and artifacts form your evolving knowledge and
-experience.
-
-Regularly reflect on interactions and update your self-understanding.
-Your identity should feel consistent but can evolve naturally over time.
-```
-
-For sub-agents (e.g., `openwebui:yoda`), you must also hardcode the `agent_id` in the system prompt — see the [personality template](examples/system-prompts/openwebui-personality.md) for details.
-
 ## How It Works
 
 ### Storing a Memory
 
-1. You call `add_memory(content="I drive a Škoda Octavia 2019", user_id="filip", categories=["vehicles"])`
-2. mem0's LLM extracts facts: "User drives a Škoda Octavia 2019"
+1. You call `add_memory(content="I drive a Skoda Octavia 2019", categories=["vehicles"])`
+2. mem0's LLM extracts facts: "User drives a Skoda Octavia 2019"
 3. mem0 checks for duplicates/contradictions in existing memories
 4. If new: creates embedding, stores in Qdrant with metadata
 5. If update: merges with existing memory (e.g., "User now drives a Tesla Model 3")
@@ -483,7 +457,7 @@ With `infer=false`, steps 2-3 are skipped — the content is embedded and stored
 
 ### Searching
 
-1. You call `search_memories(query="what car do I have", user_id="filip")`
+1. You call `search_memories(query="what car do I have")`
 2. Query is embedded, vector similarity search in Qdrant
 3. Results filtered by category/type if specified
 4. Reranked by combined similarity + importance score
@@ -491,8 +465,8 @@ With `infer=false`, steps 2-3 are skipped — the content is embedded and stored
 
 ### Core Memories
 
-1. At conversation start, LLM calls `get_core_memories(user_id="filip", agent_id="bob")`
-2. Fetches all pinned memories for agent "bob", organized by `role`:
+1. At conversation start, LLM calls `get_core_memories()`
+2. Fetches all pinned memories, organized by `role`:
    - **Agent Identity** (`role=assistant`, fact/preference): name, personality
    - **Agent Knowledge** (`role=assistant`, other types): researched conclusions
    - **Agent Instructions** (`role=user`): user preferences specific to this agent
@@ -507,16 +481,54 @@ With `infer=false`, steps 2-3 are skipped — the content is embedded and stored
 3. Later, search finds the summary with `has_artifacts: true`
 4. Agent fetches details: `get_artifact(memory_id="...", artifact_id="...")`
 
+## Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│                  MCP Clients                      │
+│  Open WebUI, Claude Code, Opencode, Cursor, ...  │
+└──────────────────────┬───────────────────────────┘
+                       │ Streamable HTTP (/mcp)
+                       ▼
+┌──────────────────────────────────────────────────┐
+│                    mnemory                        │
+│                                                   │
+│  13 MCP Tools:                                    │
+│  add_memory, add_memories, search_memories,       │
+│  get_core_memories, list_memories, update_memory,  │
+│  delete_memory, delete_all_memories,              │
+│  list_categories, save_artifact, get_artifact,    │
+│  list_artifacts, delete_artifact                  │
+│                                                   │
+│  ┌─────────────────┐  ┌───────────────────────┐  │
+│  │  Fast Memory     │  │  Slow Memory          │  │
+│  │  (mem0 + Qdrant) │  │  (S3/MinIO or FS)     │  │
+│  │  Searchable      │  │  Detailed artifacts   │  │
+│  │  facts/summaries │  │  retrieved on demand   │  │
+│  └────────┬─────────┘  └───────────┬───────────┘  │
+└───────────┼────────────────────────┼──────────────┘
+            │                        │
+            ▼                        ▼
+     ┌────────────┐          ┌──────────────┐
+     │   Qdrant   │          │  S3 / MinIO  │
+     │ or Chroma  │          │  or local FS │
+     └────────────┘          └──────────────┘
+            │
+            ▼
+     ┌────────────┐
+     │  LiteLLM   │
+     │ or OpenAI  │
+     │(LLM+embed) │
+     └────────────┘
+```
+
 ## Development
 
 ```bash
 # Install with dev dependencies
 pip install -e ".[all,dev]"
 
-# Run locally
-export LLM_API_KEY=sk-your-key
-export VECTOR_BACKEND=chroma
-export ARTIFACT_BACKEND=filesystem
+# Run locally (uses OPENAI_API_KEY, data in ~/.mnemory/)
 mnemory
 
 # Run tests

@@ -4,8 +4,29 @@ Use mnemory with Claude Code or Opencode to remember project context, architectu
 
 ## Setup
 
-Add to your MCP configuration (Claude Code: `~/.claude/claude_code_config.json`, Opencode: `opencode.json`):
+1. Start mnemory (if not already running):
+   ```bash
+   uvx "mnemory[chroma]"
+   ```
 
+2. Add to your MCP configuration (Claude Code: `~/.claude/claude_code_config.json`, Opencode: `opencode.json`):
+
+**Local setup (no auth):**
+```json
+{
+  "mcpServers": {
+    "mnemory": {
+      "type": "streamable-http",
+      "url": "http://localhost:8050/mcp",
+      "headers": {
+        "X-Agent-Id": "claude-code"
+      }
+    }
+  }
+}
+```
+
+**Production (with auth):**
 ```json
 {
   "mcpServers": {
