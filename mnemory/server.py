@@ -1,9 +1,9 @@
 """MCP server for mnemory.
 
-Exposes 14 tools over Streamable HTTP for memory management:
+Exposes 15 tools over Streamable HTTP for memory management:
 - initialize_memory (session init with instructions + core memories)
-- add_memory, add_memories, search_memories, get_core_memories, list_memories
-- update_memory, delete_memory, delete_all_memories
+- add_memory, add_memories, search_memories, get_core_memories, get_recent_memories
+- list_memories, update_memory, delete_memory, delete_all_memories
 - list_categories
 - save_artifact, get_artifact, list_artifacts, delete_artifact
 
@@ -207,7 +207,7 @@ mcp = FastMCP(
 def initialize_memory(
     user_id: str | None = None,
     agent_id: str | None = None,
-    recent_hours: int = 24,
+    recent_days: int = 7,
     mode: str | None = None,
 ) -> str:
     """ALWAYS call this at the start of every conversation to initialize memory.
@@ -225,7 +225,7 @@ def initialize_memory(
         user_id: User identifier. Optional if pre-configured via API key mapping.
         agent_id: Your agent identifier. Optional if pre-configured via
                   X-Agent-Id header.
-        recent_hours: How many hours back to include recent context (default 24).
+        recent_days: How many days back to include recent context (default 7).
         mode: Override instruction mode. One of: passive, proactive, personality.
               If omitted, uses the server's INSTRUCTION_MODE setting.
               - passive: Use memory when asked or clearly relevant
@@ -257,7 +257,7 @@ def initialize_memory(
         core_memories = _get_service().get_core_memories(
             user_id=uid,
             agent_id=aid,
-            recent_hours=recent_hours,
+            recent_days=recent_days,
         )
     except ValueError as e:
         core_memories_error = str(e)
@@ -582,7 +582,7 @@ def search_memories(
 def get_core_memories(
     user_id: str | None = None,
     agent_id: str | None = None,
-    recent_hours: int = 24,
+    recent_days: int = 7,
 ) -> str:
     """Load essential context at the start of every conversation.
 
@@ -600,14 +600,14 @@ def get_core_memories(
     - Agent Instructions: user preferences specific to you (role=user, agent-scoped)
     - User Facts: critical information about the user
     - User Preferences: how the user likes to interact
-    - Recent Context: activity from the last N hours (chronological)
+    - Recent Context: recent activity with User/Agent subsections
 
     Args:
         user_id: User identifier. Optional if pre-configured via API key mapping.
         agent_id: Your agent identifier (if you have one). Loads agent-specific
                   identity and knowledge memories.
                   Optional if pre-configured via X-Agent-Id header.
-        recent_hours: How many hours back to include recent context (default 24).
+        recent_days: How many days back to include recent context (default 7).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -615,7 +615,7 @@ def get_core_memories(
         return _get_service().get_core_memories(
             user_id=uid,
             agent_id=aid,
-            recent_hours=recent_hours,
+            recent_days=recent_days,
         )
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -623,6 +623,55 @@ def get_core_memories(
         logger.exception("Error in get_core_memories")
         return json.dumps(
             {"error": True, "message": "Internal error processing get_core_memories"}
+        )
+
+
+# ── Tool 3b: get_recent_memories ─────────────────────────────────────
+
+
+@mcp.tool()
+def get_recent_memories(
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    days: int = 7,
+    scope: str = "all",
+    limit: int = 25,
+    include_decayed: bool = False,
+) -> str:
+    """Get recent memories from the last N days.
+
+    Use this to see recent activity without loading full core memories.
+    Returns episodic, context, and procedural memories ordered by most
+    recent first.
+
+    Args:
+        user_id: User identifier. Optional if pre-configured via API key mapping.
+        agent_id: Agent identifier. Optional if pre-configured via X-Agent-Id header.
+        days: How many days back to look (default 7).
+        scope: Which memories to include:
+               - "all": Both user and agent memories (default)
+               - "user": Only shared user memories (no agent_id)
+               - "agent": Only agent-scoped memories (requires agent_id)
+        limit: Max results per scope (default 25).
+        include_decayed: Include expired/decayed memories (default false).
+    """
+    try:
+        uid = _resolve_user_id(user_id)
+        aid = _resolve_agent_id(agent_id)
+        return _get_service().get_recent_memories(
+            user_id=uid,
+            agent_id=aid,
+            days=days,
+            scope=scope,
+            limit=limit,
+            include_decayed=include_decayed,
+        )
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
+    except Exception:
+        logger.exception("Error in get_recent_memories")
+        return json.dumps(
+            {"error": True, "message": "Internal error processing get_recent_memories"}
         )
 
 

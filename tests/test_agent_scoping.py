@@ -548,7 +548,9 @@ class TestNoneMetadataSafety:
         mock_config.memory.max_memory_length = 1000
         mock_config.memory.max_artifact_size = 102400
         mock_config.memory.max_core_context_length = 4000
-        mock_config.memory.default_recent_hours = 24
+        mock_config.memory.default_recent_days = 7
+        mock_config.memory.recent_limit_user = 25
+        mock_config.memory.recent_limit_agent = 25
         mock_config.memory.classify_cache_ttl = 300
         mock_config.memory.core_memories_cache_ttl = 300
         mock_config.memory.auto_classify = False

@@ -297,7 +297,9 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 | `MAX_MEMORY_LENGTH` | `1000` | Max characters for fast memory content |
 | `MAX_ARTIFACT_SIZE` | `102400` | Max bytes per artifact (100KB) |
 | `MAX_CORE_CONTEXT_LENGTH` | `4000` | Max characters for get_core_memories response |
-| `DEFAULT_RECENT_HOURS` | `24` | Default hours for recent context in core memories |
+| `DEFAULT_RECENT_DAYS` | `7` | Default days for recent context in core memories |
+| `RECENT_LIMIT_USER` | `25` | Max recent user memories to include |
+| `RECENT_LIMIT_AGENT` | `25` | Max recent agent memories to include |
 | `AUTO_CLASSIFY` | `true` | Auto-classify memory metadata (type, categories, importance, pinned) via LLM when not provided |
 | `CLASSIFY_CACHE_TTL` | `300` | TTL in seconds for the category cache used during auto-classification |
 | `CORE_MEMORIES_CACHE_TTL` | `300` | TTL in seconds for the core memories cache (get_core_memories). Set to 0 to disable. Invalidated on memory mutations. |
@@ -440,6 +442,7 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 | `add_memories` | Batch-add multiple memories in a single call |
 | `search_memories` | Semantic search with type/category/role filters, importance reranking |
 | `get_core_memories` | Load pinned + recent context at conversation start. Use for clients that inject MCP server instructions (e.g., Claude Code). |
+| `get_recent_memories` | Get recent activity from the last N days with scope filter (user/agent/all) |
 | `list_memories` | List all/filtered memories |
 | `update_memory` | Update content or metadata of existing memory |
 | `delete_memory` | Delete a memory and its artifacts |
@@ -505,9 +508,10 @@ With `infer=false`, steps 2-3 are skipped — the content is embedded and stored
 ┌──────────────────────────────────────────────────┐
 │                    mnemory                        │
 │                                                   │
-│  14 MCP Tools:                                    │
+│  15 MCP Tools:                                    │
 │  initialize_memory, add_memory, add_memories,    │
-│  search_memories, get_core_memories, list_memories│
+│  search_memories, get_core_memories,             │
+│  get_recent_memories, list_memories,             │
 │  update_memory, delete_memory, delete_all_memories│
 │  list_categories, save_artifact, get_artifact,   │
 │  list_artifacts, delete_artifact                  │

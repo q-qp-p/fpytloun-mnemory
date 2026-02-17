@@ -259,20 +259,40 @@ class VectorStore:
         agent_id: str | None = None,
         since: datetime,
         limit: int = 50,
+        memory_types: list[str] | None = None,
     ) -> list[dict]:
         """Get memories created after a given timestamp.
 
         Uses direct Qdrant DatetimeRange filtering since mem0 doesn't
         support date queries. For Chroma backend, falls back to get_all
         with post-filtering.
+
+        Args:
+            user_id: Required user scope.
+            agent_id: If set, filter to only memories with this agent_id.
+                      If None, returns memories without agent_id (shared).
+            since: Only return memories created after this timestamp.
+            limit: Maximum number of results.
+            memory_types: If set, filter to only these memory types
+                          (e.g., ["episodic", "context", "procedural"]).
+
+        Returns memories ordered by created_at descending (most recent first).
         """
         if self._config.vector.backend == "qdrant":
             return self._qdrant_recent_memories(
-                user_id=user_id, agent_id=agent_id, since=since, limit=limit
+                user_id=user_id,
+                agent_id=agent_id,
+                since=since,
+                limit=limit,
+                memory_types=memory_types,
             )
         else:
             return self._fallback_recent_memories(
-                user_id=user_id, agent_id=agent_id, since=since, limit=limit
+                user_id=user_id,
+                agent_id=agent_id,
+                since=since,
+                limit=limit,
+                memory_types=memory_types,
             )
 
     def get_pinned_memories(
@@ -482,13 +502,20 @@ class VectorStore:
         agent_id: str | None,
         since: datetime,
         limit: int,
+        memory_types: list[str] | None = None,
     ) -> list[dict]:
-        """Fetch recent memories using Qdrant's DatetimeRange filter."""
+        """Fetch recent memories using Qdrant's DatetimeRange filter.
+
+        Returns memories ordered by created_at descending (most recent first).
+        """
         from qdrant_client.models import (
             DatetimeRange,
             FieldCondition,
             Filter,
+            IsNullCondition,
+            MatchAny,
             MatchValue,
+            PayloadField,
         )
 
         must_conditions = [
@@ -498,9 +525,22 @@ class VectorStore:
                 range=DatetimeRange(gte=since.isoformat()),
             ),
         ]
+
+        # Filter by agent_id: if provided, match exactly; if None, match only
+        # memories without agent_id (shared user memories)
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+        else:
+            must_conditions.append(
+                IsNullCondition(is_null=PayloadField(key="agent_id"))
+            )
+
+        # Filter by memory types if specified
+        if memory_types:
+            must_conditions.append(
+                FieldCondition(key="memory_type", match=MatchAny(any=memory_types))
             )
 
         points, _ = self.qdrant_client.scroll(
@@ -510,7 +550,12 @@ class VectorStore:
             with_payload=True,
         )
 
-        return [self._qdrant_point_to_memory(p) for p in points]
+        results = [self._qdrant_point_to_memory(p) for p in points]
+
+        # Sort by created_at descending (most recent first)
+        results.sort(key=lambda m: m.get("created_at", ""), reverse=True)
+
+        return results
 
     def _fallback_recent_memories(
         self,
@@ -519,8 +564,12 @@ class VectorStore:
         agent_id: str | None,
         since: datetime,
         limit: int,
+        memory_types: list[str] | None = None,
     ) -> list[dict]:
-        """Fallback for non-Qdrant backends: get_all + post-filter by date."""
+        """Fallback for non-Qdrant backends: get_all + post-filter by date.
+
+        Returns memories ordered by created_at descending (most recent first).
+        """
         kwargs: dict[str, Any] = {"user_id": user_id, "limit": 1000}
         if agent_id:
             kwargs["agent_id"] = agent_id
@@ -530,11 +579,20 @@ class VectorStore:
         results = []
         for mem in all_memories.get("results", []):
             created = mem.get("created_at", "")
-            if created and created >= since_str:
-                results.append(mem)
+            if not (created and created >= since_str):
+                continue
+            # When agent_id is None, only include shared memories (no agent_id)
+            if not agent_id and mem.get("agent_id"):
+                continue
+            # Filter by memory_type if specified
+            if memory_types:
+                mtype = (mem.get("metadata") or {}).get("memory_type")
+                if mtype not in memory_types:
+                    continue
+            results.append(mem)
 
-        # Sort by created_at ascending (chronological)
-        results.sort(key=lambda m: m.get("created_at", ""))
+        # Sort by created_at descending (most recent first)
+        results.sort(key=lambda m: m.get("created_at", ""), reverse=True)
         return results[:limit]
 
     @staticmethod

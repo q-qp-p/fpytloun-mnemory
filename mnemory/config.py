@@ -188,8 +188,14 @@ class MemoryConfig:
     max_core_context_length: int = field(
         default_factory=lambda: _env_int("MAX_CORE_CONTEXT_LENGTH", 4000)
     )
-    default_recent_hours: int = field(
-        default_factory=lambda: _env_int("DEFAULT_RECENT_HOURS", 24)
+    default_recent_days: int = field(
+        default_factory=lambda: _env_int("DEFAULT_RECENT_DAYS", 7)
+    )
+    recent_limit_user: int = field(
+        default_factory=lambda: _env_int("RECENT_LIMIT_USER", 25)
+    )
+    recent_limit_agent: int = field(
+        default_factory=lambda: _env_int("RECENT_LIMIT_AGENT", 25)
     )
     auto_classify: bool = field(
         default_factory=lambda: _env_bool("AUTO_CLASSIFY", True)

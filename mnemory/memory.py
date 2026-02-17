@@ -377,19 +377,50 @@ class MemoryService:
 
     # ── Get Core Memories ─────────────────────────────────────────────
 
+    # Memory types to include in recent context
+    RECENT_MEMORY_TYPES = ["episodic", "context", "procedural"]
+
+    def _format_recent_memory_line(self, memory: dict) -> str:
+        """Format a memory for recent context display.
+
+        Format: - [YYYY-MM-DD HH:MM] [type | cat1, cat2] Memory text
+        """
+        ts = memory.get("created_at", "")
+        if ts and "T" in ts:
+            ts = ts.split("T")[0] + " " + ts.split("T")[1][:5]
+
+        text = memory.get("memory", "")
+        meta = memory.get("metadata") or {}
+        mtype = meta.get("memory_type", "")
+        cats = meta.get("categories", [])
+
+        # Format: [type | cat1, cat2] or [type] or [cat1, cat2]
+        parts = []
+        if mtype:
+            parts.append(mtype)
+        if cats:
+            parts.append(", ".join(cats))
+
+        if parts:
+            meta_str = f"[{' | '.join(parts)}] "
+        else:
+            meta_str = ""
+
+        return f"- [{ts}] {meta_str}{text}"
+
     def get_core_memories(
         self,
         *,
         user_id: str,
         agent_id: str | None = None,
-        recent_hours: int | None = None,
+        recent_days: int | None = None,
     ) -> str:
         """Assemble core context for conversation start.
 
         Returns a structured text with:
         1. Pinned agent memories (identity, knowledge) — if agent_id provided
         2. Pinned user memories (facts, preferences) — shared across agents
-        3. Recent context memories from the last N hours
+        3. Recent context memories from the last N days (dual-scope: user + agent)
 
         Total output is capped at MAX_CORE_CONTEXT_LENGTH.
         """
@@ -397,12 +428,12 @@ class MemoryService:
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
 
-        if recent_hours is None:
-            recent_hours = self._config.memory.default_recent_hours
-        recent_hours = int(recent_hours)
+        if recent_days is None:
+            recent_days = self._config.memory.default_recent_days
+        recent_days = int(recent_days)
 
         # Check cache
-        cache_key = (user_id, agent_id or "", recent_hours)
+        cache_key = (user_id, agent_id or "", recent_days)
         cached = self._core_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -411,6 +442,9 @@ class MemoryService:
 
         sections: list[str] = []
 
+        # Collect IDs of pinned memories for deduplication with recent
+        pinned_ids: set[str] = set()
+
         # 1. Pinned agent memories (identity, knowledge, and agent-scoped instructions)
         if agent_id:
             agent_pinned = self.vector.get_pinned_memories(
@@ -418,6 +452,9 @@ class MemoryService:
             )
             # Only include memories that have this agent_id
             agent_only = [m for m in agent_pinned if m.get("agent_id") == agent_id]
+            for m in agent_only:
+                if m.get("id"):
+                    pinned_ids.add(m["id"])
             if agent_only:
                 identity = []
                 knowledge = []
@@ -447,6 +484,9 @@ class MemoryService:
         user_pinned = self.vector.get_pinned_memories(
             user_id=user_id, exclude_agent=True
         )
+        for m in user_pinned:
+            if m.get("id"):
+                pinned_ids.add(m["id"])
         if user_pinned:
             facts = []
             prefs = []
@@ -467,27 +507,55 @@ class MemoryService:
             if other:
                 sections.append("## User Context\n" + "\n".join(other))
 
-        # 3. Recent context memories
-        since = datetime.now(timezone.utc) - timedelta(hours=recent_hours)
-        recent = self.vector.get_recent_memories(
-            user_id=user_id, agent_id=agent_id, since=since, limit=50
+        # 3. Recent context memories (dual-scope: user + agent)
+        since = datetime.now(timezone.utc) - timedelta(days=recent_days)
+        limit_user = self._config.memory.recent_limit_user
+        limit_agent = self._config.memory.recent_limit_agent
+
+        # Fetch user recent memories (no agent_id — shared)
+        user_recent = self.vector.get_recent_memories(
+            user_id=user_id,
+            agent_id=None,
+            since=since,
+            limit=limit_user,
+            memory_types=self.RECENT_MEMORY_TYPES,
         )
-        # Filter out expired/decayed recent memories
-        recent = [m for m in recent if not should_exclude(m)]
-        if recent:
-            # Sort chronologically
-            recent.sort(key=lambda m: m.get("created_at", ""))
-            lines = []
-            for m in recent:
-                ts = m.get("created_at", "")
-                # Extract just the date+time portion for readability
-                if ts and "T" in ts:
-                    ts = ts.split("T")[0] + " " + ts.split("T")[1][:5]
-                text = m.get("memory", "")
-                lines.append(f"- [{ts}] {text}")
-            sections.append(
-                f"## Recent Context (last {recent_hours}h)\n" + "\n".join(lines)
+        # Filter out expired/decayed and already-pinned
+        user_recent = [
+            m
+            for m in user_recent
+            if not should_exclude(m) and m.get("id") not in pinned_ids
+        ]
+
+        # Fetch agent recent memories (with agent_id)
+        agent_recent = []
+        if agent_id:
+            agent_recent = self.vector.get_recent_memories(
+                user_id=user_id,
+                agent_id=agent_id,
+                since=since,
+                limit=limit_agent,
+                memory_types=self.RECENT_MEMORY_TYPES,
             )
+            # Filter out expired/decayed and already-pinned
+            agent_recent = [
+                m
+                for m in agent_recent
+                if not should_exclude(m) and m.get("id") not in pinned_ids
+            ]
+
+        # Build recent context section with subsections
+        if user_recent or agent_recent:
+            recent_parts = ["## Recent Context"]
+            if user_recent:
+                recent_parts.append("\n### User Activity")
+                for m in user_recent:
+                    recent_parts.append(self._format_recent_memory_line(m))
+            if agent_recent:
+                recent_parts.append("\n### Agent Activity")
+                for m in agent_recent:
+                    recent_parts.append(self._format_recent_memory_line(m))
+            sections.append("\n".join(recent_parts))
 
         if not sections:
             output = "No core memories found."
@@ -508,6 +576,128 @@ class MemoryService:
 
         self._core_cache.set(cache_key, output)
         return output
+
+    # ── Get Recent Memories ───────────────────────────────────────────
+
+    def get_recent_memories(
+        self,
+        *,
+        user_id: str,
+        agent_id: str | None = None,
+        days: int | None = None,
+        scope: str = "all",
+        limit: int | None = None,
+        include_decayed: bool = False,
+    ) -> str:
+        """Get recent memories from the last N days.
+
+        Returns episodic, context, and procedural memories ordered by most
+        recent first, formatted for display.
+
+        Args:
+            user_id: Required user scope.
+            agent_id: Agent identifier for agent-scoped memories.
+            days: How many days back to look (default from config).
+            scope: Which memories to include:
+                   - "all": Both user and agent memories (default)
+                   - "user": Only shared user memories (no agent_id)
+                   - "agent": Only agent-scoped memories (requires agent_id)
+            limit: Max results per scope (default from config).
+            include_decayed: Include expired/decayed memories (default false).
+
+        Returns formatted text with recent memories.
+        """
+        user_id = _validate_id(user_id, "user_id")
+        if agent_id:
+            agent_id = _validate_id(agent_id, "agent_id")
+
+        if scope not in ("all", "user", "agent"):
+            raise ValueError(
+                f"Invalid scope: {scope}. Must be 'all', 'user', or 'agent'"
+            )
+
+        if scope == "agent" and not agent_id:
+            raise ValueError("agent_id is required when scope='agent'")
+
+        if days is None:
+            days = self._config.memory.default_recent_days
+        days = int(days)
+
+        if limit is None:
+            # Use config defaults based on scope
+            if scope == "all":
+                limit_user = self._config.memory.recent_limit_user
+                limit_agent = self._config.memory.recent_limit_agent
+            elif scope == "user":
+                limit_user = (
+                    self._config.memory.recent_limit_user
+                    + self._config.memory.recent_limit_agent
+                )
+                limit_agent = 0
+            else:  # agent
+                limit_user = 0
+                limit_agent = (
+                    self._config.memory.recent_limit_user
+                    + self._config.memory.recent_limit_agent
+                )
+        else:
+            # Use provided limit, split evenly for "all" scope
+            if scope == "all":
+                limit_user = limit
+                limit_agent = limit
+            elif scope == "user":
+                limit_user = limit
+                limit_agent = 0
+            else:  # agent
+                limit_user = 0
+                limit_agent = limit
+
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        user_recent = []
+        agent_recent = []
+
+        # Fetch user recent memories
+        if limit_user > 0 and scope in ("all", "user"):
+            user_recent = self.vector.get_recent_memories(
+                user_id=user_id,
+                agent_id=None,
+                since=since,
+                limit=limit_user,
+                memory_types=self.RECENT_MEMORY_TYPES,
+            )
+            user_recent = [
+                m for m in user_recent if not should_exclude(m, include_decayed)
+            ]
+
+        # Fetch agent recent memories
+        if limit_agent > 0 and scope in ("all", "agent") and agent_id:
+            agent_recent = self.vector.get_recent_memories(
+                user_id=user_id,
+                agent_id=agent_id,
+                since=since,
+                limit=limit_agent,
+                memory_types=self.RECENT_MEMORY_TYPES,
+            )
+            agent_recent = [
+                m for m in agent_recent if not should_exclude(m, include_decayed)
+            ]
+
+        if not user_recent and not agent_recent:
+            return "No recent memories found."
+
+        # Build output
+        parts = ["## Recent Memories"]
+        if user_recent:
+            parts.append("\n### User Activity")
+            for m in user_recent:
+                parts.append(self._format_recent_memory_line(m))
+        if agent_recent:
+            parts.append("\n### Agent Activity")
+            for m in agent_recent:
+                parts.append(self._format_recent_memory_line(m))
+
+        return "\n".join(parts)
 
     # ── List Memories ─────────────────────────────────────────────────
 
