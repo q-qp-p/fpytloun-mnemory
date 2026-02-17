@@ -1320,3 +1320,491 @@ class TestPointToMemory:
         result = VectorStore._point_to_memory(point)
         assert result["id"] == "test-uuid"
         assert result["memory"] == ""
+
+
+# ── get_recent_memories ───────────────────────────────────────────────
+
+
+class TestGetRecentMemories:
+    """Test get_recent_memories returns correct results for all scopes."""
+
+    @staticmethod
+    def _make_memory(
+        mem_id: str,
+        text: str,
+        memory_type: str = "fact",
+        agent_id: str | None = None,
+        categories: list[str] | None = None,
+    ) -> dict:
+        """Create a memory dict matching vector store output format."""
+        from datetime import datetime, timezone
+
+        m: dict = {
+            "id": mem_id,
+            "memory": text,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {
+                "memory_type": memory_type,
+                "categories": categories or [],
+                "importance": "normal",
+                "pinned": False,
+            },
+        }
+        if agent_id:
+            m["agent_id"] = agent_id
+        return m
+
+    def test_scope_all_returns_user_and_agent(self):
+        """scope='all' should return both user and agent memories."""
+        service = _make_service()
+        user_mem = self._make_memory("u1", "User fact", "fact")
+        agent_mem = self._make_memory("a1", "Agent note", "episodic", agent_id="bot")
+
+        def mock_recent(*, user_id, agent_id, since, limit, memory_types=None):
+            if agent_id is None:
+                return [user_mem]
+            if agent_id == "bot":
+                return [agent_mem]
+            return []
+
+        service.vector.get_recent_memories.side_effect = mock_recent
+
+        result = service.get_recent_memories(
+            user_id="filip", agent_id="bot", scope="all"
+        )
+        assert "User fact" in result
+        assert "Agent note" in result
+        assert "### User Activity" in result
+        assert "### Agent Activity" in result
+
+    def test_scope_user_returns_only_shared(self):
+        """scope='user' should return only shared (no agent_id) memories."""
+        service = _make_service()
+        user_mem = self._make_memory("u1", "User preference", "preference")
+
+        def mock_recent(*, user_id, agent_id, since, limit, memory_types=None):
+            if agent_id is None:
+                return [user_mem]
+            return []
+
+        service.vector.get_recent_memories.side_effect = mock_recent
+
+        result = service.get_recent_memories(
+            user_id="filip", agent_id="bot", scope="user"
+        )
+        assert "User preference" in result
+        assert "### Agent Activity" not in result
+
+    def test_scope_agent_returns_only_agent_scoped(self):
+        """scope='agent' should return only agent-scoped memories."""
+        service = _make_service()
+        agent_mem = self._make_memory("a1", "Agent context", "context", agent_id="bot")
+
+        def mock_recent(*, user_id, agent_id, since, limit, memory_types=None):
+            if agent_id == "bot":
+                return [agent_mem]
+            return []
+
+        service.vector.get_recent_memories.side_effect = mock_recent
+
+        result = service.get_recent_memories(
+            user_id="filip", agent_id="bot", scope="agent"
+        )
+        assert "Agent context" in result
+        assert "### User Activity" not in result
+
+    def test_scope_agent_requires_agent_id(self):
+        """scope='agent' without agent_id should raise ValueError."""
+        service = _make_service()
+        with pytest.raises(ValueError, match="agent_id is required"):
+            service.get_recent_memories(user_id="filip", scope="agent")
+
+    def test_all_memory_types_included(self):
+        """All memory types (fact, preference, etc.) should be returned."""
+        service = _make_service()
+        memories = [
+            self._make_memory("m1", "A fact", "fact"),
+            self._make_memory("m2", "A preference", "preference"),
+            self._make_memory("m3", "An episode", "episodic"),
+            self._make_memory("m4", "A procedure", "procedural"),
+            self._make_memory("m5", "Some context", "context"),
+        ]
+
+        service.vector.get_recent_memories.return_value = memories
+
+        result = service.get_recent_memories(user_id="filip", scope="user")
+        assert "A fact" in result
+        assert "A preference" in result
+        assert "An episode" in result
+        assert "A procedure" in result
+        assert "Some context" in result
+
+    def test_no_memory_types_filter_passed_to_vector(self):
+        """get_recent_memories should NOT pass memory_types filter to vector store."""
+        service = _make_service()
+        service.vector.get_recent_memories.return_value = []
+
+        service.get_recent_memories(user_id="filip", scope="user")
+
+        _, kwargs = service.vector.get_recent_memories.call_args
+        assert "memory_types" not in kwargs
+
+    def test_empty_result(self):
+        """No recent memories should return a message string."""
+        service = _make_service()
+        service.vector.get_recent_memories.return_value = []
+
+        result = service.get_recent_memories(user_id="filip", scope="user")
+        assert result == "No recent memories found."
+
+    def test_scope_all_without_agent_id_returns_user_only(self):
+        """scope='all' without agent_id should return user memories only."""
+        service = _make_service()
+        user_mem = self._make_memory("u1", "Shared memory", "fact")
+        service.vector.get_recent_memories.return_value = [user_mem]
+
+        result = service.get_recent_memories(user_id="filip", scope="all")
+        assert "Shared memory" in result
+        # Only one call to vector store (user scope), agent skipped
+        assert service.vector.get_recent_memories.call_count == 1
+        _, kwargs = service.vector.get_recent_memories.call_args
+        assert kwargs["agent_id"] is None
+
+    def test_decayed_memories_excluded_by_default(self):
+        """Decayed memories should be excluded unless include_decayed=True."""
+        service = _make_service()
+        decayed_mem = self._make_memory("d1", "Old memory", "fact")
+        decayed_mem["metadata"]["decayed_at"] = "2025-01-01T00:00:00+00:00"
+        service.vector.get_recent_memories.return_value = [decayed_mem]
+
+        result = service.get_recent_memories(user_id="filip", scope="user")
+        assert result == "No recent memories found."
+
+    def test_decayed_memories_included_when_requested(self):
+        """include_decayed=True should include decayed memories."""
+        service = _make_service()
+        decayed_mem = self._make_memory("d1", "Old memory", "fact")
+        decayed_mem["metadata"]["decayed_at"] = "2025-01-01T00:00:00+00:00"
+        service.vector.get_recent_memories.return_value = [decayed_mem]
+
+        result = service.get_recent_memories(
+            user_id="filip", scope="user", include_decayed=True
+        )
+        assert "Old memory" in result
+
+
+# ── Vector store get_recent_memories (Qdrant integration) ─────────────
+
+
+class TestVectorGetRecentMemories:
+    """Test VectorStore.get_recent_memories against local embedded Qdrant.
+
+    These tests exercise the actual Qdrant filtering to verify that
+    IsEmptyCondition correctly matches memories where agent_id is absent
+    from the payload (shared user memories).
+    """
+
+    @staticmethod
+    def _make_store():
+        """Create a VectorStore with in-memory Qdrant for testing."""
+        from unittest.mock import MagicMock
+
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import Distance, VectorParams
+
+        config = MagicMock()
+        config.vector.collection_name = "test_recent"
+        config.vector.is_remote = False
+
+        client = QdrantClient(location=":memory:")
+        client.create_collection(
+            collection_name="test_recent",
+            vectors_config=VectorParams(size=4, distance=Distance.COSINE),
+        )
+
+        embedding = MagicMock()
+        embedding.dims = 4
+
+        from mnemory.storage.vector import VectorStore
+
+        store = VectorStore.__new__(VectorStore)
+        store._client = client
+        store._config = config
+        store._embedding = embedding
+
+        return store
+
+    def test_shared_memories_found_without_agent_id(self):
+        """Memories without agent_id found when querying agent_id=None."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+
+        # Insert a shared memory (no agent_id in payload)
+        store.insert(
+            text="User lives in Prague",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id=None,
+            metadata={"memory_type": "fact"},
+        )
+
+        since = datetime.now(timezone.utc) - timedelta(days=1)
+        results = store.get_recent_memories(
+            user_id="filip",
+            agent_id=None,
+            since=since,
+        )
+        assert len(results) == 1
+        assert results[0]["memory"] == "User lives in Prague"
+
+    def test_agent_memories_excluded_from_shared_query(self):
+        """Memories with agent_id should NOT appear when querying agent_id=None."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+
+        # Insert an agent-scoped memory
+        store.insert(
+            text="Agent personality trait",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id="bot",
+            metadata={"memory_type": "fact"},
+        )
+
+        since = datetime.now(timezone.utc) - timedelta(days=1)
+        results = store.get_recent_memories(
+            user_id="filip",
+            agent_id=None,
+            since=since,
+        )
+        assert len(results) == 0
+
+    def test_agent_memories_found_with_agent_id(self):
+        """Memories with agent_id should be found when querying that agent_id."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+
+        store.insert(
+            text="Agent knowledge",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id="bot",
+            metadata={"memory_type": "episodic"},
+        )
+
+        since = datetime.now(timezone.utc) - timedelta(days=1)
+        results = store.get_recent_memories(
+            user_id="filip",
+            agent_id="bot",
+            since=since,
+        )
+        assert len(results) == 1
+        assert results[0]["memory"] == "Agent knowledge"
+
+    def test_mixed_memories_correctly_scoped(self):
+        """Both shared and agent memories exist; each query returns correct set."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+
+        store.insert(
+            text="Shared fact",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id=None,
+            metadata={"memory_type": "fact"},
+        )
+        store.insert(
+            text="Agent note",
+            vector=[0.4, 0.3, 0.2, 0.1],
+            user_id="filip",
+            agent_id="bot",
+            metadata={"memory_type": "episodic"},
+        )
+
+        since = datetime.now(timezone.utc) - timedelta(days=1)
+
+        # Shared query should return only the shared memory
+        shared = store.get_recent_memories(user_id="filip", agent_id=None, since=since)
+        assert len(shared) == 1
+        assert shared[0]["memory"] == "Shared fact"
+
+        # Agent query should return only the agent memory
+        agent = store.get_recent_memories(user_id="filip", agent_id="bot", since=since)
+        assert len(agent) == 1
+        assert agent[0]["memory"] == "Agent note"
+
+
+# ── Vector store search TTL filter (Qdrant integration) ──────────────
+
+
+class TestVectorSearchTTLFilter:
+    """Test that search() TTL filter handles missing expires_at field.
+
+    Legacy memories (created before TTL support or by old mem0 code) may
+    not have expires_at in their Qdrant payload. IsEmptyCondition must
+    match these absent keys so legacy memories aren't silently excluded.
+    """
+
+    @staticmethod
+    def _make_store():
+        """Create a VectorStore with in-memory Qdrant for testing."""
+        from unittest.mock import MagicMock
+
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import Distance, VectorParams
+
+        config = MagicMock()
+        config.vector.collection_name = "test_search_ttl"
+        config.vector.is_remote = False
+
+        client = QdrantClient(location=":memory:")
+        client.create_collection(
+            collection_name="test_search_ttl",
+            vectors_config=VectorParams(size=4, distance=Distance.COSINE),
+        )
+
+        embedding = MagicMock()
+        embedding.dims = 4
+        # embed() returns a fixed vector for search queries
+        embedding.embed.return_value = [0.1, 0.2, 0.3, 0.4]
+
+        from mnemory.storage.vector import VectorStore
+
+        store = VectorStore.__new__(VectorStore)
+        store._client = client
+        store._config = config
+        store._embedding = embedding
+
+        return store
+
+    def test_legacy_memory_without_expires_at_found(self):
+        """Memory without expires_at field should be found by search."""
+        store = self._make_store()
+
+        # Insert a legacy memory — no expires_at in metadata
+        store.insert(
+            text="Has a cat named Hiki",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id=None,
+            metadata={"memory_type": "fact"},
+        )
+
+        result = store.search(
+            "cats",
+            user_id="filip",
+            exclude_expired=True,
+        )
+        assert len(result["results"]) == 1
+        assert result["results"][0]["memory"] == "Has a cat named Hiki"
+
+    def test_memory_with_explicit_null_expires_at_found(self):
+        """Memory with expires_at=None should be found by search."""
+        store = self._make_store()
+
+        store.insert(
+            text="Likes cats",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id=None,
+            metadata={
+                "memory_type": "preference",
+                "expires_at": None,
+            },
+        )
+
+        result = store.search(
+            "cats",
+            user_id="filip",
+            exclude_expired=True,
+        )
+        assert len(result["results"]) == 1
+        assert result["results"][0]["memory"] == "Likes cats"
+
+    def test_memory_with_future_expires_at_found(self):
+        """Memory with expires_at in the future should be found."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+        future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+        store.insert(
+            text="Working on project X",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id=None,
+            metadata={
+                "memory_type": "context",
+                "expires_at": future,
+            },
+        )
+
+        result = store.search(
+            "project",
+            user_id="filip",
+            exclude_expired=True,
+        )
+        assert len(result["results"]) == 1
+
+    def test_expired_memory_excluded(self):
+        """Memory with expires_at in the past should be excluded."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
+        store.insert(
+            text="Old context",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id=None,
+            metadata={
+                "memory_type": "context",
+                "expires_at": past,
+            },
+        )
+
+        result = store.search(
+            "context",
+            user_id="filip",
+            exclude_expired=True,
+        )
+        assert len(result["results"]) == 0
+
+    def test_mixed_legacy_and_new_memories(self):
+        """Both legacy (no expires_at) and new memories should coexist."""
+        store = self._make_store()
+
+        # Legacy memory — no expires_at
+        store.insert(
+            text="Has a cat named Hiki",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id=None,
+            metadata={"memory_type": "fact"},
+        )
+        # New memory — explicit expires_at=None (permanent)
+        store.insert(
+            text="Likes cats",
+            vector=[0.15, 0.25, 0.35, 0.45],
+            user_id="filip",
+            agent_id=None,
+            metadata={
+                "memory_type": "preference",
+                "expires_at": None,
+            },
+        )
+
+        result = store.search(
+            "cats",
+            user_id="filip",
+            exclude_expired=True,
+        )
+        assert len(result["results"]) == 2
+        texts = {r["memory"] for r in result["results"]}
+        assert "Has a cat named Hiki" in texts
+        assert "Likes cats" in texts

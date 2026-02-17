@@ -641,8 +641,7 @@ def get_recent_memories(
     """Get recent memories from the last N days.
 
     Use this to see recent activity without loading full core memories.
-    Returns episodic, context, and procedural memories ordered by most
-    recent first.
+    Returns memories of all types ordered by most recent first.
 
     Args:
         user_id: User identifier. Optional if pre-configured via API key mapping.
@@ -658,6 +657,10 @@ def get_recent_memories(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id(agent_id)
+        # Auto-resolve agent_id from session for scopes that include
+        # agent memories, so the LLM doesn't have to pass it explicitly.
+        if aid is None and scope in ("all", "agent"):
+            aid = _session_agent_id.get()
         return _get_service().get_recent_memories(
             user_id=uid,
             agent_id=aid,

@@ -100,6 +100,16 @@ class VectorStore:
                     )
                 except Exception:
                     pass  # Index may already exist
+            # Datetime indexes for DatetimeRange filters
+            for field in ("created_at", "expires_at"):
+                try:
+                    self._client.create_payload_index(
+                        collection_name=name,
+                        field_name=field,
+                        field_schema="datetime",
+                    )
+                except Exception:
+                    pass  # Index may already exist
 
     @property
     def collection_name(self) -> str:
@@ -232,7 +242,7 @@ class VectorStore:
         """
         from qdrant_client.models import (
             DatetimeRange,
-            IsNullCondition,
+            IsEmptyCondition,
             MatchAny,
             Prefetch,
         )
@@ -261,12 +271,15 @@ class VectorStore:
             must_conditions.append(
                 FieldCondition(key="categories", match=MatchAny(any=categories))
             )
-        # TTL filter: active memories only
+        # TTL filter: active memories only.
+        # Use IsEmptyCondition (not IsNullCondition) because legacy memories
+        # may not have expires_at in their payload at all — IsNullCondition
+        # only matches keys explicitly set to null, not absent keys.
         if exclude_expired and not include_decayed:
             now = datetime.now(timezone.utc)
             ttl_filter = Filter(
                 should=[
-                    IsNullCondition(is_null=PayloadField(key="expires_at")),
+                    IsEmptyCondition(is_empty=PayloadField(key="expires_at")),
                     FieldCondition(key="expires_at", range=DatetimeRange(gt=now)),
                     FieldCondition(key="pinned", match=MatchValue(value=True)),
                 ]
@@ -351,7 +364,7 @@ class VectorStore:
         """
         from qdrant_client.models import (
             DatetimeRange,
-            IsNullCondition,
+            IsEmptyCondition,
         )
 
         must_conditions: list = [
@@ -362,11 +375,12 @@ class VectorStore:
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
             )
 
-        # Exclude expired/decayed memories from dedup candidates
+        # Exclude expired/decayed memories from dedup candidates.
+        # Use IsEmptyCondition for the same reason as in search().
         now = datetime.now(timezone.utc)
         ttl_filter = Filter(
             should=[
-                IsNullCondition(is_null=PayloadField(key="expires_at")),
+                IsEmptyCondition(is_empty=PayloadField(key="expires_at")),
                 FieldCondition(key="expires_at", range=DatetimeRange(gt=now)),
                 FieldCondition(key="pinned", match=MatchValue(value=True)),
             ]
@@ -559,7 +573,7 @@ class VectorStore:
         """
         from qdrant_client.models import (
             DatetimeRange,
-            IsNullCondition,
+            IsEmptyCondition,
             MatchAny,
         )
 
@@ -572,14 +586,17 @@ class VectorStore:
         ]
 
         # Filter by agent_id: if provided, match exactly; if None, match only
-        # memories without agent_id (shared user memories)
+        # memories without agent_id (shared user memories).
+        # Use IsEmptyCondition (not IsNullCondition) because agent_id is
+        # omitted from the payload for shared memories — IsNullCondition
+        # only matches keys explicitly set to null, not absent keys.
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
             )
         else:
             must_conditions.append(
-                IsNullCondition(is_null=PayloadField(key="agent_id"))
+                IsEmptyCondition(is_empty=PayloadField(key="agent_id"))
             )
 
         # Filter by memory types if specified

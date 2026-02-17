@@ -921,7 +921,6 @@ class MemoryService:
                 agent_id=None,
                 since=since,
                 limit=limit_user,
-                memory_types=self.RECENT_MEMORY_TYPES,
             )
             user_recent = [
                 m for m in user_recent if not should_exclude(m, include_decayed)
@@ -934,7 +933,6 @@ class MemoryService:
                 agent_id=agent_id,
                 since=since,
                 limit=limit_agent,
-                memory_types=self.RECENT_MEMORY_TYPES,
             )
             agent_recent = [
                 m for m in agent_recent if not should_exclude(m, include_decayed)
