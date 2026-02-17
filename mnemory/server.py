@@ -654,10 +654,12 @@ def find_memories(
             )
         memories = result.get("results", [])
         queries = result.get("queries", [])
+        stats = result.get("stats", {})
         formatted = _format_memories(memories)
-        # Inject queries into the response JSON
+        # Inject queries and stats into the response JSON
         response = json.loads(formatted)
         response["queries"] = queries
+        response["stats"] = stats
         return json.dumps(response, default=str)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})

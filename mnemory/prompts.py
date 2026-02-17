@@ -801,13 +801,14 @@ additional context when the memory text is ambiguous.
   0.8-1.0 = directly answers the question (correct subject AND topic)
   0.5-0.7 = highly relevant context (correct subject, related topic)
   0.3-0.5 = somewhat related, useful background
-  0.1-0.3 = tangentially related or wrong subject
-  0.0     = irrelevant
+  0.1-0.2 = tangentially related or wrong subject
+  0.0     = irrelevant (wrong subject AND wrong topic)
 
-The minimum relevance threshold is {threshold}. Memories scoring below \
-{threshold} will be discarded, so score accurately — do not inflate scores.
+Score honestly. Irrelevant memories should get 0.0. Do not round up or \
+inflate scores — we filter on our side.
 
-Return ONLY a JSON object: {{"scored": [{{"id": "...", "relevance": 0.85}}, ...]}}
+Return ONLY a JSON object: {{"scored": [{{"idx": 0, "relevance": 0.85}}, ...]}}
+Use the numeric index (idx) from the memory list, not the UUID.
 Include ALL memories in the response. Do not omit any."""
 
 RERANK_SCHEMA: dict[str, Any] = {
@@ -822,10 +823,10 @@ RERANK_SCHEMA: dict[str, Any] = {
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "required": ["id", "relevance"],
+                    "required": ["idx", "relevance"],
                     "additionalProperties": False,
                     "properties": {
-                        "id": {"type": "string"},
+                        "idx": {"type": "integer"},
                         "relevance": {"type": "number"},
                     },
                 },
@@ -838,25 +839,21 @@ RERANK_SCHEMA: dict[str, Any] = {
 def build_rerank_prompt(
     question: str,
     memories: list[dict],
-    *,
-    threshold: float = 0.30,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Build a prompt to rerank memories by relevance to a question.
 
     Args:
         question: The user's natural language question.
         memories: List of memory dicts with "id" and "memory" fields.
-        threshold: Minimum relevance score (communicated to the LLM).
 
     Returns:
         Tuple of (messages, json_schema) for the LLM call.
     """
-    system_prompt = _RERANK_SYSTEM_PROMPT.format(threshold=threshold)
+    system_prompt = _RERANK_SYSTEM_PROMPT
 
-    # Build memory list with metadata context for the LLM
+    # Build memory list with numeric indices and metadata context for the LLM
     mem_lines = []
-    for mem in memories:
-        mid = mem.get("id", "?")
+    for idx, mem in enumerate(memories):
         text = mem.get("memory", "")
         # Collect non-default metadata tags for disambiguation
         metadata = mem.get("metadata") or {}
@@ -870,7 +867,7 @@ def build_rerank_prompt(
         if metadata.get("role") and metadata["role"] != "user":
             tags.append(f"role: {metadata['role']}")
         tag_str = f" [{' | '.join(tags)}]" if tags else ""
-        mem_lines.append(f"- [{mid}] {text}{tag_str}")
+        mem_lines.append(f"[{idx}] {text}{tag_str}")
     mem_text = "\n".join(mem_lines)
 
     user_content = f"Question: {question}\n\nMemories:\n{mem_text}"

@@ -936,8 +936,9 @@ class MemoryService:
             include_decayed: If True, include expired/decayed memories.
 
         Returns:
-            Dict with "results" (list of memory dicts sorted by relevance)
-            and "queries" (list of generated search queries).
+            Dict with "results" (list of memory dicts sorted by relevance),
+            "queries" (list of generated search queries), and "stats"
+            (search statistics including searched, merged, dropped counts).
 
         Raises:
             ValueError: If LLM calls fail (query generation or reranking).
@@ -945,6 +946,9 @@ class MemoryService:
         user_id = _validate_id(user_id, "user_id")
         num_queries = self._config.memory.find_memories_queries
         threshold = self._config.memory.search_score_threshold
+
+        # Statistics tracking
+        total_searched = 0
 
         # Step 1: Generate diverse search queries from the question
         messages, schema = build_query_generation_prompt(
@@ -969,7 +973,17 @@ class MemoryService:
         # Step 2: Batch embed all queries upfront (single API call)
         valid_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
         if not valid_queries:
-            return {"results": [], "queries": []}
+            return {
+                "results": [],
+                "queries": [],
+                "stats": {
+                    "searched": 0,
+                    "merged": 0,
+                    "reranked": False,
+                    "dropped": 0,
+                    "returned": 0,
+                },
+            }
 
         query_vectors = self.vector.embedding.embed_batch(valid_queries)
 
@@ -1007,6 +1021,8 @@ class MemoryService:
                 logger.warning("find_memories: search failed for query '%s'", q)
                 continue
 
+            total_searched += len(results)
+
             for mem in results:
                 mid = mem.get("id")
                 if not mid:
@@ -1020,26 +1036,50 @@ class MemoryService:
         merged = list(merged_by_id.values())
 
         logger.info(
-            "find_memories: %d unique memories from %d queries",
+            "find_memories: %d unique memories from %d queries (searched %d)",
             len(merged),
             len(valid_queries),
+            total_searched,
         )
 
         if not merged:
-            return {"results": [], "queries": valid_queries}
+            return {
+                "results": [],
+                "queries": valid_queries,
+                "stats": {
+                    "searched": total_searched,
+                    "merged": 0,
+                    "reranked": False,
+                    "dropped": 0,
+                    "returned": 0,
+                },
+            }
 
         # Step 4: If few enough results, skip reranking
         if len(merged) <= limit:
             merged.sort(key=lambda m: m.get("score", 0), reverse=True)
             self._track_access(merged)
-            return {"results": merged, "queries": valid_queries}
+            return {
+                "results": merged,
+                "queries": valid_queries,
+                "stats": {
+                    "searched": total_searched,
+                    "merged": len(merged),
+                    "reranked": False,
+                    "dropped": 0,
+                    "returned": len(merged),
+                },
+            }
 
-        # Step 5: LLM reranking with the original question as context
-        messages, schema = build_rerank_prompt(
-            question,
-            merged,
-            threshold=threshold,
-        )
+        # Step 5: Pre-filter to top candidates before reranking (performance)
+        # Sort by vector score and take top limit*3 to reduce LLM payload
+        merged.sort(key=lambda m: m.get("score", 0), reverse=True)
+        rerank_candidates = merged[: limit * 3]
+        pre_filtered = len(merged) - len(rerank_candidates)
+
+        # Step 6: LLM reranking with the original question as context
+        # Uses numeric indices instead of UUIDs to reduce output tokens
+        messages, schema = build_rerank_prompt(question, rerank_candidates)
         raw_response = self._llm.generate(messages, json_schema=schema)
         try:
             data = parse_json_response(raw_response)
@@ -1049,29 +1089,40 @@ class MemoryService:
         except (ValueError, KeyError) as e:
             raise ValueError(f"Failed to rerank memories: {e}") from e
 
-        # Map LLM relevance scores back to memories
-        score_map = {}
+        # Map LLM relevance scores back to memories using numeric indices
+        score_map: dict[int, float] = {}
         for item in scored:
             if isinstance(item, dict):
-                mid = item.get("id")
+                idx = item.get("idx")
                 rel = item.get("relevance")
-                if mid and isinstance(rel, (int, float)):
-                    score_map[mid] = float(rel)
+                if isinstance(idx, int) and isinstance(rel, (int, float)):
+                    score_map[idx] = float(rel)
 
         # Apply LLM scores, filter by threshold, sort
         reranked = []
-        for mem in merged:
-            mid = mem.get("id")
-            if mid in score_map:
-                mem["score"] = round(score_map[mid], 4)
+        for idx, mem in enumerate(rerank_candidates):
+            if idx in score_map:
+                mem["score"] = round(score_map[idx], 4)
                 if mem["score"] >= threshold:
                     reranked.append(mem)
 
         reranked.sort(key=lambda m: m.get("score", 0), reverse=True)
         reranked = reranked[:limit]
 
+        dropped = len(rerank_candidates) - len(reranked)
+
         self._track_access(reranked)
-        return {"results": reranked, "queries": valid_queries}
+        return {
+            "results": reranked,
+            "queries": valid_queries,
+            "stats": {
+                "searched": total_searched,
+                "merged": len(merged),
+                "reranked": True,
+                "dropped": dropped + pre_filtered,
+                "returned": len(reranked),
+            },
+        }
 
     # ── Get Core Memories ─────────────────────────────────────────────
 

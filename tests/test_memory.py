@@ -2582,18 +2582,22 @@ class TestFindMemories:
         import json
 
         service = _make_service()
+        # Disable keyword boost to test merge/rerank logic in isolation
+        service._config.memory.search_keyword_weight = 0
 
         # Mock LLM: first call = query generation, second call = reranking
+        # Rerank uses numeric indices: after sort by score, order is
+        # dog-mem (0.6), cat-mem (0.5), irrelevant (0.4) → idx 0, 1, 2
         service._llm.generate.side_effect = [
             # Query generation response
             json.dumps({"queries": ["user dogs", "pets preferences"]}),
-            # Rerank response
+            # Rerank response (using numeric indices)
             json.dumps(
                 {
                     "scored": [
-                        {"id": "dog-mem", "relevance": 0.9},
-                        {"id": "cat-mem", "relevance": 0.5},
-                        {"id": "irrelevant", "relevance": 0.1},
+                        {"idx": 0, "relevance": 0.9},  # dog-mem
+                        {"idx": 1, "relevance": 0.5},  # cat-mem
+                        {"idx": 2, "relevance": 0.1},  # irrelevant
                     ]
                 }
             ),
@@ -2641,9 +2645,10 @@ class TestFindMemories:
             limit=2,
         )
 
-        # Should return dict with results and queries
+        # Should return dict with results, queries, and stats
         assert "results" in result
         assert "queries" in result
+        assert "stats" in result
         results = result["results"]
 
         # Should have 2 results, reranked by LLM relevance
@@ -2652,6 +2657,13 @@ class TestFindMemories:
         assert results[0]["score"] == 0.9
         assert results[1]["id"] == "cat-mem"
         assert results[1]["score"] == 0.5
+
+        # Check stats
+        stats = result["stats"]
+        assert stats["searched"] == 4  # 2 + 2 from each query
+        assert stats["merged"] == 3  # dog-mem, cat-mem, irrelevant
+        assert stats["reranked"] is True
+        assert stats["returned"] == 2
 
     def test_few_results_skip_reranking(self):
         """When merged results <= limit, skip LLM reranking."""
@@ -2685,19 +2697,26 @@ class TestFindMemories:
         # LLM should only be called once (query generation, not reranking)
         assert service._llm.generate.call_count == 1
 
+        # Check stats show no reranking
+        stats = result["stats"]
+        assert stats["reranked"] is False
+        assert stats["merged"] == 1
+        assert stats["returned"] == 1
+
     def test_deduplication_across_queries(self):
         """Same memory from multiple queries should be deduplicated."""
         import json
 
         service = _make_service()
 
+        # After dedup and sort: dup-mem (0.7), unique-mem (0.4) → idx 0, 1
         service._llm.generate.side_effect = [
             json.dumps({"queries": ["query1", "query2"]}),
             json.dumps(
                 {
                     "scored": [
-                        {"id": "dup-mem", "relevance": 0.8},
-                        {"id": "unique-mem", "relevance": 0.6},
+                        {"idx": 0, "relevance": 0.8},  # dup-mem
+                        {"idx": 1, "relevance": 0.6},  # unique-mem
                     ]
                 }
             ),
@@ -2814,13 +2833,27 @@ class TestFindMemories:
 
         service = _make_service()
 
+        # 8 memories from q1 (mem-0 to mem-7, all score 0.5) +
+        # 2 from q2 (relevant 0.5, irrelevant 0.4) = 10 unique
+        # After sort by score: all 0.5s first, then irrelevant 0.4
+        # Pre-filter takes top limit*3 = 15, so all 10 go to reranker
+        # Reranker scores: idx 8 (relevant) = 0.8, idx 9 (irrelevant) = 0.1
+        # Others get low scores to be filtered
         service._llm.generate.side_effect = [
             json.dumps({"queries": ["q1", "q2"]}),
             json.dumps(
                 {
                     "scored": [
-                        {"id": "relevant", "relevance": 0.8},
-                        {"id": "irrelevant", "relevance": 0.1},
+                        {"idx": 0, "relevance": 0.2},  # mem-0
+                        {"idx": 1, "relevance": 0.2},  # mem-1
+                        {"idx": 2, "relevance": 0.2},  # mem-2
+                        {"idx": 3, "relevance": 0.2},  # mem-3
+                        {"idx": 4, "relevance": 0.2},  # mem-4
+                        {"idx": 5, "relevance": 0.2},  # mem-5
+                        {"idx": 6, "relevance": 0.2},  # mem-6
+                        {"idx": 7, "relevance": 0.2},  # mem-7
+                        {"idx": 8, "relevance": 0.8},  # relevant
+                        {"idx": 9, "relevance": 0.1},  # irrelevant
                     ]
                 }
             ),
@@ -2864,7 +2897,7 @@ class TestFindMemories:
 
         ids = [r["id"] for r in result["results"]]
         assert "relevant" in ids
-        assert "irrelevant" not in ids
+        assert "irrelevant" not in ids  # scored 0.1, below threshold 0.3
 
     def test_uses_dual_scope_with_session_agent(self):
         """When session_agent_id is provided, should use dual-scope search."""
@@ -2935,21 +2968,28 @@ class TestRerankPrompt:
             {"id": "m1", "memory": "User likes cats"},
             {"id": "m2", "memory": "User dislikes dogs"},
         ]
-        messages, schema = build_rerank_prompt(
-            "What about pets?", memories, threshold=0.3
-        )
+        messages, schema = build_rerank_prompt("What about pets?", memories)
         assert len(messages) == 2
-        assert "0.3" in messages[0]["content"]
-        assert "m1" in messages[1]["content"]
-        assert "m2" in messages[1]["content"]
+        # Uses numeric indices, not UUIDs
+        assert "[0]" in messages[1]["content"]
+        assert "[1]" in messages[1]["content"]
         assert "cats" in messages[1]["content"]
         assert schema["name"] == "memory_rerank"
+        # Schema should use idx, not id
+        assert schema["schema"]["properties"]["scored"]["items"]["properties"]["idx"]
 
-    def test_threshold_in_prompt(self):
+    def test_no_threshold_in_prompt(self):
+        """Threshold should NOT be in the prompt to avoid anchor bias."""
         from mnemory.prompts import build_rerank_prompt
 
-        messages, _ = build_rerank_prompt("test", [], threshold=0.5)
-        assert "0.5" in messages[0]["content"]
+        messages, _ = build_rerank_prompt("test", [])
+        system = messages[0]["content"]
+        # Should not mention "threshold" as a filtering concept
+        assert "threshold" not in system.lower()
+        # Should not tell LLM about our filtering cutoff (anchor bias)
+        assert "filter" not in system.lower() or "we filter" in system.lower()
+        # But honest scoring instruction should be there
+        assert "Score honestly" in system
 
     def test_subject_awareness_in_prompt(self):
         """Rerank prompt should include subject-awareness instructions."""
