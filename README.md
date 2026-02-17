@@ -201,6 +201,12 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 | `AUTO_CLASSIFY` | `true` | Auto-classify memory metadata (type, categories, importance, pinned) via LLM when not provided |
 | `CLASSIFY_CACHE_TTL` | `300` | TTL in seconds for the category cache used during auto-classification |
 | `CORE_MEMORIES_CACHE_TTL` | `300` | TTL in seconds for the core memories cache (get_core_memories). Set to 0 to disable. Invalidated on memory mutations. |
+| `TTL_FACT` | (none) | Default TTL in days for `fact` memories (empty = permanent) |
+| `TTL_PREFERENCE` | (none) | Default TTL in days for `preference` memories (empty = permanent) |
+| `TTL_EPISODIC` | `90` | Default TTL in days for `episodic` memories |
+| `TTL_PROCEDURAL` | `60` | Default TTL in days for `procedural` memories |
+| `TTL_CONTEXT` | `7` | Default TTL in days for `context` memories |
+| `TRACK_MEMORY_ACCESS` | `true` | Update last_accessed_at and reset TTL on search/recall |
 
 ## Memory Model
 
@@ -212,13 +218,15 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 
 ### Memory Types
 
-| Type | Purpose | Typical Lifetime |
+| Type | Purpose | Default TTL |
 |---|---|---|
-| `preference` | Likes, dislikes, style choices | Long-term |
-| `fact` | Biographical, factual information | Long-term, updatable |
-| `episodic` | Events, interactions, conclusions | Long-term |
-| `procedural` | Workflows, habits, "how to" | Long-term |
-| `context` | Session/short-term context | Short-term, auto-included in recent |
+| `preference` | Likes, dislikes, style choices | Permanent |
+| `fact` | Biographical, factual information | Permanent |
+| `episodic` | Events, interactions, conclusions | 90 days |
+| `procedural` | Workflows, habits, "how to" | 60 days |
+| `context` | Session/short-term context | 7 days |
+
+Default TTLs are configurable via environment variables (see Memory Behavior config).
 
 ### Categories
 
@@ -260,6 +268,23 @@ Memories with `pinned: true` are loaded at every conversation start via `get_cor
 - Core preferences ("Prefers direct communication")
 - Agent identity ("Your name is Bob", "You speak casually")
 - Agent knowledge ("You researched X and concluded Y")
+
+### TTL (Time-To-Live)
+
+Memories can have a TTL that causes them to decay (soft-expire) after a set number of days. Each memory type has a configurable default TTL (see Memory Types table above). You can override the default by passing `ttl_days` to `add_memory`.
+
+**Lifecycle:**
+1. Memory is created with `expires_at` calculated from `ttl_days`
+2. When `expires_at` passes, the memory enters **decayed** state (soft-deleted)
+3. Decayed memories are excluded from search and list by default
+4. Use `include_decayed=true` to browse historical/expired memories
+5. Decayed memories can be restored via `update_memory` (set new `ttl_days`)
+
+**Reinforcement:** When a memory is accessed via `search_memories`, its TTL is automatically reset — `expires_at` is recalculated from now + original `ttl_days`. This means frequently-used memories stay alive. Controlled by `TRACK_MEMORY_ACCESS` config.
+
+**Pinned exemption:** Pinned memories (`pinned: true`) are exempt from TTL — they never decay, even if `expires_at` is set.
+
+**Existing memories:** No migration needed. Memories without TTL fields are treated as permanent.
 
 ### Role
 

@@ -18,6 +18,7 @@ mnemory/
 ├── config.py              # Configuration from environment variables (dataclasses)
 ├── categories.py          # Predefined category registry, validation, matching logic
 ├── memory.py              # Business logic layer (orchestrates vector + artifact stores)
+├── ttl.py                 # TTL (Time-To-Live) utility functions for memory expiration
 ├── instructions.py        # MCP server instructions text (system prompt for LLMs)
 └── storage/
     ├── vector.py          # Vector store abstraction (mem0 wrapper + direct Qdrant helpers)
@@ -31,6 +32,7 @@ mnemory/
 | **Transport** | `server.py` | MCP tool definitions, HTTP routing, auth, serialization |
 | **Business Logic** | `memory.py` | Validation, reranking, core memory assembly, artifact lifecycle |
 | **Categories** | `categories.py` | Category validation, prefix matching, counting |
+| **TTL** | `ttl.py` | Expiration calculation, decay detection, reinforcement metadata |
 | **Vector Storage** | `storage/vector.py` | mem0 wrapper + direct Qdrant client for advanced queries |
 | **Artifact Storage** | `storage/artifact.py` | S3/MinIO and filesystem backends for binary artifacts |
 | **Configuration** | `config.py` | Environment variable parsing, mem0 config construction |
@@ -131,6 +133,11 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside mem0's 
 | `role` | str | "user" (default) or "assistant" — who the memory is about |
 | `artifacts` | list[dict] | Artifact metadata (id, filename, content_type, size, created_at) |
 | `created_at_utc` | str | Our own UTC timestamp (mem0 uses US/Pacific) |
+| `ttl_days` | int\|None | Original TTL setting in days (None = permanent) |
+| `expires_at` | str\|None | ISO 8601 expiration timestamp (None = never expires) |
+| `decayed_at` | str\|None | When memory entered decayed state (None = active) |
+| `last_accessed_at` | str\|None | Last time returned in search |
+| `access_count` | int | Number of times accessed in search |
 
 ### Adding a new MCP tool
 

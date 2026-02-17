@@ -1,8 +1,11 @@
 # TODO: Memory System Enhancements
 
-This document describes two major features to be implemented in mnemory:
-1. **TTL Support** — Dynamic memory expiration with decay and reinforcement
-2. **Recall/Remember API** — High-level orchestration endpoints for intelligent memory retrieval and storage
+This document describes the next major feature to be implemented in mnemory:
+1. **Recall/Remember API** — High-level orchestration endpoints for intelligent memory retrieval and storage
+
+**Completed:** TTL Support (dynamic memory expiration with decay and reinforcement) — see README.md for documentation.
+
+**Future enhancement:** Async access tracking model — currently access tracking in `search_memories` runs synchronously via batch `set_payload`. A future improvement could use a background thread or async task to avoid adding latency to search responses.
 
 ---
 
@@ -84,225 +87,7 @@ Build an **intelligence layer** on top of mnemory that:
 
 ---
 
-## Task 1: TTL Support
-
-### Overview
-
-Implement dynamic TTL (Time-To-Live) for memories with decay and reinforcement mechanisms. This is a standalone feature that improves memory lifecycle management independent of the recall/remember API.
-
-### Memory Lifecycle
-
-```
-Memory created (with or without TTL)
-    │
-    ▼
-ACTIVE state
-    │
-    ├─── Has TTL? TTL counting down from expires_at
-    │    │
-    │    ├─── Accessed in recall/search → TTL reset (reinforcement)
-    │    │
-    │    ├─── Similar content remembered via /api/remember → TTL reset
-    │    │
-    │    └─── expires_at reached → DECAYED state
-    │
-    ├─── No TTL (permanent) → stays ACTIVE forever
-    │
-    └─── User deletes → DELETED state (hard delete)
-```
-
-### Memory States
-
-| State | Description | In Recall? | In Search? | Restorable? |
-|-------|-------------|------------|------------|-------------|
-| **Active** | TTL not expired, or permanent (no TTL) | Yes | Yes | N/A |
-| **Decayed** | TTL expired, soft-deleted | No (by default) | With `include_decayed` flag | Yes |
-| **Deleted** | Hard-deleted by user | No | No | No |
-
-### Metadata Fields
-
-New fields added to memory metadata (stored as flat Qdrant payload fields alongside existing fields):
-
-```python
-{
-    # Existing fields (unchanged)
-    "memory_type": "fact",
-    "categories": ["personal"],
-    "importance": "normal",
-    "pinned": False,
-    "created_at_utc": "2024-01-15T10:30:00Z",
-
-    # NEW: TTL fields
-    "ttl_days": 30,                                # Original TTL setting (null = permanent)
-    "expires_at": "2024-02-14T10:30:00Z",          # Calculated expiration (null = never). Full ISO 8601.
-    "decayed_at": null,                             # When memory entered decayed state (null = active)
-    "last_accessed_at": "2024-01-20T14:00:00Z",    # Last time returned in recall/search
-    "access_count": 5,                              # Number of times accessed (for analytics)
-}
-```
-
-### Decay Detection: Passive/Lazy
-
-The codebase has no background task infrastructure. Decay is detected **at query time**:
-
-1. When searching/listing memories, filter by `expires_at` using Qdrant's `DatetimeRange` filter (same pattern already used in `get_recent_memories`).
-2. Memories with `expires_at < now` are excluded from results by default.
-3. When an expired memory is encountered (e.g., via `include_decayed=true`), lazily set `decayed_at` if not already set.
-4. No background jobs, no periodic scans.
-
-For Chroma backend (which lacks date range filtering), fall back to post-filtering in Python after fetching results.
-
-### Pinned Memories Are Exempt from TTL
-
-If `pinned=true`, the memory is **exempt from TTL**:
-- `expires_at` is ignored even if set
-- The memory is always treated as active
-- Rationale: Pinned memories are "always shown" in core memories — it would be contradictory for them to decay
-
-### TTL Assignment Rules
-
-Default TTL based on memory type (configurable via env):
-
-| Memory Type | Default TTL | Rationale |
-|-------------|-------------|-----------|
-| `fact` | permanent | Core facts about user don't expire |
-| `preference` | permanent | Preferences are long-term |
-| `episodic` | 90 days | Events fade but stay longer |
-| `procedural` | 60 days | Workflows may change |
-| `context` | 7 days | Session context is short-term |
-
-These defaults apply when `ttl_days` is not explicitly provided. The task model in `/api/remember` can override defaults with a specific TTL.
-
-### Reinforcement Mechanism
-
-Memory TTL is reset (extended) when:
-
-1. **Accessed** — Memory is returned in `/api/recall` or `search_memories`. The `expires_at` is recalculated from now + original `ttl_days`. The `last_accessed_at` and `access_count` are updated.
-
-2. **Reinforced** — Similar content is processed by `/api/remember` (see Task 2). Before storing a new memory, `/api/remember` searches for similar existing memories. If found, the existing memory is updated/restored instead of creating a duplicate.
-
-**Important**: Reinforcement logic lives **only in `/api/remember`**, not in the base `add_memory`. The MCP tool `add_memory` stays fast and simple — it does not perform similarity searches before storing. This keeps the existing MCP tool behavior unchanged and avoids adding ~200ms latency to every `add_memory` call.
-
-### Decay Behavior
-
-- Decayed memories are **excluded from recall and search by default**
-- Decayed memories **can be searched** with `include_decayed=true` parameter
-- Decayed memories are **kept forever** (no hard delete) — useful for historical context ("what was I working on last year?")
-- Decayed memories can be **manually restored** via `update_memory` (set new `ttl_days`, clear `decayed_at`)
-- Decayed memories are **automatically restored** when similar content is remembered via `/api/remember`
-
-### Existing Memories (Migration)
-
-When TTL is deployed, existing memories have no TTL fields. **No migration is needed**:
-- Missing `ttl_days` / `expires_at` → treated as permanent (no expiration)
-- Missing `decayed_at` → treated as active
-- Missing `last_accessed_at` / `access_count` → initialized on first access
-- New fields are added lazily via `set_payload` when memories are updated
-
-### mem0 Metadata Overwrite Risk
-
-AGENTS.md notes: "mem0's public `update()` method drops custom metadata." When mem0 processes deduplication/contradiction resolution during `add()` with `infer=true`, it may overwrite TTL fields on existing memories via its internal update mechanism.
-
-**Mitigation**: After any `add_memory` call that triggers mem0 inference, verify TTL fields are preserved on affected memories. If mem0 overwrites them, re-apply via Qdrant `set_payload`. This needs investigation during implementation — the risk may be limited to memories that mem0 decides to merge/update.
-
-### Configuration
-
-```bash
-# Default TTL by memory type (days, null = permanent)
-TTL_FACT=null
-TTL_PREFERENCE=null
-TTL_EPISODIC=90
-TTL_PROCEDURAL=60
-TTL_CONTEXT=7
-
-# Access tracking
-TRACK_MEMORY_ACCESS=true  # Update last_accessed_at on recall/search
-```
-
-### Implementation Steps
-
-#### 1.1 TTL Module
-
-- [ ] Create `mnemory/ttl.py` with TTL management functions:
-  - `calculate_expiration(ttl_days: int | None, from_time: datetime | None = None) -> str | None`
-  - `get_default_ttl(memory_type: str, config: MemoryConfig) -> int | None`
-  - `is_expired(memory: dict) -> bool` — checks `expires_at < now`, respects `pinned` exemption
-  - `is_decayed(memory: dict) -> bool` — checks `decayed_at` is set
-  - `should_exclude(memory: dict, include_decayed: bool = False) -> bool` — combined check
-  - `build_expiry_metadata(ttl_days: int | None, memory_type: str, config: MemoryConfig) -> dict` — returns TTL fields for new memory
-
-#### 1.2 Schema Changes
-
-- [ ] Update `MemoryService.add_memory` to:
-  - Accept optional `ttl_days` parameter
-  - Calculate `expires_at` from `ttl_days` (or default based on `memory_type`)
-  - Include TTL fields in metadata dict passed to `VectorStore.add`
-- [ ] Initialize `last_accessed_at` and `access_count` to `None` / `0`
-
-#### 1.3 Filter Decayed Memories
-
-- [ ] Update `VectorStore.search` to filter expired memories:
-  - Qdrant backend: Add `DatetimeRange` filter on `expires_at` (exclude where `expires_at < now` AND `pinned != true`)
-  - Chroma backend: Post-filter in Python
-- [ ] Add `include_decayed: bool = False` parameter to:
-  - `MemoryService.search_memories`
-  - `MemoryService.search_memories_dual_scope`
-  - `MemoryService.list_memories`
-- [ ] Update `MemoryService.get_core_memories` to exclude decayed memories
-- [ ] Lazily set `decayed_at` when expired memories are encountered via `include_decayed=true`
-
-#### 1.4 Access Tracking
-
-- [ ] Update `MemoryService.search_memories` to track access on returned memories:
-  - Set `last_accessed_at` to current UTC timestamp
-  - Increment `access_count`
-  - Reset `expires_at` if memory has TTL (reinforcement)
-- [ ] Run access tracking **asynchronously** to avoid adding latency:
-  - Use Qdrant batch `set_payload` (single call for all returned memory IDs)
-  - Fire-and-forget from a thread (don't block the response)
-- [ ] Make tracking configurable via `TRACK_MEMORY_ACCESS` env var
-
-#### 1.5 MCP Tool Updates
-
-- [ ] Update `add_memory` tool to accept optional `ttl_days` parameter
-- [ ] Update `add_memories` batch tool to accept `ttl_days` per item
-- [ ] Update `search_memories` tool to accept `include_decayed` parameter
-- [ ] Update `list_memories` tool to:
-  - Accept `include_decayed` parameter
-  - Show decay state in results (`is_decayed`, `expires_at`, `decayed_at`)
-- [ ] Update `update_memory` tool to accept `ttl_days` (allows manual TTL change/restore)
-- [ ] Update tool docstrings and `instructions.py`
-
-#### 1.6 Configuration
-
-- [ ] Add TTL config fields to `MemoryConfig` in `mnemory/config.py`:
-  - `ttl_fact`, `ttl_preference`, `ttl_episodic`, `ttl_procedural`, `ttl_context`
-  - `track_memory_access`
-- [ ] Add environment variable parsing
-
-#### 1.7 Tests
-
-- [ ] Test TTL calculation and expiration detection
-- [ ] Test pinned memory exemption from TTL
-- [ ] Test decay state transitions (active → decayed)
-- [ ] Test filtering of decayed memories in search
-- [ ] Test filtering of decayed memories in core memories
-- [ ] Test access tracking and TTL reset on access
-- [ ] Test existing memories without TTL fields (treated as permanent)
-- [ ] Test `add_memory` with explicit `ttl_days`
-- [ ] Test `add_memory` with default TTL from memory type
-- [ ] Test `include_decayed` parameter
-
-#### 1.8 Documentation
-
-- [ ] Update README with TTL feature description
-- [ ] Update README configuration table
-- [ ] Update AGENTS.md with TTL metadata fields
-- [ ] Update `instructions.py` with TTL guidance for LLMs
-
----
-
-## Task 2: Recall/Remember API
+## Task 1: Recall/Remember API
 
 ### Overview
 
@@ -717,7 +502,7 @@ REINFORCEMENT_SIMILARITY_THRESHOLD=0.85  # Similarity threshold for finding exis
 
 ### Implementation Steps
 
-#### 2.1 Async Infrastructure
+#### 1.1 Async Infrastructure
 
 - [ ] Add `openai` async client support:
   - Create `AsyncOpenAI` client factory (similar to existing `_get_openai_client` in classify.py)
@@ -725,14 +510,14 @@ REINFORCEMENT_SIMILARITY_THRESHOLD=0.85  # Similarity threshold for finding exis
 - [ ] Add `ThreadPoolExecutor` for running sync VectorStore operations in parallel
 - [ ] Verify Starlette `BackgroundTasks` works with our middleware (contextvars propagation)
 
-#### 2.2 File Structure
+#### 1.2 File Structure
 
 Create new files:
 - [ ] `mnemory/api.py` — Starlette REST routes for `/api/recall` and `/api/remember`
 - [ ] `mnemory/recall.py` — Recall orchestration logic
 - [ ] `mnemory/remember.py` — Remember orchestration logic
 
-#### 2.3 Recall Implementation
+#### 1.3 Recall Implementation
 
 - [ ] Create `RecallService` class in `mnemory/recall.py`:
   - `async def recall(context, messages, user_id, agent_id) -> dict`
@@ -762,7 +547,7 @@ Create new files:
   - Format based on `Accept` header
   - Include stats in JSON format
 
-#### 2.4 Remember Implementation
+#### 1.4 Remember Implementation
 
 - [ ] Create `RememberService` class in `mnemory/remember.py`:
   - `async def remember(content, messages, user_id, agent_id) -> None` (runs in background)
@@ -789,7 +574,7 @@ Create new files:
   - Return 429 if over `REMEMBER_RATE_LIMIT` per minute
   - Rate limit checked before accepting (before returning 200)
 
-#### 2.5 API Routes
+#### 1.5 API Routes
 
 - [ ] Create Starlette routes in `mnemory/api.py`:
   - `POST /api/recall` — async handler, calls RecallService
@@ -807,7 +592,7 @@ Create new files:
   ]
   ```
 
-#### 2.6 Configuration
+#### 1.6 Configuration
 
 - [ ] Add `TaskModelConfig` dataclass to `mnemory/config.py`:
   - `model`, `base_url`, `api_key` (with fallbacks to LLM config)
@@ -817,7 +602,7 @@ Create new files:
   - `reinforcement_similarity_threshold`
 - [ ] Add environment variable parsing
 
-#### 2.7 Tests
+#### 1.7 Tests
 
 - [ ] Test recall with text context
 - [ ] Test recall with messages array
@@ -839,7 +624,7 @@ Create new files:
 - [ ] Test remember rate limiting
 - [ ] Test authentication on both endpoints
 
-#### 2.8 Documentation
+#### 1.8 Documentation
 
 - [ ] Update README with new endpoints
 - [ ] Document configuration options
@@ -891,11 +676,8 @@ Importance decreases over time unless reinforced:
 
 ## Dependencies
 
-### Task 1 (TTL) Dependencies
-- None (builds on existing mnemory)
-
-### Task 2 (Recall/Remember) Dependencies
-- Task 1 (TTL) — For TTL assignment in remember and TTL reset on access in recall
+### Recall/Remember Dependencies
+- TTL Support (completed) — For TTL assignment in remember and TTL reset on access in recall
 - `openai` package with async support (already a dependency)
 
 ---
@@ -903,8 +685,6 @@ Importance decreases over time unless reinforced:
 ## Testing Strategy
 
 ### Unit Tests
-- TTL calculation, expiration detection, pinned exemption
-- Decay state management
 - Query expansion prompt building and response parsing
 - Messages normalization
 - Result combination and deduplication logic
@@ -914,7 +694,6 @@ Importance decreases over time unless reinforced:
 - Full recall flow with mocked task model and mocked VectorStore
 - Full remember flow with mocked task model and mocked MemoryService
 - Reinforcement with mocked vector search
-- Access tracking with mocked VectorStore
 - Authentication and user_id resolution on REST endpoints
 
 ### End-to-End Tests (require API key)

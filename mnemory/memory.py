@@ -25,6 +25,12 @@ from mnemory.classify import ClassificationError, classify_memory
 from mnemory.config import Config
 from mnemory.storage.artifact import ArtifactStore
 from mnemory.storage.vector import VectorStore
+from mnemory.ttl import (
+    build_expiry_metadata,
+    build_reinforcement_metadata,
+    is_expired,
+    should_exclude,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +83,7 @@ class MemoryService:
         pinned: bool | None = None,
         infer: bool = True,
         role: str = "user",
+        ttl_days: int | None = None,
     ) -> dict:
         """Store a fast memory with metadata.
 
@@ -174,6 +181,10 @@ class MemoryService:
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         }
 
+        # Add TTL metadata
+        ttl_meta = build_expiry_metadata(ttl_days, memory_type, self._config.memory)
+        metadata.update(ttl_meta)
+
         result = self.vector.add(
             content,
             user_id=user_id,
@@ -202,17 +213,20 @@ class MemoryService:
         categories: list[str] | None = None,
         role: str | None = None,
         limit: int = 10,
+        include_decayed: bool = False,
     ) -> list[dict]:
         """Search memories with semantic similarity, filtered and reranked.
 
-        Fetches 3x limit from mem0, applies category/type post-filtering,
-        reranks by combined similarity + importance score, returns top N.
+        On Qdrant backend: uses direct query_points() with native TTL,
+        category, and importance filtering (no over-fetch needed).
+        On Chroma: fetches 2x limit, applies Python post-filtering and
+        reranking.
         """
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
 
-        # Build mem0-compatible filters
+        # Build metadata filters (memory_type, role)
         filters = {}
         if memory_type:
             memory_type = validate_memory_type(memory_type)
@@ -222,32 +236,50 @@ class MemoryService:
                 raise ValueError("role filter must be 'user' or 'assistant'")
             filters["role"] = role
 
-        # Fetch extra for post-filtering and reranking
-        fetch_limit = limit * 3
+        # Expand category prefixes for native Qdrant filtering
+        expanded_categories = None
+        if categories:
+            expanded_categories = self._expand_category_filter(categories, user_id)
+
         result = self.vector.search(
             query,
             user_id=user_id,
             agent_id=agent_id,
             filters=filters if filters else None,
-            limit=fetch_limit,
+            categories=expanded_categories,
+            limit=limit,
+            exclude_expired=True,
+            include_decayed=include_decayed,
         )
 
         memories = result.get("results", [])
 
-        # Post-filter by categories (mem0 can't do prefix matching)
-        if categories:
-            memories = [
-                m
-                for m in memories
-                if matches_category_filter(
-                    (m.get("metadata") or {}).get("categories", []), categories
-                )
-            ]
+        # Fallback post-filtering for non-Qdrant backends
+        if self._config.vector.backend != "qdrant" or include_decayed:
+            # Post-filter TTL
+            memories = [m for m in memories if not should_exclude(m, include_decayed)]
+            # Post-filter categories
+            if categories:
+                memories = [
+                    m
+                    for m in memories
+                    if matches_category_filter(
+                        (m.get("metadata") or {}).get("categories", []),
+                        categories,
+                    )
+                ]
+            # Python reranking (Qdrant path uses formula)
+            memories = self._rerank_by_importance(memories)
+            memories = memories[:limit]
 
-        # Rerank by combined score: similarity * 0.7 + importance * 0.3
-        memories = self._rerank_by_importance(memories)
+        # Lazily mark decayed_at on expired memories found via include_decayed
+        if include_decayed:
+            self._mark_decayed(memories)
 
-        return memories[:limit]
+        # Access tracking: update last_accessed_at, access_count, reset TTL
+        self._track_access(memories)
+
+        return memories
 
     def search_memories_dual_scope(
         self,
@@ -259,6 +291,7 @@ class MemoryService:
         categories: list[str] | None = None,
         role: str | None = None,
         limit: int = 10,
+        include_decayed: bool = False,
     ) -> list[dict]:
         """Search both agent-scoped and shared memories, merge and deduplicate.
 
@@ -280,23 +313,32 @@ class MemoryService:
                 raise ValueError("role filter must be 'user' or 'assistant'")
             filters["role"] = role
 
-        fetch_limit = limit * 3
+        # Expand category prefixes for native Qdrant filtering
+        expanded_categories = None
+        if categories:
+            expanded_categories = self._expand_category_filter(categories, user_id)
+
+        search_kwargs = {
+            "filters": filters if filters else None,
+            "categories": expanded_categories,
+            "limit": limit,
+            "exclude_expired": True,
+            "include_decayed": include_decayed,
+        }
 
         # Search 1: agent-scoped memories
         agent_result = self.vector.search(
             query,
             user_id=user_id,
             agent_id=session_agent_id,
-            filters=filters if filters else None,
-            limit=fetch_limit,
+            **search_kwargs,
         )
         # Search 2: shared memories (no agent_id)
         shared_result = self.vector.search(
             query,
             user_id=user_id,
             agent_id=None,
-            filters=filters if filters else None,
-            limit=fetch_limit,
+            **search_kwargs,
         )
 
         # Merge and deduplicate by memory ID
@@ -308,18 +350,30 @@ class MemoryService:
                 seen_ids.add(mid)
                 memories.append(mem)
 
-        # Post-filter by categories
-        if categories:
-            memories = [
-                m
-                for m in memories
-                if matches_category_filter(
-                    (m.get("metadata") or {}).get("categories", []), categories
-                )
-            ]
+        # Fallback post-filtering for non-Qdrant backends
+        if self._config.vector.backend != "qdrant" or include_decayed:
+            memories = [m for m in memories if not should_exclude(m, include_decayed)]
+            if categories:
+                memories = [
+                    m
+                    for m in memories
+                    if matches_category_filter(
+                        (m.get("metadata") or {}).get("categories", []),
+                        categories,
+                    )
+                ]
+            memories = self._rerank_by_importance(memories)
 
-        memories = self._rerank_by_importance(memories)
-        return memories[:limit]
+        memories = memories[:limit]
+
+        # Lazily mark decayed_at on expired memories found via include_decayed
+        if include_decayed:
+            self._mark_decayed(memories)
+
+        # Access tracking
+        self._track_access(memories)
+
+        return memories
 
     # ── Get Core Memories ─────────────────────────────────────────────
 
@@ -418,6 +472,8 @@ class MemoryService:
         recent = self.vector.get_recent_memories(
             user_id=user_id, agent_id=agent_id, since=since, limit=50
         )
+        # Filter out expired/decayed recent memories
+        recent = [m for m in recent if not should_exclude(m)]
         if recent:
             # Sort chronologically
             recent.sort(key=lambda m: m.get("created_at", ""))
@@ -464,8 +520,14 @@ class MemoryService:
         categories: list[str] | None = None,
         role: str | None = None,
         limit: int = 50,
+        include_decayed: bool = False,
     ) -> list[dict]:
-        """List memories with optional filtering."""
+        """List memories with optional filtering.
+
+        By default, expired and decayed memories are excluded. Set
+        include_decayed=True to include them (useful for browsing
+        historical memories).
+        """
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
@@ -488,6 +550,9 @@ class MemoryService:
 
         memories = result.get("results", [])
 
+        # Post-filter TTL (list uses mem0 get_all which has no TTL filtering)
+        memories = [m for m in memories if not should_exclude(m, include_decayed)]
+
         if categories:
             memories = [
                 m
@@ -508,6 +573,7 @@ class MemoryService:
         categories: list[str] | None = None,
         role: str | None = None,
         limit: int = 50,
+        include_decayed: bool = False,
     ) -> list[dict]:
         """List both agent-scoped and shared memories, merge and deduplicate.
 
@@ -551,6 +617,9 @@ class MemoryService:
             if mid and mid not in seen_ids:
                 seen_ids.add(mid)
                 memories.append(mem)
+
+        # Post-filter TTL
+        memories = [m for m in memories if not should_exclude(m, include_decayed)]
 
         # Post-filter by categories
         if categories:
@@ -614,11 +683,16 @@ class MemoryService:
         categories: list[str] | None = None,
         importance: str | None = None,
         pinned: bool | None = None,
+        ttl_days: int | None = ...,  # type: ignore[assignment]
     ) -> dict:
         """Update a memory's content and/or metadata.
 
         Content updates go through mem0 (re-embedding). Metadata updates
         use direct vector store payload updates to avoid losing custom fields.
+
+        ttl_days: Set a new TTL (recalculates expires_at from now). Pass 0
+                  or None to make permanent. Uses sentinel default (...) to
+                  distinguish "not provided" from "explicitly set to None".
         """
         metadata_updates: dict[str, Any] = {}
 
@@ -630,6 +704,15 @@ class MemoryService:
             metadata_updates["importance"] = validate_importance(importance)
         if pinned is not None:
             metadata_updates["pinned"] = pinned
+
+        # TTL update: recalculate expires_at, clear decayed_at (restore)
+        if ttl_days is not ...:
+            from mnemory.ttl import calculate_expiration
+
+            effective_ttl = ttl_days if ttl_days else None  # 0 → None (permanent)
+            metadata_updates["ttl_days"] = effective_ttl
+            metadata_updates["expires_at"] = calculate_expiration(effective_ttl)
+            metadata_updates["decayed_at"] = None  # Restore from decay
 
         # Update content via mem0 (re-embeds)
         if content is not None:
@@ -648,11 +731,18 @@ class MemoryService:
             metadata_updates["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
             self.vector.update_metadata(memory_id, metadata_updates)
 
-        # Invalidate core cache — updated memory may be pinned or recent.
+        # Invalidate caches — updated memory may be pinned or recent.
         if user_id:
             self._core_cache.invalidate_prefix(user_id)
         else:
             self._core_cache.clear()
+
+        # Invalidate category cache when categories are updated
+        if categories is not None:
+            if user_id:
+                self._category_cache.invalidate(user_id)
+            else:
+                self._category_cache.clear()
 
         return {"status": "updated", "memory_id": memory_id}
 
@@ -878,6 +968,75 @@ class MemoryService:
         if mem:
             return (mem.get("metadata") or {}).get("artifacts", [])
         return []
+
+    def _expand_category_filter(self, categories: list[str], user_id: str) -> list[str]:
+        """Expand category prefix patterns into concrete category values.
+
+        For example, "project" expands to ["project", "project:myapp",
+        "project:domecek"] based on existing memories. Non-prefix categories
+        are passed through as-is.
+
+        This allows Qdrant's MatchAny to handle category filtering natively
+        instead of post-filtering in Python.
+        """
+        available = self._get_available_categories(user_id)
+        expanded: list[str] = []
+        for cat in categories:
+            expanded.append(cat)
+            # Expand prefix: "project" → also include "project:foo", etc.
+            prefix = cat + ":"
+            for avail in available:
+                if avail.startswith(prefix) and avail not in expanded:
+                    expanded.append(avail)
+        return expanded
+
+    def _mark_decayed(self, memories: list[dict]) -> None:
+        """Lazily set decayed_at on expired memories that haven't been marked yet.
+
+        Called when include_decayed=True returns expired memories. Sets
+        decayed_at via batch metadata update so subsequent queries can
+        distinguish "newly expired" from "already decayed".
+        """
+        updates: list[tuple[str, dict]] = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for mem in memories:
+            metadata = mem.get("metadata") or {}
+            if metadata.get("decayed_at") is None:
+                if is_expired(mem):
+                    updates.append((mem["id"], {"decayed_at": now_iso}))
+        if updates:
+            try:
+                self.vector.batch_update_metadata(updates)
+            except Exception:
+                logger.warning("Failed to mark decayed memories")
+
+    def _track_access(self, memories: list[dict]) -> None:
+        """Update access tracking metadata on searched memories.
+
+        Sets last_accessed_at, increments access_count, and resets TTL
+        (reinforcement) for memories that have a ttl_days value.
+
+        Gated by TRACK_MEMORY_ACCESS config. Runs synchronously via
+        batch set_payload after search returns.
+        """
+        if not self._config.memory.track_memory_access:
+            return
+        if not memories:
+            return
+
+        updates: list[tuple[str, dict]] = []
+        for mem in memories:
+            mem_id = mem.get("id")
+            if not mem_id:
+                continue
+            reinforcement = build_reinforcement_metadata(mem)
+            updates.append((mem_id, reinforcement))
+
+        if updates:
+            try:
+                self.vector.batch_update_metadata(updates)
+            except Exception:
+                logger.warning("Failed to track memory access")
 
     def _rerank_by_importance(self, memories: list[dict]) -> list[dict]:
         """Rerank search results by combined similarity + importance score.

@@ -24,6 +24,16 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return os.environ.get(key, str(default)).lower() in ("true", "1", "yes")
 
 
+def _env_int_or_none(key: str, default: int | None = None) -> int | None:
+    """Parse an env var as int, treating empty string and 'null'/'none' as None."""
+    raw = os.environ.get(key, "")
+    if not raw:
+        return default
+    if raw.lower() in ("null", "none"):
+        return None
+    return int(raw)
+
+
 @dataclass
 class VectorConfig:
     """Vector store configuration."""
@@ -145,6 +155,28 @@ class MemoryConfig:
     )
     core_memories_cache_ttl: int = field(
         default_factory=lambda: _env_int("CORE_MEMORIES_CACHE_TTL", 300)
+    )
+
+    # TTL defaults by memory type (days, None = permanent)
+    ttl_fact: int | None = field(
+        default_factory=lambda: _env_int_or_none("TTL_FACT", None)
+    )
+    ttl_preference: int | None = field(
+        default_factory=lambda: _env_int_or_none("TTL_PREFERENCE", None)
+    )
+    ttl_episodic: int | None = field(
+        default_factory=lambda: _env_int_or_none("TTL_EPISODIC", 90)
+    )
+    ttl_procedural: int | None = field(
+        default_factory=lambda: _env_int_or_none("TTL_PROCEDURAL", 60)
+    )
+    ttl_context: int | None = field(
+        default_factory=lambda: _env_int_or_none("TTL_CONTEXT", 7)
+    )
+
+    # Access tracking
+    track_memory_access: bool = field(
+        default_factory=lambda: _env_bool("TRACK_MEMORY_ACCESS", True)
     )
 
 

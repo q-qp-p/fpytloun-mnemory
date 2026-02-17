@@ -125,9 +125,44 @@ class VectorStore:
         user_id: str,
         agent_id: str | None = None,
         filters: dict | None = None,
+        categories: list[str] | None = None,
         limit: int = 100,
+        exclude_expired: bool = False,
+        include_decayed: bool = False,
     ) -> dict:
-        """Search memories via mem0."""
+        """Search memories with optional native TTL and category filtering.
+
+        When exclude_expired=True and the backend is Qdrant, uses direct
+        Qdrant query_points() with native DatetimeRange + IsNull filters
+        for TTL, MatchAny for categories, and formula-based importance
+        reranking. This avoids expired memories consuming search slots.
+
+        For Chroma or when exclude_expired=False, delegates to mem0's
+        search (caller handles post-filtering).
+
+        Args:
+            filters: Simple key-value metadata filters (memory_type, role).
+            categories: Expanded category list for native Qdrant filtering.
+                       Should already be expanded from prefix patterns.
+            exclude_expired: If True, filter out expired/decayed memories.
+            include_decayed: If True (with exclude_expired), include expired
+                           memories anyway (for browsing decayed memories).
+        """
+        if (
+            exclude_expired
+            and not include_decayed
+            and self._config.vector.backend == "qdrant"
+        ):
+            return self._qdrant_search(
+                query,
+                user_id=user_id,
+                agent_id=agent_id,
+                filters=filters,
+                categories=categories,
+                limit=limit,
+            )
+
+        # Fallback: mem0 search (no native TTL/category filtering)
         kwargs: dict[str, Any] = {"user_id": user_id, "limit": limit}
         if agent_id:
             kwargs["agent_id"] = agent_id
@@ -274,6 +309,171 @@ class VectorStore:
             filtered.append(mem)
 
         return filtered
+
+    def _qdrant_search(
+        self,
+        query: str,
+        *,
+        user_id: str,
+        agent_id: str | None,
+        filters: dict | None,
+        categories: list[str] | None,
+        limit: int,
+    ) -> dict:
+        """Direct Qdrant search with native TTL, category, and importance filtering.
+
+        Bypasses mem0's search to use Qdrant's query_points() with:
+        - TTL filter: expires_at IS NULL OR expires_at > now OR pinned = true
+        - Category filter: MatchAny on expanded category list
+        - Metadata filters: memory_type, role via MatchValue
+        - Importance reranking: prefetch + formula query
+
+        Uses mem0's embedding model for query embedding.
+        """
+        from datetime import datetime, timezone
+
+        from qdrant_client.models import (
+            DatetimeRange,
+            FieldCondition,
+            Filter,
+            IsNullCondition,
+            MatchAny,
+            MatchValue,
+            PayloadField,
+            Prefetch,
+        )
+
+        from mnemory.categories import IMPORTANCE_WEIGHTS
+
+        # 1. Embed the query using mem0's embedding model
+        embeddings = self.memory.embedding_model.embed(query, "search")
+
+        # 2. Build filter conditions
+        must_conditions: list = [
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        ]
+        if agent_id:
+            must_conditions.append(
+                FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+        # Metadata filters (memory_type, role)
+        if filters:
+            for key, value in filters.items():
+                must_conditions.append(
+                    FieldCondition(key=key, match=MatchValue(value=value))
+                )
+        # Category filter (expanded list, OR logic via MatchAny)
+        if categories:
+            must_conditions.append(
+                FieldCondition(key="categories", match=MatchAny(any=categories))
+            )
+        # TTL filter: active memories only
+        # (expires_at IS NULL OR expires_at > now OR pinned = true)
+        now = datetime.now(timezone.utc)
+        ttl_filter = Filter(
+            should=[
+                IsNullCondition(is_null=PayloadField(key="expires_at")),
+                FieldCondition(key="expires_at", range=DatetimeRange(gt=now)),
+                FieldCondition(key="pinned", match=MatchValue(value=True)),
+            ]
+        )
+        must_conditions.append(ttl_filter)
+
+        query_filter = Filter(must=must_conditions)
+
+        # 3. Build formula for importance reranking
+        # score = 0.7 * similarity + importance_boost
+        # Each importance level adds its weight * 0.3 (only one matches per memory)
+        try:
+            from qdrant_client.models import (
+                FormulaQuery,
+                SumExpression,
+            )
+
+            formula_terms: list = ["$score"]
+            # Scale similarity to 0.7 weight by subtracting 0.3 * $score
+            # and adding importance boost. Actually, simpler:
+            # We want: 0.7 * sim + 0.3 * imp_weight
+            # Formula: $score * 0.7 + condition_boost
+            # But Qdrant formula $score is the raw similarity.
+            # We build: sum(mult(0.7, $score), mult(boost, condition))
+            formula_terms = [
+                {"mult": [0.7, "$score"]},
+            ]
+            for imp_level, imp_weight in IMPORTANCE_WEIGHTS.items():
+                boost = 0.3 * imp_weight
+                if boost > 0:
+                    formula_terms.append(
+                        {
+                            "mult": [
+                                boost,
+                                {
+                                    "key": "importance",
+                                    "match": {"value": imp_level},
+                                },
+                            ]
+                        }
+                    )
+
+            result = self.qdrant_client.query_points(
+                collection_name=self.collection_name,
+                prefetch=Prefetch(
+                    query=embeddings,
+                    filter=query_filter,
+                    limit=limit,
+                ),
+                query=FormulaQuery(formula=SumExpression(sum=formula_terms)),
+                limit=limit,
+                with_payload=True,
+            )
+        except Exception:
+            # Fallback: if formula query fails (e.g., older Qdrant version),
+            # use simple query_points without reranking
+            logger.warning(
+                "Formula-based reranking failed, falling back to simple search"
+            )
+            result = self.qdrant_client.query_points(
+                collection_name=self.collection_name,
+                query=embeddings,
+                query_filter=query_filter,
+                limit=limit,
+                with_payload=True,
+            )
+
+        # 4. Convert ScoredPoints to mem0-style dicts
+        memories = []
+        for point in result.points:
+            mem = self._qdrant_point_to_memory(point)
+            mem["score"] = point.score
+            memories.append(mem)
+
+        return {"results": memories}
+
+    def batch_update_metadata(self, updates: list[tuple[str, dict]]) -> None:
+        """Batch update metadata on multiple memories.
+
+        Args:
+            updates: List of (memory_id, metadata_dict) tuples.
+        """
+        if not updates:
+            return
+
+        if self._config.vector.backend == "qdrant":
+            for memory_id, metadata in updates:
+                try:
+                    self.qdrant_client.set_payload(
+                        collection_name=self.collection_name,
+                        payload=metadata,
+                        points=[memory_id],
+                    )
+                except Exception:
+                    logger.warning("Failed to update metadata for memory %s", memory_id)
+        else:
+            for memory_id, metadata in updates:
+                try:
+                    self.update_metadata(memory_id, metadata)
+                except Exception:
+                    logger.warning("Failed to update metadata for memory %s", memory_id)
 
     def _qdrant_recent_memories(
         self,

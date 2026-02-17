@@ -213,6 +213,7 @@ def add_memory(
     agent_id: str | None = None,
     infer: bool = True,
     role: str = "user",
+    ttl_days: int | None = None,
 ) -> str:
     """Store a memory about the user or agent.
 
@@ -262,6 +263,12 @@ def add_memory(
               Keep role="user" for everything else, including agent-scoped
               user preferences (e.g., "User wants me to create commit
               messages" with agent_id="self").
+        ttl_days: Time-to-live in days. After this many days, the memory
+                  decays (soft-expires). Omit to use the default TTL for the
+                  memory type (fact/preference=permanent, episodic=90d,
+                  procedural=60d, context=7d). Pinned memories are exempt
+                  from TTL. Accessed memories have their TTL reset
+                  (reinforcement).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -276,6 +283,7 @@ def add_memory(
             pinned=pinned,
             infer=infer,
             role=role,
+            ttl_days=ttl_days,
         )
         return json.dumps(result, default=str)
     except ValueError as e:
@@ -310,7 +318,7 @@ def add_memories(
     Args:
         memories: List of memory objects. Each must have "content" (str).
                   Optional per-item fields: memory_type, categories,
-                  importance, pinned, role. Example:
+                  importance, pinned, role, ttl_days. Example:
                   [{"content": "User lives in Prague", "categories": ["personal"]},
                    {"content": "Prefers dark mode", "importance": "high"}]
         user_id: User identifier (shared for all items). Optional if
@@ -370,6 +378,7 @@ def add_memories(
                 pinned=mem.get("pinned"),
                 infer=infer,
                 role=item_role,
+                ttl_days=mem.get("ttl_days"),
             )
             # Check for error returned by add_memory (e.g., content too long)
             if result.get("error"):
@@ -412,6 +421,7 @@ def search_memories(
     role: str | None = None,
     limit: int = 10,
     agent_id: str | None = None,
+    include_decayed: bool = False,
 ) -> str:
     """Search memories by semantic similarity with filtering and importance reranking.
 
@@ -436,6 +446,8 @@ def search_memories(
         agent_id: Ignored when session agent is set (automatic dual-scope).
                   Only used as fallback for direct API callers without
                   X-Agent-Id header.
+        include_decayed: If true, include expired/decayed memories in results.
+                        Useful for browsing historical memories. Default false.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -452,6 +464,7 @@ def search_memories(
                 categories=categories,
                 role=role,
                 limit=limit,
+                include_decayed=include_decayed,
             )
         else:
             # No session agent — use param for backward compat
@@ -464,6 +477,7 @@ def search_memories(
                 categories=categories,
                 role=role,
                 limit=limit,
+                include_decayed=include_decayed,
             )
         return _format_memories(results)
     except ValueError as e:
@@ -531,6 +545,7 @@ def list_memories(
     role: str | None = None,
     limit: int = 50,
     agent_id: str | None = None,
+    include_decayed: bool = False,
 ) -> str:
     """List all stored memories for a user, optionally filtered.
 
@@ -552,6 +567,8 @@ def list_memories(
         agent_id: Ignored when session agent is set (automatic dual-scope).
                   Only used as fallback for direct API callers without
                   X-Agent-Id header.
+        include_decayed: If true, include expired/decayed memories in results.
+                        Useful for browsing historical memories. Default false.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -567,6 +584,7 @@ def list_memories(
                 categories=categories,
                 role=role,
                 limit=limit,
+                include_decayed=include_decayed,
             )
         else:
             # No session agent — use param for backward compat
@@ -578,6 +596,7 @@ def list_memories(
                 categories=categories,
                 role=role,
                 limit=limit,
+                include_decayed=include_decayed,
             )
         return _format_memories(results)
     except ValueError as e:
@@ -600,6 +619,7 @@ def update_memory(
     categories: list[str] | None = None,
     importance: str | None = None,
     pinned: bool | None = None,
+    ttl_days: int | None = None,
 ) -> str:
     """Update an existing memory's content or metadata.
 
@@ -616,20 +636,28 @@ def update_memory(
         categories: New categories (replaces existing).
         importance: New importance level (low/normal/high/critical).
         pinned: New pinned state (true/false).
+        ttl_days: New TTL in days. Recalculates expires_at from now and
+                  restores decayed memories. Pass null to make permanent.
     """
     try:
         # Verify ownership: must be own agent's memory or shared
         session_aid = _get_session_agent_id()
         _get_service().verify_memory_access(memory_id, session_agent_id=session_aid)
-        result = _get_service().update_memory(
-            memory_id,
-            user_id=_session_user_id.get(),
-            content=content,
-            memory_type=memory_type,
-            categories=categories,
-            importance=importance,
-            pinned=pinned,
-        )
+
+        # Build kwargs, using sentinel for ttl_days to distinguish
+        # "not provided" from "explicitly set to None"
+        kwargs: dict = {
+            "user_id": _session_user_id.get(),
+            "content": content,
+            "memory_type": memory_type,
+            "categories": categories,
+            "importance": importance,
+            "pinned": pinned,
+        }
+        if ttl_days is not None:
+            kwargs["ttl_days"] = ttl_days
+
+        result = _get_service().update_memory(memory_id, **kwargs)
         return json.dumps(result, default=str)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -915,6 +943,13 @@ def _format_memories(memories: list[dict]) -> str:
         if metadata.get("artifacts"):
             entry["has_artifacts"] = True
             entry["artifact_count"] = len(metadata["artifacts"])
+
+        # TTL state
+        if metadata.get("expires_at"):
+            entry["expires_at"] = metadata["expires_at"]
+        if metadata.get("decayed_at"):
+            entry["is_decayed"] = True
+            entry["decayed_at"] = metadata["decayed_at"]
 
         if mem.get("agent_id"):
             entry["agent_id"] = mem["agent_id"]

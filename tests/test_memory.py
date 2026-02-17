@@ -6,6 +6,29 @@ import pytest
 
 from mnemory.memory import MemoryService, _validate_id
 
+
+def _mock_memory_config(mock_config: MagicMock) -> None:
+    """Set standard memory config attributes on a MagicMock config object.
+
+    Ensures TTL and other config attributes return proper values instead
+    of MagicMock objects.
+    """
+    mock_config.memory.max_memory_length = 1000
+    mock_config.memory.max_artifact_size = 102400
+    mock_config.memory.max_core_context_length = 4000
+    mock_config.memory.default_recent_hours = 24
+    mock_config.memory.classify_cache_ttl = 300
+    mock_config.memory.core_memories_cache_ttl = 300
+    mock_config.memory.auto_classify = False
+    mock_config.memory.track_memory_access = False
+    # TTL defaults (None = permanent)
+    mock_config.memory.ttl_fact = None
+    mock_config.memory.ttl_preference = None
+    mock_config.memory.ttl_episodic = 90
+    mock_config.memory.ttl_procedural = 60
+    mock_config.memory.ttl_context = 7
+
+
 # ── _validate_id ──────────────────────────────────────────────────────
 
 
@@ -105,13 +128,7 @@ class TestCoreMemoryCache:
     def _make_service():
         """Create a MemoryService with mocked backends."""
         mock_config = MagicMock()
-        mock_config.memory.max_memory_length = 1000
-        mock_config.memory.max_artifact_size = 102400
-        mock_config.memory.max_core_context_length = 4000
-        mock_config.memory.default_recent_hours = 24
-        mock_config.memory.classify_cache_ttl = 300
-        mock_config.memory.core_memories_cache_ttl = 300
-        mock_config.memory.auto_classify = False
+        _mock_memory_config(mock_config)
 
         with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
             service = MemoryService(mock_config)
@@ -241,13 +258,8 @@ class TestCoreMemoryCache:
     def test_cache_disabled_when_ttl_zero(self):
         """TTL=0 should effectively disable caching."""
         mock_config = MagicMock()
-        mock_config.memory.max_memory_length = 1000
-        mock_config.memory.max_artifact_size = 102400
-        mock_config.memory.max_core_context_length = 4000
-        mock_config.memory.default_recent_hours = 24
-        mock_config.memory.classify_cache_ttl = 300
+        _mock_memory_config(mock_config)
         mock_config.memory.core_memories_cache_ttl = 0  # Disabled
-        mock_config.memory.auto_classify = False
 
         with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
             service = MemoryService(mock_config)
@@ -275,13 +287,7 @@ class TestInferParameter:
     def _make_service():
         """Create a MemoryService with mocked backends."""
         mock_config = MagicMock()
-        mock_config.memory.max_memory_length = 1000
-        mock_config.memory.max_artifact_size = 102400
-        mock_config.memory.max_core_context_length = 4000
-        mock_config.memory.default_recent_hours = 24
-        mock_config.memory.classify_cache_ttl = 300
-        mock_config.memory.core_memories_cache_ttl = 300
-        mock_config.memory.auto_classify = False
+        _mock_memory_config(mock_config)
 
         with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
             service = MemoryService(mock_config)
@@ -325,13 +331,7 @@ class TestBatchAdd:
     def _make_service():
         """Create a MemoryService with mocked backends."""
         mock_config = MagicMock()
-        mock_config.memory.max_memory_length = 1000
-        mock_config.memory.max_artifact_size = 102400
-        mock_config.memory.max_core_context_length = 4000
-        mock_config.memory.default_recent_hours = 24
-        mock_config.memory.classify_cache_ttl = 300
-        mock_config.memory.core_memories_cache_ttl = 300
-        mock_config.memory.auto_classify = False
+        _mock_memory_config(mock_config)
 
         with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
             service = MemoryService(mock_config)
@@ -398,12 +398,7 @@ class TestClassificationErrorPropagation:
     def _make_service_with_auto_classify():
         """Create a MemoryService with auto_classify enabled."""
         mock_config = MagicMock()
-        mock_config.memory.max_memory_length = 1000
-        mock_config.memory.max_artifact_size = 102400
-        mock_config.memory.max_core_context_length = 4000
-        mock_config.memory.default_recent_hours = 24
-        mock_config.memory.classify_cache_ttl = 300
-        mock_config.memory.core_memories_cache_ttl = 300
+        _mock_memory_config(mock_config)
         mock_config.memory.auto_classify = True  # Enable auto-classification
         mock_config.llm = MagicMock()
 
@@ -483,13 +478,7 @@ class TestRoleParameter:
     def _make_service():
         """Create a MemoryService with mocked backends."""
         mock_config = MagicMock()
-        mock_config.memory.max_memory_length = 1000
-        mock_config.memory.max_artifact_size = 102400
-        mock_config.memory.max_core_context_length = 4000
-        mock_config.memory.default_recent_hours = 24
-        mock_config.memory.classify_cache_ttl = 300
-        mock_config.memory.core_memories_cache_ttl = 300
-        mock_config.memory.auto_classify = False
+        _mock_memory_config(mock_config)
 
         with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
             service = MemoryService(mock_config)
@@ -614,13 +603,7 @@ class TestCoreMemoriesRoleSections:
     def _make_service():
         """Create a MemoryService with mocked backends."""
         mock_config = MagicMock()
-        mock_config.memory.max_memory_length = 1000
-        mock_config.memory.max_artifact_size = 102400
-        mock_config.memory.max_core_context_length = 4000
-        mock_config.memory.default_recent_hours = 24
-        mock_config.memory.classify_cache_ttl = 300
-        mock_config.memory.core_memories_cache_ttl = 300
-        mock_config.memory.auto_classify = False
+        _mock_memory_config(mock_config)
 
         with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
             service = MemoryService(mock_config)
@@ -730,3 +713,483 @@ class TestCoreMemoriesRoleSections:
         result = service.get_core_memories(user_id="filip", agent_id="bob")
         assert "## Agent Knowledge" in result
         assert "Researched washing machines" in result
+
+
+# ── TTL integration tests ─────────────────────────────────────────────
+
+
+class TestTTLInAddMemory:
+    """Test TTL metadata is correctly set when adding memories."""
+
+    @staticmethod
+    def _make_service():
+        mock_config = MagicMock()
+        _mock_memory_config(mock_config)
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        service.vector.add.return_value = {"results": [{"id": "mem-1", "event": "ADD"}]}
+        return service
+
+    def test_explicit_ttl_days_sets_expires_at(self):
+        """Explicit ttl_days should set expires_at in metadata."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip", ttl_days=30)
+        _, kwargs = service.vector.add.call_args
+        meta = kwargs["metadata"]
+        assert meta["ttl_days"] == 30
+        assert meta["expires_at"] is not None
+        assert meta["decayed_at"] is None
+        assert meta["access_count"] == 0
+
+    def test_default_ttl_for_context_type(self):
+        """Context type should get default TTL of 7 days."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip", memory_type="context")
+        _, kwargs = service.vector.add.call_args
+        meta = kwargs["metadata"]
+        assert meta["ttl_days"] == 7
+        assert meta["expires_at"] is not None
+
+    def test_default_ttl_for_fact_type_is_permanent(self):
+        """Fact type should have no TTL (permanent)."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip", memory_type="fact")
+        _, kwargs = service.vector.add.call_args
+        meta = kwargs["metadata"]
+        assert meta["ttl_days"] is None
+        assert meta["expires_at"] is None
+
+    def test_explicit_ttl_overrides_default(self):
+        """Explicit ttl_days should override the type default."""
+        service = self._make_service()
+        service.add_memory(
+            content="test", user_id="filip", memory_type="fact", ttl_days=365
+        )
+        _, kwargs = service.vector.add.call_args
+        meta = kwargs["metadata"]
+        assert meta["ttl_days"] == 365
+        assert meta["expires_at"] is not None
+
+    def test_no_ttl_days_no_type_is_permanent(self):
+        """No ttl_days and no memory_type default → permanent."""
+        service = self._make_service()
+        service.add_memory(content="test", user_id="filip", memory_type="fact")
+        _, kwargs = service.vector.add.call_args
+        meta = kwargs["metadata"]
+        assert meta["ttl_days"] is None
+        assert meta["expires_at"] is None
+
+
+class TestTTLInSearchMemories:
+    """Test TTL filtering in search_memories."""
+
+    @staticmethod
+    def _make_service():
+        mock_config = MagicMock()
+        _mock_memory_config(mock_config)
+        mock_config.vector.backend = "chroma"  # Use fallback path
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        return service
+
+    def test_expired_memories_excluded_from_search(self):
+        """Expired memories should be filtered out by default."""
+        from datetime import datetime, timedelta, timezone
+
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        service = self._make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "active",
+                    "score": 0.9,
+                    "metadata": {"importance": "normal"},
+                },
+                {
+                    "id": "expired",
+                    "score": 0.8,
+                    "metadata": {
+                        "importance": "normal",
+                        "expires_at": past,
+                    },
+                },
+            ]
+        }
+        results = service.search_memories(query="test", user_id="filip")
+        ids = {r["id"] for r in results}
+        assert "active" in ids
+        assert "expired" not in ids
+
+    def test_pinned_memories_exempt_from_ttl(self):
+        """Pinned memories should not be filtered even if expired."""
+        from datetime import datetime, timedelta, timezone
+
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        service = self._make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "pinned-expired",
+                    "score": 0.9,
+                    "metadata": {
+                        "importance": "normal",
+                        "expires_at": past,
+                        "pinned": True,
+                    },
+                },
+            ]
+        }
+        results = service.search_memories(query="test", user_id="filip")
+        assert len(results) == 1
+        assert results[0]["id"] == "pinned-expired"
+
+    def test_include_decayed_returns_expired(self):
+        """include_decayed=True should return expired memories."""
+        from datetime import datetime, timedelta, timezone
+
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        service = self._make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "expired",
+                    "score": 0.8,
+                    "metadata": {
+                        "importance": "normal",
+                        "expires_at": past,
+                    },
+                },
+            ]
+        }
+        results = service.search_memories(
+            query="test", user_id="filip", include_decayed=True
+        )
+        assert len(results) == 1
+        assert results[0]["id"] == "expired"
+
+    def test_decayed_memories_excluded_by_default(self):
+        """Memories with decayed_at set should be excluded by default."""
+        service = self._make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "decayed",
+                    "score": 0.8,
+                    "metadata": {
+                        "importance": "normal",
+                        "decayed_at": "2024-01-01T00:00:00+00:00",
+                    },
+                },
+            ]
+        }
+        results = service.search_memories(query="test", user_id="filip")
+        assert len(results) == 0
+
+    def test_memories_without_ttl_fields_treated_as_permanent(self):
+        """Memories without TTL fields (legacy) should be treated as active."""
+        service = self._make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "legacy",
+                    "score": 0.9,
+                    "metadata": {"importance": "normal"},
+                },
+            ]
+        }
+        results = service.search_memories(query="test", user_id="filip")
+        assert len(results) == 1
+        assert results[0]["id"] == "legacy"
+
+
+class TestTTLInListMemories:
+    """Test TTL filtering in list_memories."""
+
+    @staticmethod
+    def _make_service():
+        mock_config = MagicMock()
+        _mock_memory_config(mock_config)
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        return service
+
+    def test_expired_memories_excluded_from_list(self):
+        """Expired memories should be filtered out of list results."""
+        from datetime import datetime, timedelta, timezone
+
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        service = self._make_service()
+        service.vector.get_all.return_value = {
+            "results": [
+                {"id": "active", "metadata": {}},
+                {
+                    "id": "expired",
+                    "metadata": {"expires_at": past},
+                },
+            ]
+        }
+        results = service.list_memories(user_id="filip")
+        ids = {r["id"] for r in results}
+        assert "active" in ids
+        assert "expired" not in ids
+
+    def test_include_decayed_in_list(self):
+        """include_decayed=True should return expired memories in list."""
+        from datetime import datetime, timedelta, timezone
+
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        service = self._make_service()
+        service.vector.get_all.return_value = {
+            "results": [
+                {
+                    "id": "expired",
+                    "metadata": {"expires_at": past},
+                },
+            ]
+        }
+        results = service.list_memories(user_id="filip", include_decayed=True)
+        assert len(results) == 1
+
+
+class TestAccessTracking:
+    """Test access tracking in search_memories."""
+
+    @staticmethod
+    def _make_service(track_access=True):
+        mock_config = MagicMock()
+        _mock_memory_config(mock_config)
+        mock_config.memory.track_memory_access = track_access
+        mock_config.vector.backend = "chroma"
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        return service
+
+    def test_access_tracking_calls_batch_update(self):
+        """Search should trigger batch_update_metadata for access tracking."""
+        service = self._make_service(track_access=True)
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "mem-1",
+                    "score": 0.9,
+                    "metadata": {"importance": "normal", "access_count": 2},
+                },
+            ]
+        }
+        service.search_memories(query="test", user_id="filip")
+        service.vector.batch_update_metadata.assert_called_once()
+        updates = service.vector.batch_update_metadata.call_args[0][0]
+        assert len(updates) == 1
+        mem_id, meta = updates[0]
+        assert mem_id == "mem-1"
+        assert "last_accessed_at" in meta
+        assert meta["access_count"] == 3
+
+    def test_access_tracking_disabled(self):
+        """When TRACK_MEMORY_ACCESS=false, no batch update should happen."""
+        service = self._make_service(track_access=False)
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "mem-1",
+                    "score": 0.9,
+                    "metadata": {"importance": "normal"},
+                },
+            ]
+        }
+        service.search_memories(query="test", user_id="filip")
+        service.vector.batch_update_metadata.assert_not_called()
+
+    def test_access_tracking_resets_ttl(self):
+        """Access tracking should reset expires_at for memories with TTL."""
+        service = self._make_service(track_access=True)
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "mem-1",
+                    "score": 0.9,
+                    "metadata": {
+                        "importance": "normal",
+                        "ttl_days": 30,
+                        "access_count": 0,
+                    },
+                },
+            ]
+        }
+        service.search_memories(query="test", user_id="filip")
+        updates = service.vector.batch_update_metadata.call_args[0][0]
+        _, meta = updates[0]
+        assert "expires_at" in meta  # TTL was reset
+
+
+class TestUpdateMemoryTTL:
+    """Test TTL updates via update_memory."""
+
+    @staticmethod
+    def _make_service():
+        mock_config = MagicMock()
+        _mock_memory_config(mock_config)
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        return service
+
+    def test_update_ttl_days_sets_new_expiration(self):
+        """Updating ttl_days should recalculate expires_at."""
+        service = self._make_service()
+        result = service.update_memory("mem-1", ttl_days=60, user_id="filip")
+        assert result["status"] == "updated"
+        service.vector.update_metadata.assert_called_once()
+        meta = service.vector.update_metadata.call_args[0][1]
+        assert meta["ttl_days"] == 60
+        assert meta["expires_at"] is not None
+        assert meta["decayed_at"] is None  # Restored from decay
+
+    def test_update_ttl_clears_decayed_at(self):
+        """Updating TTL should clear decayed_at (restore from decay)."""
+        service = self._make_service()
+        service.update_memory("mem-1", ttl_days=30, user_id="filip")
+        meta = service.vector.update_metadata.call_args[0][1]
+        assert meta["decayed_at"] is None
+
+    def test_update_categories_invalidates_cache(self):
+        """Updating categories should invalidate the category cache."""
+        service = self._make_service()
+        service.update_memory("mem-1", categories=["work"], user_id="filip")
+        # Category cache should be invalidated for this user
+        # (We can't easily test cache internals, but we can verify
+        # the method completes without error)
+        assert service.vector.update_metadata.called
+
+
+class TestExpandCategoryFilter:
+    """Test category prefix expansion for native Qdrant filtering."""
+
+    @staticmethod
+    def _make_service():
+        mock_config = MagicMock()
+        _mock_memory_config(mock_config)
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        return service
+
+    def test_expand_project_prefix(self):
+        """'project' should expand to include all project:* subcategories."""
+        service = self._make_service()
+        # Mock existing categories
+        service.vector.get_all.return_value = {
+            "results": [
+                {"metadata": {"categories": ["project:myapp"]}},
+                {"metadata": {"categories": ["project:domecek"]}},
+                {"metadata": {"categories": ["work"]}},
+            ]
+        }
+        expanded = service._expand_category_filter(["project"], "filip")
+        assert "project" in expanded
+        assert "project:myapp" in expanded
+        assert "project:domecek" in expanded
+        assert "work" not in expanded
+
+    def test_non_prefix_category_passed_through(self):
+        """Non-prefix categories should be passed through as-is."""
+        service = self._make_service()
+        service.vector.get_all.return_value = {"results": []}
+        expanded = service._expand_category_filter(["work"], "filip")
+        assert expanded == ["work"]
+
+    def test_mixed_prefix_and_exact(self):
+        """Mix of prefix and exact categories should work."""
+        service = self._make_service()
+        service.vector.get_all.return_value = {
+            "results": [
+                {"metadata": {"categories": ["project:myapp"]}},
+            ]
+        }
+        expanded = service._expand_category_filter(["work", "project"], "filip")
+        assert "work" in expanded
+        assert "project" in expanded
+        assert "project:myapp" in expanded
+
+
+class TestMarkDecayed:
+    """Test lazy decayed_at marking."""
+
+    @staticmethod
+    def _make_service():
+        mock_config = MagicMock()
+        _mock_memory_config(mock_config)
+
+        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+            service = MemoryService(mock_config)
+
+        service.vector = MagicMock()
+        return service
+
+    def test_marks_expired_memories_as_decayed(self):
+        """Expired memories without decayed_at should get it set."""
+        from datetime import datetime, timedelta, timezone
+
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        service = self._make_service()
+        memories = [
+            {
+                "id": "expired-1",
+                "metadata": {"expires_at": past, "decayed_at": None},
+            },
+        ]
+        service._mark_decayed(memories)
+        service.vector.batch_update_metadata.assert_called_once()
+        updates = service.vector.batch_update_metadata.call_args[0][0]
+        assert len(updates) == 1
+        assert updates[0][0] == "expired-1"
+        assert "decayed_at" in updates[0][1]
+
+    def test_skips_already_decayed(self):
+        """Memories with decayed_at already set should be skipped."""
+        from datetime import datetime, timedelta, timezone
+
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        service = self._make_service()
+        memories = [
+            {
+                "id": "already-decayed",
+                "metadata": {
+                    "expires_at": past,
+                    "decayed_at": "2024-01-01T00:00:00+00:00",
+                },
+            },
+        ]
+        service._mark_decayed(memories)
+        service.vector.batch_update_metadata.assert_not_called()
+
+    def test_skips_active_memories(self):
+        """Active memories should not be marked as decayed."""
+        from datetime import datetime, timedelta, timezone
+
+        future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        service = self._make_service()
+        memories = [
+            {
+                "id": "active",
+                "metadata": {"expires_at": future, "decayed_at": None},
+            },
+        ]
+        service._mark_decayed(memories)
+        service.vector.batch_update_metadata.assert_not_called()

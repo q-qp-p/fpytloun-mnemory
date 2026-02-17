@@ -175,6 +175,15 @@ class TestSearchMemoriesDualScope:
         service.vector = MagicMock()
         service.artifact = MagicMock()
         service._config = MagicMock()
+        service._config.memory.track_memory_access = False
+        service._config.memory.classify_cache_ttl = 300
+        service._config.vector.backend = "chroma"  # Use fallback path
+        from mnemory.cache import TTLCache
+
+        service._category_cache = TTLCache(ttl_seconds=300)
+        service._core_cache = TTLCache(ttl_seconds=300)
+        # Mock get_all for _get_available_categories
+        service.vector.get_all.return_value = {"results": []}
         return service
 
     def test_merges_agent_and_shared(self):
@@ -315,6 +324,7 @@ class TestListMemoriesDualScope:
         service.vector = MagicMock()
         service.artifact = MagicMock()
         service._config = MagicMock()
+        service._config.memory.track_memory_access = False
         return service
 
     def test_merges_agent_and_shared(self):

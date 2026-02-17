@@ -115,12 +115,30 @@ the searchable summary; the artifact holds the full details. Search results
 show which memories have artifacts — fetch them with get_artifact when
 you need the details.
 
+## MEMORY TTL (Time-To-Live)
+Memories can have a TTL that causes them to decay (soft-expire) after a
+set number of days. Default TTLs are assigned by memory type:
+- fact, preference: permanent (no expiration)
+- episodic: 90 days
+- procedural: 60 days
+- context: 7 days
+
+You can override the default by passing ttl_days to add_memory. Pinned
+memories are exempt from TTL — they never decay. When a memory is
+accessed via search, its TTL is automatically reset (reinforcement),
+so frequently-used memories stay alive.
+
+Decayed memories are excluded from search and list by default. Use
+include_decayed=true to browse historical/expired memories. You can
+restore a decayed memory by updating it with update_memory (set a new
+ttl_days or pin it).
+
 ## MEMORY TYPES
-- preference: likes, dislikes, style choices (long-term)
-- fact: biographical, factual information (long-term, updatable)
-- episodic: events, interactions, conclusions (long-term)
-- procedural: workflows, habits, "how the user does things" (long-term)
-- context: session/short-term, included in recent context automatically
+- preference: likes, dislikes, style choices (permanent by default)
+- fact: biographical, factual information (permanent by default, updatable)
+- episodic: events, interactions, conclusions (90 day TTL by default)
+- procedural: workflows, habits, "how the user does things" (60 day TTL)
+- context: session/short-term, included in recent context (7 day TTL)
 
 ## CATEGORIES
 Categories are PREDEFINED. Do NOT invent your own categories.
