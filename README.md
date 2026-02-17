@@ -10,7 +10,7 @@ Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://mo
 
 **Self-hosted and secure.** Your data stays on your infrastructure. No cloud dependencies, no third-party access to your memories.
 
-**Intelligent.** Built on [mem0](https://github.com/mem0ai/mem0) for LLM-driven fact extraction, deduplication, and contradiction resolution. Memories are semantically searchable, automatically categorized, and expire naturally when no longer relevant.
+**Intelligent.** Uses a unified LLM pipeline for fact extraction, deduplication, and contradiction resolution in a single call. Memories are semantically searchable, automatically categorized, and expire naturally when no longer relevant.
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ mnemory needs an OpenAI-compatible API key for LLM and embeddings. It picks up `
 ### Using uvx (recommended)
 
 ```bash
-uvx "mnemory[chroma]"
+uvx mnemory
 ```
 
 That's it. mnemory starts on `http://localhost:8050/mcp`, stores data in `~/.mnemory/`.
@@ -64,13 +64,13 @@ docker-compose up -d
 ### Using pip
 
 ```bash
-pip install "mnemory[chroma]"
+pip install mnemory
 mnemory
 ```
 
 ### Production (Qdrant + S3)
 
-For production, use Qdrant for vectors and S3/MinIO for artifacts:
+For production, use remote Qdrant for vectors and S3/MinIO for artifacts:
 
 ```bash
 docker run -d \
@@ -78,7 +78,6 @@ docker run -d \
   -e OPENAI_API_KEY=sk-your-key \
   -e LLM_BASE_URL=https://your-litellm-proxy/v1 \
   -e LLM_MODEL=gpt-5-mini \
-  -e VECTOR_BACKEND=qdrant \
   -e QDRANT_HOST=qdrant.example.com \
   -e ARTIFACT_BACKEND=s3 \
   -e S3_ENDPOINT=http://minio.example.com:9000 \
@@ -226,10 +225,9 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | Variable | Default | Description |
 |---|---|---|
 | `DATA_DIR` | `~/.mnemory` | Base data directory (all paths below default to subdirectories of this) |
-| `VECTOR_BACKEND` | `chroma` | Vector store backend: `chroma` (local) or `qdrant` (production) |
-| `CHROMA_PATH` | `{DATA_DIR}/chroma` | Chroma local storage path |
-| `QDRANT_HOST` | `localhost` | Qdrant host |
+| `QDRANT_HOST` | | Qdrant host (empty = local embedded mode, set for remote Qdrant) |
 | `QDRANT_PORT` | `6333` | Qdrant port |
+| `QDRANT_PATH` | `{DATA_DIR}/qdrant` | Local embedded Qdrant storage path (used when `QDRANT_HOST` is not set) |
 | `QDRANT_API_KEY` | | Qdrant API key (optional) |
 | `QDRANT_COLLECTION` | `mnemory` | Qdrant collection name |
 | `ARTIFACT_BACKEND` | `filesystem` | Artifact backend: `filesystem` (local) or `s3` (production) |
@@ -239,7 +237,6 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `S3_SECRET_KEY` | (required for s3) | S3 secret key |
 | `S3_BUCKET` | `mnemory` | S3 bucket name |
 | `S3_REGION` | | S3 region (optional) |
-| `HISTORY_DB_PATH` | `{DATA_DIR}/history.db` | SQLite history database path |
 
 ### Server
 
@@ -314,7 +311,7 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 
 ### Two-Tier Architecture
 
-**Fast Memory** (vector store): Concise facts and summaries, max 1000 characters. Semantically searchable via embeddings. Stored in Qdrant or Chroma via mem0.
+**Fast Memory** (vector store): Concise facts and summaries, max 1000 characters. Semantically searchable via embeddings. Stored in Qdrant (local embedded or remote).
 
 **Slow Memory** (artifact store): Detailed content — research reports, analysis, logs, code, images. Stored in S3/MinIO or local filesystem. Attached to fast memories, retrieved on demand with pagination.
 
@@ -397,7 +394,7 @@ The `role` parameter on `add_memory` controls who the memory is about:
 | `user` (default) | Facts about the user | "User lives in Prague", "User prefers dark mode" |
 | `assistant` | Facts about the agent itself | "Your name is Bob", "You speak casually" |
 
-When `role="assistant"`, the server passes content to mem0 as an assistant-role message, triggering mem0's agent-specific fact extraction prompt. When `role="user"` (default), user fact extraction is used. The `role` is stored in metadata and can be used as a filter in `search_memories` and `list_memories`.
+When `role="assistant"`, the server uses an agent-specific fact extraction prompt that focuses on the assistant's identity, personality, and capabilities. When `role="user"` (default), user fact extraction is used. The `role` is stored in metadata and can be used as a filter in `search_memories` and `list_memories`.
 
 `get_core_memories` uses `role` to organize agent-scoped memories into sections:
 - **Agent Identity**: pinned, `role=assistant`, fact/preference type
@@ -463,12 +460,12 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 ### Storing a Memory
 
 1. You call `add_memory(content="I drive a Skoda Octavia 2019", categories=["vehicles"])`
-2. mem0's LLM extracts facts: "User drives a Skoda Octavia 2019"
-3. mem0 checks for duplicates/contradictions in existing memories
+2. Content is embedded and similar existing memories are retrieved
+3. A single LLM call extracts facts, classifies them, and deduplicates against existing memories
 4. If new: creates embedding, stores in Qdrant with metadata
 5. If update: merges with existing memory (e.g., "User now drives a Tesla Model 3")
 
-With `infer=false`, steps 2-3 are skipped — the content is embedded and stored directly. This is much faster (single embedding call vs. 2 LLM calls + embedding + vector search).
+With `infer=false`, the LLM call is skipped — the content is embedded and stored directly. This is much faster (single embedding call vs. LLM + embedding).
 
 ### Searching
 
@@ -518,7 +515,7 @@ With `infer=false`, steps 2-3 are skipped — the content is embedded and stored
 │                                                   │
 │  ┌─────────────────┐  ┌───────────────────────┐  │
 │  │  Fast Memory     │  │  Slow Memory          │  │
-│  │  (mem0 + Qdrant) │  │  (S3/MinIO or FS)     │  │
+│  │  (Qdrant)        │  │  (S3/MinIO or FS)     │  │
 │  │  Searchable      │  │  Detailed artifacts   │  │
 │  │  facts/summaries │  │  retrieved on demand   │  │
 │  └────────┬─────────┘  └───────────┬───────────┘  │
@@ -527,7 +524,7 @@ With `infer=false`, steps 2-3 are skipped — the content is embedded and stored
             ▼                        ▼
      ┌────────────┐          ┌──────────────┐
      │   Qdrant   │          │  S3 / MinIO  │
-     │ or Chroma  │          │  or local FS │
+     │            │          │  or local FS │
      └────────────┘          └──────────────┘
             │
             ▼

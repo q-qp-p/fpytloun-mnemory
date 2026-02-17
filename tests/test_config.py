@@ -2,7 +2,7 @@
 
 import pytest
 
-from mnemory.config import Config, load_config
+from mnemory.config import load_config
 
 
 class TestConfigValidation:
@@ -12,22 +12,14 @@ class TestConfigValidation:
         with pytest.raises(ValueError, match="API key is required"):
             load_config()
 
-    def test_invalid_vector_backend_raises(self, monkeypatch):
-        monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.setenv("VECTOR_BACKEND", "invalid")
-        with pytest.raises(ValueError, match="Unsupported VECTOR_BACKEND"):
-            load_config()
-
     def test_invalid_artifact_backend_raises(self, monkeypatch):
         monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.setenv("VECTOR_BACKEND", "chroma")
         monkeypatch.setenv("ARTIFACT_BACKEND", "invalid")
         with pytest.raises(ValueError, match="Unsupported ARTIFACT_BACKEND"):
             load_config()
 
     def test_s3_missing_credentials_raises(self, monkeypatch):
         monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.setenv("VECTOR_BACKEND", "chroma")
         monkeypatch.setenv("ARTIFACT_BACKEND", "s3")
         monkeypatch.delenv("S3_ACCESS_KEY", raising=False)
         monkeypatch.delenv("S3_SECRET_KEY", raising=False)
@@ -36,65 +28,53 @@ class TestConfigValidation:
 
     def test_valid_minimal_config(self, monkeypatch):
         monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.setenv("VECTOR_BACKEND", "chroma")
         monkeypatch.setenv("ARTIFACT_BACKEND", "filesystem")
         config = load_config()
         assert config.llm.api_key == "test-key"
-        assert config.vector.backend == "chroma"
         assert config.artifact.backend == "filesystem"
 
-
-class TestBuildMem0Config:
-    def test_qdrant_config(self, monkeypatch):
+    def test_qdrant_local_mode_by_default(self, monkeypatch):
+        """Without QDRANT_HOST, vector config should be local mode."""
         monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.setenv("VECTOR_BACKEND", "qdrant")
-        monkeypatch.setenv("ARTIFACT_BACKEND", "filesystem")
+        monkeypatch.delenv("QDRANT_HOST", raising=False)
         config = load_config()
-        mem0_config = config.build_mem0_config()
+        assert config.vector.is_remote is False
 
-        assert mem0_config["vector_store"]["provider"] == "qdrant"
-        assert mem0_config["llm"]["config"]["api_key"] == "test-key"
-        assert "embedding_dims" in mem0_config["embedder"]["config"]
-
-    def test_chroma_config(self, monkeypatch):
+    def test_qdrant_remote_mode(self, monkeypatch):
+        """With QDRANT_HOST set, vector config should be remote mode."""
         monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.setenv("VECTOR_BACKEND", "chroma")
-        monkeypatch.setenv("ARTIFACT_BACKEND", "filesystem")
+        monkeypatch.setenv("QDRANT_HOST", "qdrant.example.com")
         config = load_config()
-        mem0_config = config.build_mem0_config()
+        assert config.vector.is_remote is True
 
-        assert mem0_config["vector_store"]["provider"] == "chroma"
-
-    def test_invalid_backend_in_build(self, monkeypatch):
+    def test_embed_config_separate(self, monkeypatch):
+        """EmbedConfig should be separate from LLMConfig."""
         monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.setenv("ARTIFACT_BACKEND", "filesystem")
-        config = Config()
-        config.vector.backend = "invalid"
-        config.llm.api_key = "test-key"
-        with pytest.raises(ValueError, match="Unsupported vector backend"):
-            config.build_mem0_config()
+        monkeypatch.setenv("EMBED_MODEL", "custom-embed-model")
+        monkeypatch.setenv("EMBED_DIMS", "768")
+        config = load_config()
+        assert config.embed.model == "custom-embed-model"
+        assert config.embed.dims == 768
 
     def test_embed_base_url_fallback(self, monkeypatch):
+        """EMBED_BASE_URL should fall back to LLM_BASE_URL."""
         monkeypatch.setenv("LLM_API_KEY", "test-key")
         monkeypatch.setenv("LLM_BASE_URL", "https://custom.api.com/v1")
         monkeypatch.delenv("EMBED_BASE_URL", raising=False)
-        monkeypatch.setenv("VECTOR_BACKEND", "chroma")
-        monkeypatch.setenv("ARTIFACT_BACKEND", "filesystem")
         config = load_config()
-        mem0_config = config.build_mem0_config()
-
-        # embed_base_url should fall back to llm base_url
-        assert (
-            mem0_config["embedder"]["config"]["openai_base_url"]
-            == "https://custom.api.com/v1"
-        )
+        assert config.embed.base_url == "https://custom.api.com/v1"
 
     def test_qdrant_api_key_optional(self, monkeypatch):
+        """Qdrant API key should be optional."""
         monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.setenv("VECTOR_BACKEND", "qdrant")
-        monkeypatch.setenv("ARTIFACT_BACKEND", "filesystem")
+        monkeypatch.setenv("QDRANT_HOST", "qdrant.example.com")
         monkeypatch.delenv("QDRANT_API_KEY", raising=False)
         config = load_config()
-        mem0_config = config.build_mem0_config()
+        assert config.vector.qdrant_api_key == ""
 
-        assert "api_key" not in mem0_config["vector_store"]["config"]
+    def test_invalid_instruction_mode_raises(self, monkeypatch):
+        """Invalid INSTRUCTION_MODE should raise ValueError."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("INSTRUCTION_MODE", "invalid")
+        with pytest.raises(ValueError, match="Unsupported INSTRUCTION_MODE"):
+            load_config()

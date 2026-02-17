@@ -177,7 +177,6 @@ class TestSearchMemoriesDualScope:
         service._config = MagicMock()
         service._config.memory.track_memory_access = False
         service._config.memory.classify_cache_ttl = 300
-        service._config.vector.backend = "chroma"  # Use fallback path
         from mnemory.cache import TTLCache
 
         service._category_cache = TTLCache(ttl_seconds=300)
@@ -271,7 +270,8 @@ class TestSearchMemoriesDualScope:
         )
         assert len(results) == 3
 
-    def test_category_filter_applied(self):
+    def test_category_filter_passed_to_vector_store(self):
+        """Category filter should be expanded and passed to vector.search()."""
         service = self._make_service()
         service.vector.search.side_effect = [
             {
@@ -287,14 +287,6 @@ class TestSearchMemoriesDualScope:
                 "results": [
                     {
                         "id": "s1",
-                        "score": 0.8,
-                        "metadata": {
-                            "importance": "normal",
-                            "categories": ["personal"],
-                        },
-                    },
-                    {
-                        "id": "s2",
                         "score": 0.7,
                         "metadata": {"importance": "normal", "categories": ["work"]},
                     },
@@ -308,8 +300,14 @@ class TestSearchMemoriesDualScope:
             session_agent_id="openwebui",
             categories=["work"],
         )
+        # Both search calls should have received the categories parameter
+        assert service.vector.search.call_count == 2
+        for call in service.vector.search.call_args_list:
+            _, kwargs = call
+            assert kwargs["categories"] == ["work"]
+        # Results should be merged
         ids = {r["id"] for r in results}
-        assert ids == {"a1", "s2"}
+        assert ids == {"a1", "s1"}
 
 
 # ── Dual-scope list ───────────────────────────────────────────────────
@@ -555,7 +553,11 @@ class TestNoneMetadataSafety:
         mock_config.memory.core_memories_cache_ttl = 300
         mock_config.memory.auto_classify = False
 
-        with patch("mnemory.memory.VectorStore"), patch("mnemory.memory.ArtifactStore"):
+        with (
+            patch("mnemory.memory.VectorStore"),
+            patch("mnemory.memory.ArtifactStore"),
+            patch("mnemory.memory.LLMClient"),
+        ):
             service = MemoryService(mock_config)
 
         memories = [

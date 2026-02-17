@@ -6,7 +6,7 @@
 
 - **Language**: Python 3.11+
 - **Framework**: MCP SDK (`mcp.server.fastmcp.FastMCP`) with Starlette for HTTP
-- **Core dependency**: [mem0ai](https://github.com/mem0ai/mem0) for vector memory operations
+- **Core dependencies**: [qdrant-client](https://github.com/qdrant/qdrant-client) for vector storage, [openai](https://github.com/openai/openai-python) for LLM and embeddings
 - **License**: MIT
 - **Repository**: https://github.com/fpytloun/mnemory
 
@@ -18,10 +18,13 @@ mnemory/
 ├── config.py              # Configuration from environment variables (dataclasses)
 ├── categories.py          # Predefined category registry, validation, matching logic
 ├── memory.py              # Business logic layer (orchestrates vector + artifact stores)
+├── llm.py                 # OpenAI-compatible LLM client with structured output support
+├── embeddings.py          # OpenAI-compatible embedding client with batch support
+├── prompts.py             # Unified extraction+classification+dedup prompt templates
 ├── ttl.py                 # TTL (Time-To-Live) utility functions for memory expiration
 ├── instructions.py        # Configurable MCP server instructions (passive/proactive/personality modes)
 └── storage/
-    ├── vector.py          # Vector store abstraction (mem0 wrapper + direct Qdrant helpers)
+    ├── vector.py          # Direct Qdrant vector store (insert, search, update, delete)
     └── artifact.py        # Artifact store abstraction (S3 and filesystem backends)
 ```
 
@@ -33,24 +36,22 @@ mnemory/
 | **Business Logic** | `memory.py` | Validation, reranking, core memory assembly, artifact lifecycle |
 | **Categories** | `categories.py` | Category validation, prefix matching, counting |
 | **TTL** | `ttl.py` | Expiration calculation, decay detection, reinforcement metadata |
-| **Vector Storage** | `storage/vector.py` | mem0 wrapper + direct Qdrant client for advanced queries |
+| **Vector Storage** | `storage/vector.py` | Direct Qdrant client for all vector operations |
 | **Artifact Storage** | `storage/artifact.py` | S3/MinIO and filesystem backends for binary artifacts |
 | **Instructions** | `instructions.py` | Configurable MCP server instructions (passive/proactive/personality modes) |
-| **Configuration** | `config.py` | Environment variable parsing, mem0 config construction |
+| **Configuration** | `config.py` | Environment variable parsing into dataclass configs |
 
 ### Key design decisions
 
-1. **mem0 for core operations**: mem0 handles fact extraction (LLM-driven), deduplication, contradiction resolution, embedding, and semantic search. We wrap it, not replace it.
+1. **Direct Qdrant + OpenAI**: Uses Qdrant directly for all vector operations and OpenAI-compatible APIs for LLM and embeddings. A single unified LLM call handles fact extraction, per-fact classification, and deduplication simultaneously.
 
-2. **Direct Qdrant access for gaps**: mem0 doesn't support date filtering, metadata-only updates, or null field queries. For these, we access Qdrant directly via `qdrant-client`. The `VectorStore` class encapsulates both.
+2. **Two-tier memory**: Fast memory (vector store, max 1000 chars, searchable) + slow memory (artifact store, up to 100KB, retrieved on demand). Artifacts are always attached to a parent fast memory.
 
-3. **Two-tier memory**: Fast memory (vector store, max 1000 chars, searchable) + slow memory (artifact store, up to 100KB, retrieved on demand). Artifacts are always attached to a parent fast memory.
+3. **Configurable backends**: Vector store uses Qdrant (local embedded mode for dev, remote for production). Artifact store supports S3/MinIO (production) or local filesystem (dev). Selected via `QDRANT_HOST` and `ARTIFACT_BACKEND` env vars.
 
-4. **Configurable backends**: Vector store supports Qdrant (production) or Chroma (local dev). Artifact store supports S3/MinIO (production) or local filesystem (dev). Selected via `VECTOR_BACKEND` and `ARTIFACT_BACKEND` env vars.
+4. **Official MCP SDK**: Uses `from mcp.server.fastmcp import FastMCP` (the official `mcp` package), NOT the standalone `fastmcp` package. Starlette is used directly for custom routes and middleware.
 
-5. **Official MCP SDK**: Uses `from mcp.server.fastmcp import FastMCP` (the official `mcp` package), NOT the standalone `fastmcp` package. Starlette is used directly for custom routes and middleware.
-
-6. **Stateless HTTP**: The server runs in stateless mode (`stateless_http=True, json_response=True`) for Kubernetes compatibility.
+5. **Stateless HTTP**: The server runs in stateless mode (`stateless_http=True, json_response=True`) for Kubernetes compatibility.
 
 ## Build / Run / Test
 
@@ -118,7 +119,7 @@ ruff format mnemory/
 
 ### Memory metadata
 
-Custom metadata is stored as flat fields in the Qdrant payload alongside mem0's standard fields. Our custom fields:
+Custom metadata is stored as flat fields in the Qdrant payload alongside standard fields. Our custom fields:
 
 | Field | Type | Description |
 |---|---|---|
@@ -128,7 +129,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside mem0's 
 | `pinned` | bool | Whether to include in core memories |
 | `role` | str | "user" (default) or "assistant" — who the memory is about |
 | `artifacts` | list[dict] | Artifact metadata (id, filename, content_type, size, created_at) |
-| `created_at_utc` | str | Our own UTC timestamp (mem0 uses US/Pacific) |
+| `created_at_utc` | str | Our own UTC timestamp |
 | `ttl_days` | int\|None | Original TTL setting in days (None = permanent) |
 | `expires_at` | str\|None | ISO 8601 expiration timestamp (None = never expires) |
 | `decayed_at` | str\|None | When memory entered decayed state (None = active) |
@@ -156,16 +157,8 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside mem0's 
 
 ## Important Notes
 
-- **mem0 limitations**: The public `update()` method drops custom metadata. We work around this by calling `update()` for content changes and then `set_payload()` on Qdrant for metadata. See `VectorStore.update_metadata()`.
-
-- **Date filtering**: mem0 stores timestamps as ISO strings but its filter builder only supports numeric ranges. We use Qdrant's `DatetimeRange` directly for date queries. See `VectorStore.get_recent_memories()`.
-
-- **Category filtering**: mem0 can filter by exact metadata match but not prefix matching. Category prefix matching (e.g., "project" matches "project:foo") is done as post-filtering in Python. See `matches_category_filter()`.
-
-- **Chroma fallback**: When using Chroma backend, advanced features (date filtering, metadata-only updates) fall back to less efficient implementations (get_all + post-filter, full rewrite). Qdrant is recommended for production.
-
 - **Artifact metadata**: Artifact references (id, filename, size, etc.) are stored in the fast memory's metadata in the vector store. The actual content is in S3/filesystem. Deleting a memory should also delete its artifacts.
 
-- **Role parameter**: The `role` parameter on `add_memory` controls which mem0 extraction prompt is used. When `role="assistant"`, content is passed to mem0 as `[{"role": "assistant", "content": ...}]`, triggering `AGENT_MEMORY_EXTRACTION_PROMPT`. When `role="user"` (default), content is passed as a plain string (wrapped as user role by mem0), triggering `USER_MEMORY_EXTRACTION_PROMPT`. This works with mem0's built-in `_should_use_agent_memory_extraction()` check. The `role` is also stored in metadata for filtering in search/list and for section organization in `get_core_memories`. Requires `agent_id` when set to `"assistant"`.
+- **Role parameter**: The `role` parameter on `add_memory` controls which extraction prompt is used. When `role="assistant"`, content is passed to the agent-specific extraction prompt (`_AGENT_SYSTEM_PROMPT` in `prompts.py`), focusing on the assistant's identity, personality, and capabilities. When `role="user"` (default), the user extraction prompt is used. The `role` is also stored in metadata for filtering in search/list and for section organization in `get_core_memories`. Requires `agent_id` when set to `"assistant"`.
 
 - **Sub-agents**: Agent IDs support colon-separated namespacing (e.g., `openwebui:bob`). The session validation in `_resolve_agent_id()` allows any `agent_id` that starts with `session_agent_id + ":"`. Sub-agents are fully independent — no memory inheritance from the parent. The `_is_sub_agent()` helper in `server.py` encapsulates the prefix check. `verify_memory_access()` in `memory.py` also allows access to sub-agent memories from the parent session.

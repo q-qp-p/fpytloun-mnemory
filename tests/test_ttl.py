@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
-import pytest
-
 from mnemory.ttl import (
     build_expiry_metadata,
     build_reinforcement_metadata,
@@ -16,7 +14,6 @@ from mnemory.ttl import (
     is_expired,
     should_exclude,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

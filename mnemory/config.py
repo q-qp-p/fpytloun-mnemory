@@ -73,40 +73,55 @@ def _llm_base_url() -> str:
 
 @dataclass
 class VectorConfig:
-    """Vector store configuration."""
+    """Vector store configuration (Qdrant only).
 
-    backend: str = field(default_factory=lambda: _env("VECTOR_BACKEND", "chroma"))
+    Mode detection:
+    - If QDRANT_HOST is set → remote mode (connects to Qdrant server)
+    - If QDRANT_HOST is not set → local mode (embedded Qdrant, data in QDRANT_PATH)
+    """
 
-    # Qdrant settings
-    qdrant_host: str = field(default_factory=lambda: _env("QDRANT_HOST", "localhost"))
+    qdrant_host: str = field(default_factory=lambda: _env("QDRANT_HOST"))
     qdrant_port: int = field(default_factory=lambda: _env_int("QDRANT_PORT", 6333))
     qdrant_api_key: str = field(default_factory=lambda: _env("QDRANT_API_KEY"))
     collection_name: str = field(
         default_factory=lambda: _env("QDRANT_COLLECTION", "mnemory")
     )
 
-    # Chroma settings (default for local development)
-    chroma_path: str = field(
+    # Local mode settings (used when QDRANT_HOST is not set)
+    qdrant_path: str = field(
         default_factory=lambda: (
-            _env("CHROMA_PATH") or os.path.join(_data_dir(), "chroma")
+            _env("QDRANT_PATH") or os.path.join(_data_dir(), "qdrant")
         )
     )
+
+    @property
+    def is_remote(self) -> bool:
+        """True if connecting to a remote Qdrant server."""
+        return bool(self.qdrant_host)
 
 
 @dataclass
 class LLMConfig:
-    """LLM and embedding configuration."""
+    """LLM configuration."""
 
     model: str = field(default_factory=lambda: _env("LLM_MODEL", "gpt-5-mini"))
     base_url: str = field(default_factory=_llm_base_url)
     api_key: str = field(default_factory=_llm_api_key)
     temperature: float = 0.1
 
-    embed_model: str = field(
+
+@dataclass
+class EmbedConfig:
+    """Embedding model configuration."""
+
+    model: str = field(
         default_factory=lambda: _env("EMBED_MODEL", "text-embedding-3-small")
     )
-    embed_base_url: str = field(default_factory=lambda: _env("EMBED_BASE_URL"))
-    embed_dims: int = field(default_factory=lambda: _env_int("EMBED_DIMS", 1536))
+    base_url: str = field(
+        default_factory=lambda: _env("EMBED_BASE_URL") or _llm_base_url()
+    )
+    api_key: str = field(default_factory=_llm_api_key)
+    dims: int = field(default_factory=lambda: _env_int("EMBED_DIMS", 1536))
 
 
 @dataclass
@@ -174,11 +189,6 @@ class ServerConfig:
 class MemoryConfig:
     """Memory behavior configuration."""
 
-    history_db_path: str = field(
-        default_factory=lambda: (
-            _env("HISTORY_DB_PATH") or os.path.join(_data_dir(), "history.db")
-        )
-    )
     max_memory_length: int = field(
         default_factory=lambda: _env_int("MAX_MEMORY_LENGTH", 1000)
     )
@@ -236,69 +246,15 @@ class Config:
 
     vector: VectorConfig = field(default_factory=VectorConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    embed: EmbedConfig = field(default_factory=EmbedConfig)
     artifact: ArtifactConfig = field(default_factory=ArtifactConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
-
-    def build_mem0_config(self) -> dict:
-        """Build the mem0 library configuration dict."""
-        config: dict = {
-            "llm": {
-                "provider": "openai",
-                "config": {
-                    "model": self.llm.model,
-                    "temperature": self.llm.temperature,
-                    "openai_base_url": self.llm.base_url,
-                    "api_key": self.llm.api_key,
-                },
-            },
-            "embedder": {
-                "provider": "openai",
-                "config": {
-                    "model": self.llm.embed_model,
-                    "openai_base_url": (self.llm.embed_base_url or self.llm.base_url),
-                    "api_key": self.llm.api_key,
-                    "embedding_dims": self.llm.embed_dims,
-                },
-            },
-            "history_db_path": self.memory.history_db_path,
-        }
-
-        if self.vector.backend == "qdrant":
-            vs_config: dict = {
-                "host": self.vector.qdrant_host,
-                "port": self.vector.qdrant_port,
-                "collection_name": self.vector.collection_name,
-                "embedding_model_dims": self.llm.embed_dims,
-            }
-            if self.vector.qdrant_api_key:
-                vs_config["api_key"] = self.vector.qdrant_api_key
-            config["vector_store"] = {
-                "provider": "qdrant",
-                "config": vs_config,
-            }
-        elif self.vector.backend == "chroma":
-            config["vector_store"] = {
-                "provider": "chroma",
-                "config": {
-                    "collection_name": self.vector.collection_name,
-                    "path": self.vector.chroma_path,
-                },
-            }
-        else:
-            raise ValueError(
-                f"Unsupported vector backend: {self.vector.backend}. "
-                "Use 'qdrant' or 'chroma'."
-            )
-
-        return config
 
     def validate(self) -> None:
         """Validate that required configuration is present."""
         if not self.llm.api_key:
             raise ValueError("API key is required. Set LLM_API_KEY or OPENAI_API_KEY.")
-        if self.vector.backend not in ("qdrant", "chroma"):
-            raise ValueError(f"Unsupported VECTOR_BACKEND: {self.vector.backend}")
         if self.artifact.backend not in ("s3", "filesystem"):
             raise ValueError(f"Unsupported ARTIFACT_BACKEND: {self.artifact.backend}")
         if self.server.instruction_mode not in (

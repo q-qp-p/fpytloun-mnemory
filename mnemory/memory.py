@@ -3,6 +3,9 @@
 Orchestrates the vector store (fast memory) and artifact store (slow memory)
 to provide a unified memory interface. Handles validation, reranking,
 core memory assembly, and artifact lifecycle.
+
+The add pipeline uses a single LLM call for fact extraction, per-fact
+classification, and deduplication against existing memories.
 """
 
 from __future__ import annotations
@@ -21,8 +24,13 @@ from mnemory.categories import (
     validate_importance,
     validate_memory_type,
 )
-from mnemory.classify import ClassificationError, classify_memory
 from mnemory.config import Config
+from mnemory.llm import LLMClient, parse_json_response
+from mnemory.prompts import (
+    build_classification_prompt,
+    build_extraction_prompt,
+    parse_extraction_response,
+)
 from mnemory.storage.artifact import ArtifactStore
 from mnemory.storage.vector import VectorStore
 from mnemory.ttl import (
@@ -57,6 +65,7 @@ class MemoryService:
 
     def __init__(self, config: Config):
         self._config = config
+        self._llm = LLMClient(config.llm)
         self.vector = VectorStore(config)
         self.artifact = ArtifactStore(
             config.artifact,
@@ -87,13 +96,15 @@ class MemoryService:
     ) -> dict:
         """Store a fast memory with metadata.
 
-        Content is processed by mem0's LLM for fact extraction and
-        deduplication when infer=True. When infer=False, content is
-        stored as-is with only an embedding call (much faster, no dedup).
+        When infer=True (default): Uses a single LLM call for fact extraction,
+        per-fact classification, and deduplication against existing memories.
+        When infer=False: Content is stored as-is with only an embedding call
+        (much faster, no LLM, no dedup).
 
         When memory_type, categories, importance, or pinned are not provided
-        (None), they are auto-classified by an LLM call if AUTO_CLASSIFY is
-        enabled, or fall back to sensible defaults.
+        (None), they are auto-classified:
+        - infer=True: classification is part of the unified extraction prompt
+        - infer=False: a separate classification LLM call if AUTO_CLASSIFY is on
 
         Args:
             role: Message role controlling fact extraction. "user" (default)
@@ -101,7 +112,7 @@ class MemoryService:
                   about the agent (identity, personality, capabilities).
                   Requires agent_id when set to "assistant".
 
-        Returns the mem0 add result with memory IDs.
+        Returns dict with "results" key containing list of memory actions.
         """
         # Validate inputs
         if role not in ("user", "assistant"):
@@ -123,6 +134,282 @@ class MemoryService:
                 ),
             }
 
+        if infer:
+            result = self._add_with_inference(
+                content,
+                user_id=user_id,
+                agent_id=agent_id,
+                memory_type=memory_type,
+                categories=categories,
+                importance=importance,
+                pinned=pinned,
+                role=role,
+                ttl_days=ttl_days,
+            )
+        else:
+            result = self._add_direct(
+                content,
+                user_id=user_id,
+                agent_id=agent_id,
+                memory_type=memory_type,
+                categories=categories,
+                importance=importance,
+                pinned=pinned,
+                role=role,
+                ttl_days=ttl_days,
+            )
+
+        # Invalidate caches — new memory may affect core memories or categories
+        self._core_cache.invalidate_prefix(user_id)
+        self._category_cache.invalidate(user_id)
+
+        return result
+
+    def _add_with_inference(
+        self,
+        content: str,
+        *,
+        user_id: str,
+        agent_id: str | None,
+        memory_type: str | None,
+        categories: list[str] | None,
+        importance: str | None,
+        pinned: bool | None,
+        role: str,
+        ttl_days: int | None,
+    ) -> dict:
+        """Add memory with LLM-driven extraction, classification, and dedup.
+
+        Single LLM call pipeline:
+        1. Embed the raw content
+        2. Search for similar existing memories
+        3. Build unified prompt (extraction + classification + dedup)
+        4. Single LLM call
+        5. Execute actions (ADD/UPDATE/DELETE)
+        """
+        # 1. Embed the raw content for similarity search
+        content_vector = self.vector.embedding.embed(content)
+
+        # 2. Search for similar existing memories (excludes expired/decayed)
+        existing = self.vector.search_similar(
+            content_vector,
+            user_id=user_id,
+            agent_id=agent_id,
+            limit=10,
+        )
+
+        # 3. Build the unified prompt
+        available_cats = self._get_available_categories(user_id)
+
+        # Build explicit fields dict for fields the caller provided
+        explicit_fields: dict[str, Any] = {}
+        if memory_type is not None:
+            explicit_fields["memory_type"] = memory_type
+        if categories is not None:
+            explicit_fields["categories"] = categories
+        if importance is not None:
+            explicit_fields["importance"] = importance
+        if pinned is not None:
+            explicit_fields["pinned"] = pinned
+
+        messages, json_schema, id_mapping = build_extraction_prompt(
+            content,
+            role=role,
+            existing_memories=existing,
+            available_categories=available_cats,
+            explicit_fields=explicit_fields if explicit_fields else None,
+        )
+
+        # 4. Single LLM call
+        try:
+            response_text = self._llm.generate(
+                messages,
+                json_schema=json_schema,
+                max_tokens=2000,
+            )
+        except Exception:
+            logger.exception("LLM extraction call failed")
+            return {"error": True, "message": "Memory extraction failed"}
+
+        # 5. Parse response and execute actions
+        actions = parse_extraction_response(response_text, id_mapping)
+
+        if not actions:
+            return {"results": []}
+
+        # Batch embed all new/updated texts
+        texts_to_embed = [
+            a["text"] for a in actions if a["action"] in ("ADD", "UPDATE")
+        ]
+        if texts_to_embed:
+            vectors = self.vector.embedding.embed_batch(texts_to_embed)
+            vector_map = dict(zip(texts_to_embed, vectors))
+        else:
+            vector_map = {}
+
+        results = []
+        for action in actions:
+            try:
+                result_entry = self._execute_action(
+                    action,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    role=role,
+                    ttl_days=ttl_days,
+                    explicit_fields=explicit_fields,
+                    vector_map=vector_map,
+                )
+                if result_entry:
+                    results.append(result_entry)
+            except Exception:
+                logger.exception(
+                    "Failed to execute %s action for memory", action["action"]
+                )
+
+        return {"results": results}
+
+    def _execute_action(
+        self,
+        action: dict[str, Any],
+        *,
+        user_id: str,
+        agent_id: str | None,
+        role: str,
+        ttl_days: int | None,
+        explicit_fields: dict[str, Any],
+        vector_map: dict[str, list[float]],
+    ) -> dict[str, Any] | None:
+        """Execute a single memory action (ADD, UPDATE, or DELETE)."""
+        act = action["action"]
+        text = action["text"]
+
+        # Apply explicit overrides — caller-provided fields take precedence
+        mem_type = explicit_fields.get("memory_type", action["memory_type"])
+        cats = explicit_fields.get("categories", action["categories"])
+        imp = explicit_fields.get("importance", action["importance"])
+        pin = explicit_fields.get("pinned", action["pinned"])
+
+        # Validate
+        mem_type = validate_memory_type(mem_type)
+        if cats:
+            cats = validate_categories(cats)
+        imp = validate_importance(imp)
+
+        if act == "ADD":
+            vector = vector_map.get(text)
+            if vector is None:
+                vector = self.vector.embedding.embed(text)
+
+            metadata = {
+                "memory_type": mem_type,
+                "categories": cats or [],
+                "importance": imp,
+                "pinned": pin,
+                "artifacts": [],
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            ttl_meta = build_expiry_metadata(ttl_days, mem_type, self._config.memory)
+            metadata.update(ttl_meta)
+
+            memory_id = self.vector.insert(
+                text=text,
+                vector=vector,
+                user_id=user_id,
+                agent_id=agent_id,
+                metadata=metadata,
+                role=role,
+            )
+            return {"id": memory_id, "memory": text, "event": "ADD"}
+
+        elif act == "UPDATE":
+            target_id = action["target_id"]
+            vector = vector_map.get(text)
+            if vector is None:
+                vector = self.vector.embedding.embed(text)
+
+            # Fetch existing memory to preserve metadata we don't want to lose
+            existing = self.vector.get_by_id(target_id)
+            if existing is None:
+                logger.warning(
+                    "UPDATE target %s not found, converting to ADD", target_id
+                )
+                # Fall through to ADD instead
+                action_copy = dict(action)
+                action_copy["action"] = "ADD"
+                action_copy["target_id"] = None
+                return self._execute_action(
+                    action_copy,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    role=role,
+                    ttl_days=ttl_days,
+                    explicit_fields=explicit_fields,
+                    vector_map=vector_map,
+                )
+
+            # Build updated metadata — preserve existing, override with new
+            existing_meta = existing.get("metadata") or {}
+            metadata_update = {
+                "memory_type": mem_type,
+                "categories": cats or [],
+                "importance": imp,
+                "pinned": pin,
+            }
+            # Recalculate TTL based on new memory_type
+            ttl_meta = build_expiry_metadata(ttl_days, mem_type, self._config.memory)
+            metadata_update.update(ttl_meta)
+
+            # Preserve artifacts from existing memory
+            metadata_update["artifacts"] = existing_meta.get("artifacts", [])
+            metadata_update["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
+
+            # Update content + re-embed via full point replacement
+            # (preserves all payload fields we set)
+            self.vector.update_content(target_id, text, vector=vector)
+            # Then update metadata
+            self.vector.update_metadata(target_id, metadata_update)
+
+            return {
+                "id": target_id,
+                "memory": text,
+                "event": "UPDATE",
+                "previous_memory": action.get("old_memory"),
+            }
+
+        elif act == "DELETE":
+            target_id = action["target_id"]
+            # Delete artifacts first
+            try:
+                self.artifact.delete_all_for_memory(
+                    user_id=user_id, memory_id=target_id
+                )
+            except Exception:
+                logger.warning("Failed to delete artifacts for %s", target_id)
+
+            self.vector.delete(target_id)
+            return {"id": target_id, "memory": text, "event": "DELETE"}
+
+        return None
+
+    def _add_direct(
+        self,
+        content: str,
+        *,
+        user_id: str,
+        agent_id: str | None,
+        memory_type: str | None,
+        categories: list[str] | None,
+        importance: str | None,
+        pinned: bool | None,
+        role: str,
+        ttl_days: int | None,
+    ) -> dict:
+        """Add memory directly without LLM inference (infer=False path).
+
+        Stores content as-is with only an embedding call. Uses a separate
+        classification LLM call if AUTO_CLASSIFY is enabled and metadata
+        fields are missing.
+        """
         # Determine which fields need auto-classification
         missing: set[str] = set()
         if memory_type is None:
@@ -137,14 +424,20 @@ class MemoryService:
         if missing and self._config.memory.auto_classify:
             available_cats = self._get_available_categories(user_id)
             try:
-                classified = classify_memory(
+                msgs, schema = build_classification_prompt(
                     content,
                     missing_fields=missing,
-                    llm_config=self._config.llm,
                     available_categories=available_cats,
                 )
-            except ClassificationError as e:
-                return {"error": True, "message": str(e)}
+                if msgs:
+                    response_text = self._llm.generate(msgs, json_schema=schema)
+                    classified = parse_json_response(response_text)
+                else:
+                    classified = {}
+            except Exception:
+                logger.warning("Classification failed, using defaults")
+                classified = {}
+
             if memory_type is None:
                 memory_type = classified.get("memory_type", "fact")
             if categories is None:
@@ -164,8 +457,7 @@ class MemoryService:
             if pinned is None:
                 pinned = False
 
-        # memory_type, importance, pinned are guaranteed non-None at this point
-        # (set by caller, classifier, or defaults above).
+        # Validate
         memory_type = validate_memory_type(memory_type)  # type: ignore[arg-type]
         importance = validate_importance(importance)  # type: ignore[arg-type]
         if categories:
@@ -176,7 +468,6 @@ class MemoryService:
             "categories": categories or [],
             "importance": importance,
             "pinned": pinned,
-            "role": role,
             "artifacts": [],
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         }
@@ -185,21 +476,18 @@ class MemoryService:
         ttl_meta = build_expiry_metadata(ttl_days, memory_type, self._config.memory)
         metadata.update(ttl_meta)
 
-        result = self.vector.add(
-            content,
+        # Embed and store
+        vector = self.vector.embedding.embed(content)
+        memory_id = self.vector.insert(
+            text=content,
+            vector=vector,
             user_id=user_id,
             agent_id=agent_id,
             metadata=metadata,
-            infer=infer,
             role=role,
         )
 
-        # Invalidate caches — new memory may affect core memories or categories
-        self._core_cache.invalidate_prefix(user_id)
-        if categories:
-            self._category_cache.invalidate(user_id)
-
-        return result
+        return {"results": [{"id": memory_id, "memory": content, "event": "ADD"}]}
 
     # ── Search Memories ───────────────────────────────────────────────
 
@@ -217,10 +505,8 @@ class MemoryService:
     ) -> list[dict]:
         """Search memories with semantic similarity, filtered and reranked.
 
-        On Qdrant backend: uses direct query_points() with native TTL,
-        category, and importance filtering (no over-fetch needed).
-        On Chroma: fetches 2x limit, applies Python post-filtering and
-        reranking.
+        Uses Qdrant's query_points() with native TTL, category, and
+        importance filtering via FormulaQuery reranking.
         """
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
@@ -254,25 +540,8 @@ class MemoryService:
 
         memories = result.get("results", [])
 
-        # Fallback post-filtering for non-Qdrant backends
-        if self._config.vector.backend != "qdrant" or include_decayed:
-            # Post-filter TTL
-            memories = [m for m in memories if not should_exclude(m, include_decayed)]
-            # Post-filter categories
-            if categories:
-                memories = [
-                    m
-                    for m in memories
-                    if matches_category_filter(
-                        (m.get("metadata") or {}).get("categories", []),
-                        categories,
-                    )
-                ]
-            # Python reranking (Qdrant path uses formula)
-            memories = self._rerank_by_importance(memories)
-            memories = memories[:limit]
-
-        # Lazily mark decayed_at on expired memories found via include_decayed
+        # Post-filtering for decayed memories (when include_decayed=True,
+        # the search doesn't filter them, so we need to mark them)
         if include_decayed:
             self._mark_decayed(memories)
 
@@ -350,20 +619,8 @@ class MemoryService:
                 seen_ids.add(mid)
                 memories.append(mem)
 
-        # Fallback post-filtering for non-Qdrant backends
-        if self._config.vector.backend != "qdrant" or include_decayed:
-            memories = [m for m in memories if not should_exclude(m, include_decayed)]
-            if categories:
-                memories = [
-                    m
-                    for m in memories
-                    if matches_category_filter(
-                        (m.get("metadata") or {}).get("categories", []),
-                        categories,
-                    )
-                ]
-            memories = self._rerank_by_importance(memories)
-
+        # Rerank merged results by importance
+        memories = self._rerank_by_importance(memories)
         memories = memories[:limit]
 
         # Lazily mark decayed_at on expired memories found via include_decayed
@@ -740,7 +997,7 @@ class MemoryService:
 
         memories = result.get("results", [])
 
-        # Post-filter TTL (list uses mem0 get_all which has no TTL filtering)
+        # Post-filter TTL (get_all has no native TTL filtering)
         memories = [m for m in memories if not should_exclude(m, include_decayed)]
 
         if categories:
@@ -877,8 +1134,9 @@ class MemoryService:
     ) -> dict:
         """Update a memory's content and/or metadata.
 
-        Content updates go through mem0 (re-embedding). Metadata updates
-        use direct vector store payload updates to avoid losing custom fields.
+        Content updates re-embed and replace the vector store point.
+        Metadata updates use direct payload updates to avoid losing
+        custom fields.
 
         ttl_days: Set a new TTL (recalculates expires_at from now). Pass 0
                   or None to make permanent. Uses sentinel default (...) to
@@ -904,7 +1162,7 @@ class MemoryService:
             metadata_updates["expires_at"] = calculate_expiration(effective_ttl)
             metadata_updates["decayed_at"] = None  # Restore from decay
 
-        # Update content via mem0 (re-embeds)
+        # Update content (re-embeds)
         if content is not None:
             max_len = self._config.memory.max_memory_length
             if len(content) > max_len:
@@ -914,7 +1172,7 @@ class MemoryService:
                         f"Content too long: {len(content)} chars (max {max_len})."
                     ),
                 }
-            self.vector.update(memory_id, content)
+            self.vector.update_content(memory_id, content)
 
         # Update metadata directly on the vector store
         if metadata_updates:

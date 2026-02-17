@@ -1207,7 +1207,7 @@ async def health_check(request: Request) -> JSONResponse:
             "status": "healthy",
             "service": "mnemory",
             "version": __version__,
-            "vector_backend": cfg.vector.backend,
+            "vector_backend": "qdrant" if cfg.vector.is_remote else "qdrant-local",
             "artifact_backend": cfg.artifact.backend,
         }
     )
@@ -1236,7 +1236,7 @@ async def lifespan(app):
 
     logger.info(
         "mnemory starting (vector=%s, artifact=%s, port=%d, auth=%s, auto_classify=%s)",
-        cfg.vector.backend,
+        "qdrant-remote" if cfg.vector.is_remote else "qdrant-local",
         cfg.artifact.backend,
         cfg.server.port,
         auth_mode,
