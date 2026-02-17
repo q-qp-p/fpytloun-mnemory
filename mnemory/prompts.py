@@ -715,3 +715,145 @@ def _validate_importance(value: Any) -> str:
     if value is not None:
         logger.debug("Invalid importance '%s', using default", value)
     return _DEFAULT_IMPORTANCE
+
+
+# ── find_memories prompts ────────────────────────────────────────────
+
+_QUERY_GENERATION_SYSTEM_PROMPT = """\
+You are a memory search assistant. Given a user's question, generate \
+{num_queries} diverse search queries to find relevant memories in a \
+personal memory database.
+
+Think like a human searching their memory — follow associations:
+- Direct matches for the question topic
+- Related concepts and associations (e.g., dogs → pets, house, garden, \
+lifestyle, partner)
+- People and relationships that might be relevant
+- Past decisions, opinions, or preferences on the topic
+- Practical considerations and context
+
+Each query should target a different angle or aspect. Keep queries short \
+(2-5 words each). Do not repeat the same angle.
+
+Return ONLY a JSON object: {{"queries": ["query1", "query2", ...]}}"""
+
+QUERY_GENERATION_SCHEMA: dict[str, Any] = {
+    "name": "query_generation",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "required": ["queries"],
+        "additionalProperties": False,
+        "properties": {
+            "queries": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+    },
+}
+
+
+def build_query_generation_prompt(
+    question: str,
+    *,
+    num_queries: int = 5,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Build a prompt to generate diverse search queries from a question.
+
+    Args:
+        question: The user's natural language question.
+        num_queries: Number of search queries to generate.
+
+    Returns:
+        Tuple of (messages, json_schema) for the LLM call.
+    """
+    system_prompt = _QUERY_GENERATION_SYSTEM_PROMPT.format(
+        num_queries=num_queries,
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": question},
+    ]
+
+    return messages, QUERY_GENERATION_SCHEMA
+
+
+_RERANK_SYSTEM_PROMPT = """\
+You are a memory relevance scorer. Given a user's question and a list of \
+candidate memories, score each memory for relevance on a scale from 0.0 \
+to 1.0.
+
+Score guide:
+  0.8-1.0 = directly answers the question
+  0.5-0.7 = highly relevant context
+  0.3-0.5 = somewhat related, useful background
+  0.1-0.3 = tangentially related
+  0.0     = irrelevant
+
+The minimum relevance threshold is {threshold}. Memories scoring below \
+{threshold} will be discarded, so score accurately — do not inflate scores.
+
+Return ONLY a JSON object: {{"scored": [{{"id": "...", "relevance": 0.85}}, ...]}}
+Include ALL memories in the response. Do not omit any."""
+
+RERANK_SCHEMA: dict[str, Any] = {
+    "name": "memory_rerank",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "required": ["scored"],
+        "additionalProperties": False,
+        "properties": {
+            "scored": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "relevance"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "relevance": {"type": "number"},
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def build_rerank_prompt(
+    question: str,
+    memories: list[dict],
+    *,
+    threshold: float = 0.30,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Build a prompt to rerank memories by relevance to a question.
+
+    Args:
+        question: The user's natural language question.
+        memories: List of memory dicts with "id" and "memory" fields.
+        threshold: Minimum relevance score (communicated to the LLM).
+
+    Returns:
+        Tuple of (messages, json_schema) for the LLM call.
+    """
+    system_prompt = _RERANK_SYSTEM_PROMPT.format(threshold=threshold)
+
+    # Build numbered memory list for the LLM
+    mem_lines = []
+    for mem in memories:
+        mid = mem.get("id", "?")
+        text = mem.get("memory", "")
+        mem_lines.append(f"- [{mid}] {text}")
+    mem_text = "\n".join(mem_lines)
+
+    user_content = f"Question: {question}\n\nMemories:\n{mem_text}"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    return messages, RERANK_SCHEMA

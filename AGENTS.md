@@ -14,13 +14,13 @@
 
 ```
 mnemory/
-├── server.py              # MCP server entry point, 15 tool definitions, health endpoint, auth middleware
+├── server.py              # MCP server entry point, 16 tool definitions, health endpoint, auth middleware
 ├── config.py              # Configuration from environment variables (dataclasses)
 ├── categories.py          # Predefined category registry, validation, matching logic
 ├── memory.py              # Business logic layer (orchestrates vector + artifact stores)
 ├── llm.py                 # OpenAI-compatible LLM client with structured output support
 ├── embeddings.py          # OpenAI-compatible embedding client with batch support
-├── prompts.py             # Unified extraction+classification+dedup prompt templates
+├── prompts.py             # Unified extraction+classification+dedup prompt templates, query generation and rerank prompts for find_memories
 ├── ttl.py                 # TTL (Time-To-Live) utility functions for memory expiration
 ├── instructions.py        # Configurable MCP server instructions (passive/proactive/personality modes)
 └── storage/

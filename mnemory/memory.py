@@ -11,6 +11,7 @@ classification, and deduplication against existing memories.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -28,6 +29,8 @@ from mnemory.llm import LLMClient, parse_json_response
 from mnemory.prompts import (
     build_classification_prompt,
     build_extraction_prompt,
+    build_query_generation_prompt,
+    build_rerank_prompt,
     build_shorten_prompt,
     parse_extraction_response,
 )
@@ -44,6 +47,97 @@ logger = logging.getLogger(__name__)
 
 # Max length for user_id and agent_id to prevent abuse
 _MAX_ID_LENGTH = 256
+
+# Minimal English stopwords for keyword boost tokenization.
+# Kept small to avoid filtering meaningful short words.
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "and",
+        "or",
+        "but",
+        "not",
+        "with",
+        "by",
+        "from",
+        "as",
+        "if",
+        "it",
+        "its",
+        "this",
+        "that",
+        "my",
+        "your",
+        "his",
+        "her",
+        "our",
+        "their",
+        "me",
+        "him",
+        "us",
+        "them",
+        "i",
+        "you",
+        "he",
+        "she",
+        "we",
+        "they",
+        "do",
+        "does",
+        "did",
+        "has",
+        "have",
+        "had",
+        "will",
+        "would",
+        "can",
+        "could",
+        "should",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "how",
+        "when",
+        "where",
+        "why",
+        "about",
+        "so",
+        "no",
+        "yes",
+        "all",
+        "any",
+        "some",
+    }
+)
+
+# Regex for splitting text into tokens (non-word characters)
+_TOKEN_SPLIT = re.compile(r"\W+")
+
+
+def _tokenize(text: str) -> set[str]:
+    """Tokenize text into a set of lowercase words for keyword matching.
+
+    Splits on non-word characters, lowercases, removes stopwords and
+    tokens shorter than 2 characters.
+    """
+    tokens = _TOKEN_SPLIT.split(text.lower())
+    return {t for t in tokens if t and len(t) >= 2 and t not in _STOPWORDS}
 
 
 def _validate_id(value: str, name: str) -> str:
@@ -595,6 +689,44 @@ class MemoryService:
 
         return {"results": [{"id": memory_id, "memory": content, "event": "ADD"}]}
 
+    # ── Search Helpers ────────────────────────────────────────────────
+
+    def _keyword_boost(self, query: str, memories: list[dict]) -> list[dict]:
+        """Apply post-retrieval keyword boost to search results.
+
+        Blends a keyword overlap score into the Qdrant score:
+        final = (1 - weight) * qdrant_score + weight * keyword_score
+
+        keyword_score = fraction of query tokens found in the memory text.
+        If the query has no meaningful tokens (all stopwords), results are
+        returned unchanged.
+
+        Args:
+            query: The original search query.
+            memories: Search results with "score" and "memory" fields.
+
+        Returns:
+            Memories with updated scores, re-sorted by new score.
+        """
+        weight = self._config.memory.search_keyword_weight
+        if weight <= 0 or not memories:
+            return memories
+
+        query_tokens = _tokenize(query)
+        if not query_tokens:
+            # All stopwords or empty query — skip keyword boost
+            return memories
+
+        for mem in memories:
+            mem_text = mem.get("memory", "")
+            mem_tokens = _tokenize(mem_text)
+            overlap = len(query_tokens & mem_tokens) / len(query_tokens)
+            original_score = mem.get("score", 0)
+            mem["score"] = round((1 - weight) * original_score + weight * overlap, 4)
+
+        memories.sort(key=lambda m: m.get("score", 0), reverse=True)
+        return memories
+
     # ── Search Memories ───────────────────────────────────────────────
 
     def search_memories(
@@ -650,6 +782,9 @@ class MemoryService:
         # Filter out low-relevance results
         threshold = self._config.memory.search_score_threshold
         memories = [m for m in memories if m.get("score", 0) >= threshold]
+
+        # Post-retrieval keyword boost: blend keyword overlap into scores
+        memories = self._keyword_boost(query, memories)
 
         # Post-filtering for decayed memories (when include_decayed=True,
         # the search doesn't filter them, so we need to mark them)
@@ -742,6 +877,9 @@ class MemoryService:
         threshold = self._config.memory.search_score_threshold
         memories = [m for m in memories if m.get("score", 0) >= threshold]
 
+        # Post-retrieval keyword boost: blend keyword overlap into scores
+        memories = self._keyword_boost(query, memories)
+
         memories = memories[:limit]
 
         # Lazily mark decayed_at on expired memories found via include_decayed
@@ -752,6 +890,160 @@ class MemoryService:
         self._track_access(memories)
 
         return memories
+
+    # ── Find Memories (AI-powered multi-query search) ─────────────────
+
+    def find_memories(
+        self,
+        question: str,
+        *,
+        user_id: str,
+        session_agent_id: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 10,
+        role: str | None = None,
+        include_decayed: bool = False,
+    ) -> list[dict]:
+        """Find memories relevant to a complex question using AI-powered search.
+
+        Generates multiple targeted search queries from the question,
+        runs each through the vector store, merges and deduplicates results,
+        then uses an LLM to rerank by relevance to the original question.
+
+        Args:
+            question: The user's natural language question.
+            user_id: Required user scope.
+            session_agent_id: Session agent for dual-scope search.
+            agent_id: Fallback agent_id when no session agent.
+            limit: Maximum results to return.
+            role: Optional role filter ("user" or "assistant").
+            include_decayed: If True, include expired/decayed memories.
+
+        Returns:
+            List of memory dicts sorted by LLM-assessed relevance.
+
+        Raises:
+            ValueError: If LLM calls fail (query generation or reranking).
+        """
+        user_id = _validate_id(user_id, "user_id")
+        num_queries = self._config.memory.find_memories_queries
+        threshold = self._config.memory.search_score_threshold
+
+        # Step 1: Generate diverse search queries from the question
+        messages, schema = build_query_generation_prompt(
+            question,
+            num_queries=num_queries,
+        )
+        raw_response = self._llm.generate(messages, json_schema=schema)
+        try:
+            data = parse_json_response(raw_response)
+            queries = data.get("queries", [])
+            if not isinstance(queries, list) or not queries:
+                raise ValueError("LLM returned no search queries")
+        except (ValueError, KeyError) as e:
+            raise ValueError(f"Failed to generate search queries: {e}") from e
+
+        logger.info(
+            "find_memories: generated %d queries for question: %s",
+            len(queries),
+            question[:100],
+        )
+
+        # Step 2: Run each query through search, collect results
+        per_query_limit = limit * 2
+        merged_by_id: dict[str, dict] = {}
+
+        for q in queries:
+            if not isinstance(q, str) or not q.strip():
+                continue
+            try:
+                if session_agent_id:
+                    results = self.search_memories_dual_scope(
+                        q.strip(),
+                        user_id=user_id,
+                        session_agent_id=session_agent_id,
+                        role=role,
+                        limit=per_query_limit,
+                        include_decayed=include_decayed,
+                    )
+                else:
+                    results = self.search_memories(
+                        q.strip(),
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        role=role,
+                        limit=per_query_limit,
+                        include_decayed=include_decayed,
+                    )
+            except Exception:
+                logger.warning("find_memories: search failed for query '%s'", q)
+                continue
+
+            for mem in results:
+                mid = mem.get("id")
+                if not mid:
+                    continue
+                existing = merged_by_id.get(mid)
+                if existing is None:
+                    merged_by_id[mid] = mem
+                elif mem.get("score", 0) > existing.get("score", 0):
+                    existing["score"] = mem["score"]
+
+        merged = list(merged_by_id.values())
+
+        logger.info(
+            "find_memories: %d unique memories from %d queries",
+            len(merged),
+            len(queries),
+        )
+
+        if not merged:
+            return []
+
+        # Step 3: If few enough results, skip reranking
+        if len(merged) <= limit:
+            merged.sort(key=lambda m: m.get("score", 0), reverse=True)
+            self._track_access(merged)
+            return merged
+
+        # Step 4: LLM reranking with the original question as context
+        messages, schema = build_rerank_prompt(
+            question,
+            merged,
+            threshold=threshold,
+        )
+        raw_response = self._llm.generate(messages, json_schema=schema)
+        try:
+            data = parse_json_response(raw_response)
+            scored = data.get("scored", [])
+            if not isinstance(scored, list):
+                raise ValueError("LLM returned invalid rerank response")
+        except (ValueError, KeyError) as e:
+            raise ValueError(f"Failed to rerank memories: {e}") from e
+
+        # Map LLM relevance scores back to memories
+        score_map = {}
+        for item in scored:
+            if isinstance(item, dict):
+                mid = item.get("id")
+                rel = item.get("relevance")
+                if mid and isinstance(rel, (int, float)):
+                    score_map[mid] = float(rel)
+
+        # Apply LLM scores, filter by threshold, sort
+        reranked = []
+        for mem in merged:
+            mid = mem.get("id")
+            if mid in score_map:
+                mem["score"] = round(score_map[mid], 4)
+                if mem["score"] >= threshold:
+                    reranked.append(mem)
+
+        reranked.sort(key=lambda m: m.get("score", 0), reverse=True)
+        reranked = reranked[:limit]
+
+        self._track_access(reranked)
+        return reranked
 
     # ── Get Core Memories ─────────────────────────────────────────────
 

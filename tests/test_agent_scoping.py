@@ -179,6 +179,7 @@ class TestSearchMemoriesDualScope:
         service._config.memory.classify_cache_ttl = 300
         service._config.memory.search_score_threshold = 0.30
         service._config.memory.search_similarity_weight = 0.9
+        service._config.memory.search_keyword_weight = 0.2
         from mnemory.cache import TTLCache
 
         service._category_cache = TTLCache(ttl_seconds=300)
@@ -623,6 +624,7 @@ class TestNoneMetadataSafety:
         mock_config.memory.track_memory_access = False
         mock_config.memory.search_score_threshold = 0.30
         mock_config.memory.search_similarity_weight = 0.9
+        mock_config.memory.search_keyword_weight = 0.2
 
         with (
             patch("mnemory.memory.VectorStore"),

@@ -1,8 +1,9 @@
 """MCP server for mnemory.
 
-Exposes 15 tools over Streamable HTTP for memory management:
+Exposes 16 tools over Streamable HTTP for memory management:
 - initialize_memory (session init with instructions + core memories)
-- add_memory, add_memories, search_memories, get_core_memories, get_recent_memories
+- add_memory, add_memories, search_memories, find_memories
+- get_core_memories, get_recent_memories
 - list_memories, update_memory, delete_memory, delete_all_memories
 - list_categories
 - save_artifact, get_artifact, list_artifacts, delete_artifact
@@ -572,6 +573,66 @@ def search_memories(
         logger.exception("Error in search_memories")
         return json.dumps(
             {"error": True, "message": "Internal error processing search_memories"}
+        )
+
+
+# ── Tool: find_memories ───────────────────────────────────────────────
+
+
+@mcp.tool()
+def find_memories(
+    question: str,
+    user_id: str | None = None,
+    limit: int = 10,
+    role: str | None = None,
+    include_decayed: bool = False,
+) -> str:
+    """Find memories relevant to a complex question using AI-powered search.
+
+    Unlike search_memories which takes a simple query and does a single
+    vector search, this tool takes a full natural language question,
+    generates multiple targeted searches covering different angles and
+    associations, and uses AI to rank results by relevance to your
+    question. Scores are on the same 0.0-1.0 scale as search_memories.
+
+    Use this for multi-faceted questions like "What do I think about dogs?
+    Should I buy one?" where a single search query wouldn't capture all
+    relevant memories. The AI follows associations — e.g., for dogs it
+    might also search for pets, partner, house, garden, lifestyle.
+
+    For simple lookups, prefer search_memories (faster, no extra LLM calls).
+
+    This tool makes 2 LLM calls (query generation + reranking) plus
+    multiple vector searches, so it is slower and more expensive than
+    search_memories. Use it when quality matters more than speed.
+
+    Args:
+        question: The user's question in natural language.
+        user_id: User identifier. Optional if pre-configured via API key.
+        limit: Max results to return (default 10).
+        role: Filter by role — "user" or "assistant". Omit for all.
+        include_decayed: If true, include expired/decayed memories in results.
+                        Useful for browsing historical memories. Default false.
+    """
+    try:
+        uid = _resolve_user_id(user_id)
+        session_aid = _get_session_agent_id()
+
+        results = _get_service().find_memories(
+            question,
+            user_id=uid,
+            session_agent_id=session_aid,
+            limit=limit,
+            role=role,
+            include_decayed=include_decayed,
+        )
+        return _format_memories(results)
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
+    except Exception:
+        logger.exception("Error in find_memories")
+        return json.dumps(
+            {"error": True, "message": "Internal error processing find_memories"}
         )
 
 

@@ -34,6 +34,9 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.dedup_similarity_threshold = 0.4
     # Search ranking weights
     mock_config.memory.search_similarity_weight = 0.9
+    mock_config.memory.search_keyword_weight = 0.2
+    # find_memories config
+    mock_config.memory.find_memories_queries = 5
 
 
 def _make_service(auto_classify=False, track_access=False):
@@ -2389,3 +2392,553 @@ class TestVectorSearchTTLFilter:
         texts = {r["memory"] for r in result["results"]}
         assert "Has a cat named Hiki" in texts
         assert "Likes cats" in texts
+
+
+# ── Keyword boost ─────────────────────────────────────────────────────
+
+
+class TestKeywordBoost:
+    """Test post-retrieval keyword boost in search results."""
+
+    def test_keyword_match_boosts_score(self):
+        """Memories containing query keywords should be boosted."""
+        service = _make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "no-match",
+                    "score": 0.50,
+                    "memory": "User is an AI enthusiast",
+                    "metadata": {},
+                },
+                {
+                    "id": "match",
+                    "score": 0.45,
+                    "memory": "User's family is selfish",
+                    "metadata": {},
+                },
+            ]
+        }
+        results = service.search_memories(query="family", user_id="filip")
+        # "family" match should now rank higher than "AI enthusiast"
+        assert results[0]["id"] == "match"
+        assert results[1]["id"] == "no-match"
+
+    def test_no_keyword_match_reduces_score(self):
+        """Memories without query keywords get reduced score."""
+        service = _make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "no-match",
+                    "score": 0.50,
+                    "memory": "User likes Python",
+                    "metadata": {},
+                },
+            ]
+        }
+        results = service.search_memories(query="family", user_id="filip")
+        # Score should be reduced: 0.8 * 0.50 + 0.2 * 0.0 = 0.40
+        assert results[0]["score"] == 0.4
+
+    def test_multi_word_partial_match(self):
+        """Partial keyword matches should give proportional boost."""
+        service = _make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "partial",
+                    "score": 0.40,
+                    "memory": "User has a dog named Rex",
+                    "metadata": {},
+                },
+                {
+                    "id": "full",
+                    "score": 0.38,
+                    "memory": "User wants to buy a dog for the house",
+                    "metadata": {},
+                },
+            ]
+        }
+        results = service.search_memories(query="buy dog house", user_id="filip")
+        # "full" has 3/3 keywords, "partial" has 1/3
+        assert results[0]["id"] == "full"
+
+    def test_all_stopwords_skips_boost(self):
+        """Query with only stopwords should skip keyword boost entirely."""
+        service = _make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "mem1",
+                    "score": 0.50,
+                    "memory": "User likes cats",
+                    "metadata": {},
+                },
+            ]
+        }
+        results = service.search_memories(query="is the a", user_id="filip")
+        # Score should be unchanged (no keyword boost applied)
+        assert results[0]["score"] == 0.50
+
+    def test_weight_zero_disables_boost(self):
+        """Setting keyword weight to 0 should disable boosting."""
+        service = _make_service()
+        service._config.memory.search_keyword_weight = 0.0
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "no-match",
+                    "score": 0.50,
+                    "memory": "User likes Python",
+                    "metadata": {},
+                },
+            ]
+        }
+        results = service.search_memories(query="family", user_id="filip")
+        assert results[0]["score"] == 0.50
+
+    def test_applied_in_dual_scope(self):
+        """Keyword boost should also apply in dual-scope search."""
+        service = _make_service()
+        service.vector.search.side_effect = [
+            {
+                "results": [
+                    {
+                        "id": "no-match",
+                        "score": 0.50,
+                        "memory": "User is an AI enthusiast",
+                        "metadata": {},
+                    },
+                ]
+            },
+            {
+                "results": [
+                    {
+                        "id": "match",
+                        "score": 0.45,
+                        "memory": "User's family is selfish",
+                        "metadata": {},
+                    },
+                ]
+            },
+        ]
+        results = service.search_memories_dual_scope(
+            "family",
+            user_id="filip",
+            session_agent_id="bot",
+        )
+        assert results[0]["id"] == "match"
+
+
+# ── Tokenize helper ──────────────────────────────────────────────────
+
+
+class TestTokenize:
+    """Test the _tokenize helper function."""
+
+    def test_basic_tokenization(self):
+        from mnemory.memory import _tokenize
+
+        tokens = _tokenize("User's family is selfish")
+        assert "user" in tokens
+        assert "family" in tokens
+        assert "selfish" in tokens
+        # "is" is a stopword
+        assert "is" not in tokens
+        # "s" is too short
+        assert "s" not in tokens
+
+    def test_empty_string(self):
+        from mnemory.memory import _tokenize
+
+        assert _tokenize("") == set()
+
+    def test_all_stopwords(self):
+        from mnemory.memory import _tokenize
+
+        assert _tokenize("is the a an") == set()
+
+    def test_mixed_case_and_punctuation(self):
+        from mnemory.memory import _tokenize
+
+        tokens = _tokenize("User's Dog-Walking habit!")
+        assert "user" in tokens
+        assert "dog" in tokens
+        assert "walking" in tokens
+        assert "habit" in tokens
+
+
+# ── find_memories ─────────────────────────────────────────────────────
+
+
+class TestFindMemories:
+    """Test the AI-powered find_memories pipeline."""
+
+    def test_full_pipeline(self):
+        """Test query generation → search → merge → rerank."""
+        import json
+
+        service = _make_service()
+
+        # Mock LLM: first call = query generation, second call = reranking
+        service._llm.generate.side_effect = [
+            # Query generation response
+            json.dumps({"queries": ["user dogs", "pets preferences"]}),
+            # Rerank response
+            json.dumps(
+                {
+                    "scored": [
+                        {"id": "dog-mem", "relevance": 0.9},
+                        {"id": "cat-mem", "relevance": 0.5},
+                        {"id": "irrelevant", "relevance": 0.1},
+                    ]
+                }
+            ),
+        ]
+
+        # Mock search results for each generated query
+        service.vector.search.side_effect = [
+            {
+                "results": [
+                    {
+                        "id": "dog-mem",
+                        "score": 0.6,
+                        "memory": "User does not like dogs",
+                        "metadata": {},
+                    },
+                    {
+                        "id": "irrelevant",
+                        "score": 0.4,
+                        "memory": "User likes Python",
+                        "metadata": {},
+                    },
+                ]
+            },
+            {
+                "results": [
+                    {
+                        "id": "cat-mem",
+                        "score": 0.5,
+                        "memory": "User prefers cats",
+                        "metadata": {},
+                    },
+                    {
+                        "id": "dog-mem",
+                        "score": 0.55,
+                        "memory": "User does not like dogs",
+                        "metadata": {},
+                    },
+                ]
+            },
+        ]
+
+        results = service.find_memories(
+            "What do I think about dogs?",
+            user_id="filip",
+            limit=2,
+        )
+
+        # Should have 2 results, reranked by LLM relevance
+        assert len(results) == 2
+        assert results[0]["id"] == "dog-mem"
+        assert results[0]["score"] == 0.9
+        assert results[1]["id"] == "cat-mem"
+        assert results[1]["score"] == 0.5
+
+    def test_few_results_skip_reranking(self):
+        """When merged results <= limit, skip LLM reranking."""
+        import json
+
+        service = _make_service()
+
+        # Mock LLM: only query generation (no rerank call expected)
+        service._llm.generate.return_value = json.dumps({"queries": ["user dogs"]})
+
+        service.vector.search.return_value = {
+            "results": [
+                {
+                    "id": "dog-mem",
+                    "score": 0.6,
+                    "memory": "User does not like dogs",
+                    "metadata": {},
+                },
+            ]
+        }
+
+        results = service.find_memories(
+            "What do I think about dogs?",
+            user_id="filip",
+            limit=5,
+        )
+
+        # Only 1 result, limit is 5 → skip reranking
+        assert len(results) == 1
+        # LLM should only be called once (query generation, not reranking)
+        assert service._llm.generate.call_count == 1
+
+    def test_deduplication_across_queries(self):
+        """Same memory from multiple queries should be deduplicated."""
+        import json
+
+        service = _make_service()
+
+        service._llm.generate.side_effect = [
+            json.dumps({"queries": ["query1", "query2"]}),
+            json.dumps(
+                {
+                    "scored": [
+                        {"id": "dup-mem", "relevance": 0.8},
+                        {"id": "unique-mem", "relevance": 0.6},
+                    ]
+                }
+            ),
+        ]
+
+        service.vector.search.side_effect = [
+            {
+                "results": [
+                    {
+                        "id": "dup-mem",
+                        "score": 0.5,
+                        "memory": "Shared fact",
+                        "metadata": {},
+                    },
+                ]
+            },
+            {
+                "results": [
+                    {
+                        "id": "dup-mem",
+                        "score": 0.7,
+                        "memory": "Shared fact",
+                        "metadata": {},
+                    },
+                    {
+                        "id": "unique-mem",
+                        "score": 0.4,
+                        "memory": "Unique fact",
+                        "metadata": {},
+                    },
+                ]
+            },
+        ]
+
+        results = service.find_memories(
+            "test question",
+            user_id="filip",
+            limit=1,
+        )
+
+        # dup-mem should appear only once
+        ids = [r["id"] for r in results]
+        assert ids.count("dup-mem") <= 1
+
+    def test_query_generation_failure_raises(self):
+        """LLM failure on query generation should raise ValueError."""
+        service = _make_service()
+        service._llm.generate.return_value = "not valid json at all"
+
+        with pytest.raises(ValueError, match="Failed to generate"):
+            service.find_memories(
+                "test question",
+                user_id="filip",
+            )
+
+    def test_rerank_failure_raises(self):
+        """LLM failure on reranking should raise ValueError."""
+        import json
+
+        service = _make_service()
+
+        service._llm.generate.side_effect = [
+            json.dumps({"queries": ["q1", "q2", "q3"]}),
+            "not valid json",  # rerank fails
+        ]
+
+        # Need enough results to trigger reranking (> limit)
+        service.vector.search.side_effect = [
+            {
+                "results": [
+                    {
+                        "id": f"mem-{i}",
+                        "score": 0.5,
+                        "memory": f"Fact {i}",
+                        "metadata": {},
+                    }
+                    for i in range(5)
+                ]
+            },
+            {
+                "results": [
+                    {
+                        "id": f"mem-{i + 5}",
+                        "score": 0.4,
+                        "memory": f"Fact {i + 5}",
+                        "metadata": {},
+                    }
+                    for i in range(5)
+                ]
+            },
+            {
+                "results": [
+                    {
+                        "id": f"mem-{i + 10}",
+                        "score": 0.35,
+                        "memory": f"Fact {i + 10}",
+                        "metadata": {},
+                    }
+                    for i in range(5)
+                ]
+            },
+        ]
+
+        with pytest.raises(ValueError, match="Failed to rerank"):
+            service.find_memories(
+                "test question",
+                user_id="filip",
+                limit=3,
+            )
+
+    def test_rerank_filters_below_threshold(self):
+        """Memories scored below threshold by LLM should be filtered out."""
+        import json
+
+        service = _make_service()
+
+        service._llm.generate.side_effect = [
+            json.dumps({"queries": ["q1", "q2"]}),
+            json.dumps(
+                {
+                    "scored": [
+                        {"id": "relevant", "relevance": 0.8},
+                        {"id": "irrelevant", "relevance": 0.1},
+                    ]
+                }
+            ),
+        ]
+
+        service.vector.search.side_effect = [
+            {
+                "results": [
+                    {
+                        "id": f"mem-{i}",
+                        "score": 0.5,
+                        "memory": f"Fact {i}",
+                        "metadata": {},
+                    }
+                    for i in range(8)
+                ]
+            },
+            {
+                "results": [
+                    {
+                        "id": "relevant",
+                        "score": 0.5,
+                        "memory": "Relevant fact",
+                        "metadata": {},
+                    },
+                    {
+                        "id": "irrelevant",
+                        "score": 0.4,
+                        "memory": "Irrelevant fact",
+                        "metadata": {},
+                    },
+                ]
+            },
+        ]
+
+        results = service.find_memories(
+            "test question",
+            user_id="filip",
+            limit=5,
+        )
+
+        ids = [r["id"] for r in results]
+        assert "relevant" in ids
+        assert "irrelevant" not in ids
+
+    def test_uses_dual_scope_with_session_agent(self):
+        """When session_agent_id is provided, should use dual-scope search."""
+        import json
+
+        service = _make_service()
+
+        service._llm.generate.return_value = json.dumps({"queries": ["test query"]})
+
+        service.vector.search.side_effect = [
+            # Dual-scope makes 2 calls per query
+            {
+                "results": [
+                    {"id": "a1", "score": 0.5, "memory": "Agent mem", "metadata": {}}
+                ]
+            },
+            {
+                "results": [
+                    {"id": "s1", "score": 0.4, "memory": "Shared mem", "metadata": {}}
+                ]
+            },
+        ]
+
+        service.find_memories(
+            "test question",
+            user_id="filip",
+            session_agent_id="openwebui",
+            limit=5,
+        )
+
+        # Should have called vector.search twice (dual-scope for one query)
+        assert service.vector.search.call_count == 2
+
+
+# ── find_memories prompts ─────────────────────────────────────────────
+
+
+class TestQueryGenerationPrompt:
+    """Test the query generation prompt builder."""
+
+    def test_prompt_structure(self):
+        from mnemory.prompts import build_query_generation_prompt
+
+        messages, schema = build_query_generation_prompt(
+            "What about dogs?", num_queries=3
+        )
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert "3" in messages[0]["content"]
+        assert messages[1]["role"] == "user"
+        assert "dogs" in messages[1]["content"]
+        assert schema["name"] == "query_generation"
+
+    def test_default_num_queries(self):
+        from mnemory.prompts import build_query_generation_prompt
+
+        messages, _ = build_query_generation_prompt("test")
+        assert "5" in messages[0]["content"]
+
+
+class TestRerankPrompt:
+    """Test the rerank prompt builder."""
+
+    def test_prompt_structure(self):
+        from mnemory.prompts import build_rerank_prompt
+
+        memories = [
+            {"id": "m1", "memory": "User likes cats"},
+            {"id": "m2", "memory": "User dislikes dogs"},
+        ]
+        messages, schema = build_rerank_prompt(
+            "What about pets?", memories, threshold=0.3
+        )
+        assert len(messages) == 2
+        assert "0.3" in messages[0]["content"]
+        assert "m1" in messages[1]["content"]
+        assert "m2" in messages[1]["content"]
+        assert "cats" in messages[1]["content"]
+        assert schema["name"] == "memory_rerank"
+
+    def test_threshold_in_prompt(self):
+        from mnemory.prompts import build_rerank_prompt
+
+        messages, _ = build_rerank_prompt("test", [], threshold=0.5)
+        assert "0.5" in messages[0]["content"]

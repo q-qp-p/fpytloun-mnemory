@@ -225,13 +225,24 @@ Examples:
   "Your name is Bob"                        → role="assistant", agent_id="self"
   "You speak casually and use humor"        → role="assistant", agent_id="self"
 
-### Searching memories (search_memories)
+### Searching memories (search_memories / find_memories)
 Use category and type filters to narrow results. Results are ranked by
 relevance and importance.
 
 Search and list automatically return BOTH your agent-specific memories
 AND shared user memories, merged and deduplicated. You do not need to
 pass agent_id — the server knows your identity from the session.
+
+Two search tools are available:
+- **search_memories**: Fast single-query vector search. Use for simple
+  lookups and routine memory recall. Preferred for most cases.
+- **find_memories**: AI-powered multi-query search. Takes a natural
+  language question, generates multiple targeted searches following
+  associations (e.g., "dogs" → pets, partner, house, lifestyle), and
+  uses AI to rerank results by relevance. Use for complex, multi-faceted
+  questions where a single search query wouldn't capture all relevant
+  context. Slower (2 extra LLM calls) but higher quality for complex
+  queries.
 
 ### Artifacts (save_artifact, get_artifact, list_artifacts, delete_artifact)
 For detailed content too long for fast memory (research reports, analysis,

@@ -261,6 +261,20 @@ class MemoryConfig:
         default_factory=lambda: _env_float("SEARCH_SIMILARITY_WEIGHT", 0.9)
     )
 
+    # Post-retrieval keyword boost weight. After vector search returns
+    # results, a keyword overlap score is blended in:
+    # final = (1 - keyword_weight) * qdrant_score + keyword_weight * keyword_score
+    # Set to 0.0 to disable keyword boosting entirely.
+    search_keyword_weight: float = field(
+        default_factory=lambda: _env_float("SEARCH_KEYWORD_WEIGHT", 0.2)
+    )
+
+    # find_memories: number of search queries the LLM generates from the
+    # user's question. More queries = better recall but more cost.
+    find_memories_queries: int = field(
+        default_factory=lambda: _env_int("FIND_MEMORIES_QUERIES", 5)
+    )
+
 
 @dataclass
 class Config:

@@ -306,6 +306,11 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 | `TTL_PROCEDURAL` | `60` | Default TTL in days for `procedural` memories |
 | `TTL_CONTEXT` | `7` | Default TTL in days for `context` memories |
 | `TRACK_MEMORY_ACCESS` | `true` | Update last_accessed_at and reset TTL on search/recall |
+| `SEARCH_SCORE_THRESHOLD` | `0.30` | Minimum score for search results (0.0-1.0). Results below this are filtered out |
+| `DEDUP_SIMILARITY_THRESHOLD` | `0.4` | Minimum similarity for deduplication matching during memory ingestion |
+| `SEARCH_SIMILARITY_WEIGHT` | `0.9` | Weight for cosine similarity in search ranking (remainder goes to importance). Default 0.9 = 90% similarity, 10% importance |
+| `SEARCH_KEYWORD_WEIGHT` | `0.2` | Weight for keyword overlap boost in search results. Set to 0.0 to disable |
+| `FIND_MEMORIES_QUERIES` | `5` | Number of search queries the LLM generates for `find_memories` |
 
 ## Memory Model
 
@@ -358,7 +363,7 @@ Dynamic subcategories via prefix: `project:myapp`, `project:domecek/k8s-manifest
 | `high` | 0.7 | Important facts, key decisions |
 | `critical` | 1.0 | Essential information, always-relevant |
 
-Search results are reranked: `combined_score = similarity * 0.7 + importance_weight * 0.3`.
+Search results are reranked: `combined_score = similarity * 0.9 + importance_weight * 0.1` (configurable via `SEARCH_SIMILARITY_WEIGHT`). A keyword boost is then blended in: `final = (1 - keyword_weight) * combined_score + keyword_weight * keyword_overlap` (configurable via `SEARCH_KEYWORD_WEIGHT`, default 0.2). Results below `SEARCH_SCORE_THRESHOLD` (default 0.30) are filtered out.
 
 ### Pinned Memories
 
@@ -438,6 +443,7 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 | `add_memory` | Store a memory with optional metadata, `infer` flag, and `role` |
 | `add_memories` | Batch-add multiple memories in a single call |
 | `search_memories` | Semantic search with type/category/role filters, importance reranking |
+| `find_memories` | AI-powered search: generates multiple queries, searches, and reranks by relevance to your question |
 | `get_core_memories` | Load pinned + recent context at conversation start. Use for clients that inject MCP server instructions (e.g., Claude Code). |
 | `get_recent_memories` | Get recent activity from the last N days with scope filter (user/agent/all) |
 | `list_memories` | List all/filtered memories |
@@ -469,11 +475,23 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 
 ### Searching
 
+**search_memories** — fast single-query search:
+
 1. You call `search_memories(query="what car do I have")`
 2. Query is embedded, vector similarity search in Qdrant
 3. Results filtered by category/type if specified
-4. Reranked by combined similarity + importance score
-5. Returns top N results with artifact indicators
+4. Reranked by combined similarity + importance score, then keyword-boosted
+5. Results below score threshold (default 0.30) are filtered out
+6. Returns top N results with artifact indicators
+
+**find_memories** — AI-powered multi-query search:
+
+1. You call `find_memories(question="What do I think about dogs? Should I buy one?")`
+2. LLM generates multiple search queries covering different angles and associations (e.g., dogs, pets, partner, house, garden, lifestyle)
+3. Each query runs through `search_memories` independently
+4. Results are merged and deduplicated across all queries
+5. LLM reranks all results by relevance to the original question
+6. Returns top N results with scores on the same 0.0-1.0 scale
 
 ### Core Memories
 
@@ -505,13 +523,14 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 ┌──────────────────────────────────────────────────┐
 │                    mnemory                        │
 │                                                   │
-│  15 MCP Tools:                                    │
+│  16 MCP Tools:                                    │
 │  initialize_memory, add_memory, add_memories,    │
-│  search_memories, get_core_memories,             │
-│  get_recent_memories, list_memories,             │
-│  update_memory, delete_memory, delete_all_memories│
-│  list_categories, save_artifact, get_artifact,   │
-│  list_artifacts, delete_artifact                  │
+│  search_memories, find_memories,                 │
+│  get_core_memories, get_recent_memories,         │
+│  list_memories, update_memory, delete_memory,    │
+│  delete_all_memories, list_categories,           │
+│  save_artifact, get_artifact, list_artifacts,    │
+│  delete_artifact                                  │
 │                                                   │
 │  ┌─────────────────┐  ┌───────────────────────┐  │
 │  │  Fast Memory     │  │  Slow Memory          │  │
