@@ -642,6 +642,7 @@ class MemoryService:
             limit=limit,
             exclude_expired=True,
             include_decayed=include_decayed,
+            similarity_weight=self._config.memory.search_similarity_weight,
         )
 
         memories = result.get("results", [])
@@ -703,6 +704,7 @@ class MemoryService:
             "limit": limit,
             "exclude_expired": True,
             "include_decayed": include_decayed,
+            "similarity_weight": self._config.memory.search_similarity_weight,
         }
 
         # Search 1: agent-scoped memories
@@ -712,11 +714,14 @@ class MemoryService:
             agent_id=session_agent_id,
             **search_kwargs,
         )
-        # Search 2: shared memories (no agent_id)
+        # Search 2: shared memories only (no agent_id).
+        # shared_only=True ensures we only get memories without any agent_id,
+        # preventing sub-agent memories from leaking to the parent agent.
         shared_result = self.vector.search(
             query,
             user_id=user_id,
             agent_id=None,
+            shared_only=True,
             **search_kwargs,
         )
 
@@ -1162,10 +1167,13 @@ class MemoryService:
             filters=filters if filters else None,
             limit=fetch_limit,
         )
-        # Fetch 2: shared memories (no agent_id)
+        # Fetch 2: shared memories only (no agent_id).
+        # shared_only=True ensures we only get memories without any agent_id,
+        # preventing sub-agent memories from leaking to the parent agent.
         shared_result = self.vector.get_all(
             user_id=user_id,
             agent_id=None,
+            shared_only=True,
             filters=filters if filters else None,
             limit=fetch_limit,
         )

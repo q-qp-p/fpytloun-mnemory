@@ -177,7 +177,8 @@ class TestSearchMemoriesDualScope:
         service._config = MagicMock()
         service._config.memory.track_memory_access = False
         service._config.memory.classify_cache_ttl = 300
-        service._config.memory.search_score_threshold = 0.25
+        service._config.memory.search_score_threshold = 0.30
+        service._config.memory.search_similarity_weight = 0.9
         from mnemory.cache import TTLCache
 
         service._category_cache = TTLCache(ttl_seconds=300)
@@ -310,6 +311,49 @@ class TestSearchMemoriesDualScope:
         ids = {r["id"] for r in results}
         assert ids == {"a1", "s1"}
 
+    def test_shared_search_uses_shared_only(self):
+        """The shared (second) search call must pass shared_only=True."""
+        service = self._make_service()
+        service.vector.search.side_effect = [
+            {"results": []},
+            {"results": []},
+        ]
+
+        service.search_memories_dual_scope(
+            "test query",
+            user_id="filip",
+            session_agent_id="openwebui",
+        )
+
+        assert service.vector.search.call_count == 2
+        # First call: agent-scoped (no shared_only)
+        _, agent_kwargs = service.vector.search.call_args_list[0]
+        assert agent_kwargs["agent_id"] == "openwebui"
+        assert agent_kwargs.get("shared_only", False) is False
+        # Second call: shared (shared_only=True)
+        _, shared_kwargs = service.vector.search.call_args_list[1]
+        assert shared_kwargs["agent_id"] is None
+        assert shared_kwargs["shared_only"] is True
+
+    def test_similarity_weight_passed_to_vector_store(self):
+        """search_similarity_weight config should be forwarded to vector.search()."""
+        service = self._make_service()
+        service._config.memory.search_similarity_weight = 0.85
+        service.vector.search.side_effect = [
+            {"results": []},
+            {"results": []},
+        ]
+
+        service.search_memories_dual_scope(
+            "test query",
+            user_id="filip",
+            session_agent_id="openwebui",
+        )
+
+        for call in service.vector.search.call_args_list:
+            _, kwargs = call
+            assert kwargs["similarity_weight"] == 0.85
+
 
 # ── Dual-scope list ───────────────────────────────────────────────────
 
@@ -367,6 +411,29 @@ class TestListMemoriesDualScope:
             limit=3,
         )
         assert len(results) == 3
+
+    def test_shared_list_uses_shared_only(self):
+        """The shared (second) get_all call must pass shared_only=True."""
+        service = self._make_service()
+        service.vector.get_all.side_effect = [
+            {"results": []},
+            {"results": []},
+        ]
+
+        service.list_memories_dual_scope(
+            user_id="filip",
+            session_agent_id="openwebui",
+        )
+
+        assert service.vector.get_all.call_count == 2
+        # First call: agent-scoped (no shared_only)
+        _, agent_kwargs = service.vector.get_all.call_args_list[0]
+        assert agent_kwargs["agent_id"] == "openwebui"
+        assert agent_kwargs.get("shared_only", False) is False
+        # Second call: shared (shared_only=True)
+        _, shared_kwargs = service.vector.get_all.call_args_list[1]
+        assert shared_kwargs["agent_id"] is None
+        assert shared_kwargs["shared_only"] is True
 
 
 # ── User identity header priority ─────────────────────────────────────
@@ -554,7 +621,8 @@ class TestNoneMetadataSafety:
         mock_config.memory.core_memories_cache_ttl = 300
         mock_config.memory.auto_classify = False
         mock_config.memory.track_memory_access = False
-        mock_config.memory.search_score_threshold = 0.25
+        mock_config.memory.search_score_threshold = 0.30
+        mock_config.memory.search_similarity_weight = 0.9
 
         with (
             patch("mnemory.memory.VectorStore"),

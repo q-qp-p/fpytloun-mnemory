@@ -245,10 +245,20 @@ class MemoryConfig:
 
     # Search quality thresholds
     search_score_threshold: float = field(
-        default_factory=lambda: _env_float("SEARCH_SCORE_THRESHOLD", 0.25)
+        default_factory=lambda: _env_float("SEARCH_SCORE_THRESHOLD", 0.30)
     )
     dedup_similarity_threshold: float = field(
         default_factory=lambda: _env_float("DEDUP_SIMILARITY_THRESHOLD", 0.4)
+    )
+
+    # Search ranking weights
+    # Controls the balance between cosine similarity and importance in the
+    # combined search score formula: score = similarity_weight * cosine_sim
+    # + (1 - similarity_weight) * importance_weight.
+    # Default 0.9 means 90% similarity, 10% importance — importance acts as
+    # a tiebreaker rather than a primary ranking factor.
+    search_similarity_weight: float = field(
+        default_factory=lambda: _env_float("SEARCH_SIMILARITY_WEIGHT", 0.9)
     )
 
 

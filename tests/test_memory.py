@@ -30,8 +30,10 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.ttl_procedural = 60
     mock_config.memory.ttl_context = 7
     # Search quality thresholds
-    mock_config.memory.search_score_threshold = 0.25
+    mock_config.memory.search_score_threshold = 0.30
     mock_config.memory.dedup_similarity_threshold = 0.4
+    # Search ranking weights
+    mock_config.memory.search_similarity_weight = 0.9
 
 
 def _make_service(auto_classify=False, track_access=False):
@@ -99,7 +101,7 @@ class TestSearchScoreThreshold:
             "results": [
                 {"id": "high", "score": 0.8, "metadata": {"importance": "normal"}},
                 {"id": "low", "score": 0.1, "metadata": {"importance": "normal"}},
-                {"id": "edge", "score": 0.25, "metadata": {"importance": "normal"}},
+                {"id": "edge", "score": 0.30, "metadata": {"importance": "normal"}},
             ]
         }
         results = service.search_memories(query="test", user_id="filip")
@@ -179,6 +181,34 @@ class TestSearchScoreThreshold:
         ids = [r["id"] for r in results]
         assert "above" in ids
         assert "below" not in ids
+
+
+# ── Search similarity weight ─────────────────────────────────────────
+
+
+class TestSearchSimilarityWeight:
+    """Test that search_similarity_weight config is forwarded to vector.search()."""
+
+    def test_similarity_weight_passed_single_scope(self):
+        """Single-scope search should pass similarity_weight to vector.search()."""
+        service = _make_service()
+        service._config.memory.search_similarity_weight = 0.85
+        service.vector.search.return_value = {"results": []}
+
+        service.search_memories(query="test", user_id="filip")
+
+        _, kwargs = service.vector.search.call_args
+        assert kwargs["similarity_weight"] == 0.85
+
+    def test_default_similarity_weight(self):
+        """Default similarity_weight should be 0.9."""
+        service = _make_service()
+        service.vector.search.return_value = {"results": []}
+
+        service.search_memories(query="test", user_id="filip")
+
+        _, kwargs = service.vector.search.call_args
+        assert kwargs["similarity_weight"] == 0.9
 
 
 # ── Dedup similarity threshold ────────────────────────────────────────

@@ -216,11 +216,13 @@ class VectorStore:
         *,
         user_id: str,
         agent_id: str | None = None,
+        shared_only: bool = False,
         filters: dict | None = None,
         categories: list[str] | None = None,
         limit: int = 100,
         exclude_expired: bool = False,
         include_decayed: bool = False,
+        similarity_weight: float = 0.9,
     ) -> dict:
         """Semantic search with TTL, category, and importance filtering.
 
@@ -231,11 +233,17 @@ class VectorStore:
             query: Search query text.
             user_id: Required user scope.
             agent_id: Optional agent scope.
+            shared_only: If True and agent_id is None, restrict to memories
+                without any agent_id (shared user memories only). Used by
+                dual-scope search to avoid leaking sub-agent memories.
             filters: Simple key-value metadata filters (memory_type, role).
             categories: Category filter (OR logic via MatchAny).
             limit: Maximum results.
             exclude_expired: If True, filter out expired/decayed memories.
             include_decayed: If True, include decayed memories.
+            similarity_weight: Weight for cosine similarity in the combined
+                score formula (0.0-1.0). Importance gets 1 - similarity_weight.
+                Default 0.9 (90% similarity, 10% importance).
 
         Returns:
             Dict with "results" key containing list of memory dicts.
@@ -259,6 +267,14 @@ class VectorStore:
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+        elif shared_only:
+            # Restrict to memories without any agent_id (shared user memories).
+            # Use IsEmptyCondition (not IsNullCondition) because agent_id is
+            # omitted from the payload for shared memories — IsNullCondition
+            # only matches keys explicitly set to null, not absent keys.
+            must_conditions.append(
+                IsEmptyCondition(is_empty=PayloadField(key="agent_id"))
             )
         # Metadata filters (memory_type, role)
         if filters:
@@ -289,6 +305,7 @@ class VectorStore:
         query_filter = Filter(must=must_conditions)
 
         # 3. Build formula for importance reranking
+        importance_weight = 1.0 - similarity_weight
         try:
             from qdrant_client.models import (
                 FormulaQuery,
@@ -296,10 +313,10 @@ class VectorStore:
             )
 
             formula_terms: list = [
-                {"mult": [0.7, "$score"]},
+                {"mult": [similarity_weight, "$score"]},
             ]
             for imp_level, imp_weight in IMPORTANCE_WEIGHTS.items():
-                boost = 0.3 * imp_weight
+                boost = importance_weight * imp_weight
                 if boost > 0:
                     formula_terms.append(
                         {
@@ -429,19 +446,35 @@ class VectorStore:
         *,
         user_id: str,
         agent_id: str | None = None,
+        shared_only: bool = False,
         filters: dict | None = None,
         limit: int = 100,
     ) -> dict:
         """List memories with optional filters.
 
+        Args:
+            user_id: Required user scope.
+            agent_id: Optional agent scope.
+            shared_only: If True and agent_id is None, restrict to memories
+                without any agent_id (shared user memories only). Used by
+                dual-scope list to avoid leaking sub-agent memories.
+            filters: Simple key-value metadata filters.
+            limit: Maximum results.
+
         Returns dict with "results" key containing list of memory dicts.
         """
+        from qdrant_client.models import IsEmptyCondition
+
         must_conditions: list = [
             FieldCondition(key="user_id", match=MatchValue(value=user_id)),
         ]
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+        elif shared_only:
+            must_conditions.append(
+                IsEmptyCondition(is_empty=PayloadField(key="agent_id"))
             )
         if filters:
             for key, value in filters.items():
