@@ -40,6 +40,10 @@ def _env_int_or_none(key: str, default: int | None = None) -> int | None:
     return int(raw)
 
 
+def _env_float(key: str, default: float) -> float:
+    return float(os.environ.get(key, str(default)))
+
+
 def _data_dir() -> str:
     """Resolve base data directory.
 
@@ -237,6 +241,14 @@ class MemoryConfig:
     # Access tracking
     track_memory_access: bool = field(
         default_factory=lambda: _env_bool("TRACK_MEMORY_ACCESS", True)
+    )
+
+    # Search quality thresholds
+    search_score_threshold: float = field(
+        default_factory=lambda: _env_float("SEARCH_SCORE_THRESHOLD", 0.25)
+    )
+    dedup_similarity_threshold: float = field(
+        default_factory=lambda: _env_float("DEDUP_SIMILARITY_THRESHOLD", 0.4)
     )
 
 

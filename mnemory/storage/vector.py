@@ -396,7 +396,13 @@ class VectorStore:
         )
 
         return [
-            {"id": str(p.id), "text": p.payload.get("data", ""), "score": p.score}
+            {
+                "id": str(p.id),
+                "text": p.payload.get("data", ""),
+                "score": p.score,
+                "type": p.payload.get("memory_type", ""),
+                "categories": p.payload.get("categories", []),
+            }
             for p in result.points
         ]
 

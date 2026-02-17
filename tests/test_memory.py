@@ -29,6 +29,9 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.ttl_episodic = 90
     mock_config.memory.ttl_procedural = 60
     mock_config.memory.ttl_context = 7
+    # Search quality thresholds
+    mock_config.memory.search_score_threshold = 0.25
+    mock_config.memory.dedup_similarity_threshold = 0.4
 
 
 def _make_service(auto_classify=False, track_access=False):
@@ -83,66 +86,192 @@ class TestValidateId:
         assert len(result) == 256
 
 
-# ── _rerank_by_importance ─────────────────────────────────────────────
+# ── Search score threshold ────────────────────────────────────────────
 
 
-class TestRerankByImportance:
-    """Test the reranking logic without needing a full MemoryService."""
+class TestSearchScoreThreshold:
+    """Test that search results below the score threshold are filtered out."""
 
-    @staticmethod
-    def _rerank(memories):
-        """Call the static-like rerank method via the class."""
-        # Access the unbound method directly
-        return MemoryService._rerank_by_importance(None, memories)
+    def test_low_score_results_filtered_single_scope(self):
+        """Single-scope search should filter results below threshold."""
+        service = _make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {"id": "high", "score": 0.8, "metadata": {"importance": "normal"}},
+                {"id": "low", "score": 0.1, "metadata": {"importance": "normal"}},
+                {"id": "edge", "score": 0.25, "metadata": {"importance": "normal"}},
+            ]
+        }
+        results = service.search_memories(query="test", user_id="filip")
+        ids = [r["id"] for r in results]
+        assert "high" in ids
+        assert "edge" in ids
+        assert "low" not in ids
 
-    def test_critical_boosted_over_normal(self):
-        memories = [
-            {"score": 0.8, "metadata": {"importance": "normal"}},
-            {"score": 0.7, "metadata": {"importance": "critical"}},
+    def test_all_below_threshold_returns_empty(self):
+        """If all results are below threshold, return empty list."""
+        service = _make_service()
+        service.vector.search.return_value = {
+            "results": [
+                {"id": "low1", "score": 0.1, "metadata": {"importance": "normal"}},
+                {"id": "low2", "score": 0.05, "metadata": {"importance": "normal"}},
+            ]
+        }
+        results = service.search_memories(query="test", user_id="filip")
+        assert results == []
+
+    def test_dual_scope_filters_below_threshold(self):
+        """Dual-scope search should filter merged results below threshold."""
+        service = _make_service()
+        # Mock dual-scope: agent search + shared search
+        service.vector.search.side_effect = [
+            {
+                "results": [
+                    {
+                        "id": "agent-high",
+                        "score": 0.9,
+                        "metadata": {"importance": "normal"},
+                    },
+                    {
+                        "id": "agent-low",
+                        "score": 0.1,
+                        "metadata": {"importance": "normal"},
+                    },
+                ]
+            },
+            {
+                "results": [
+                    {
+                        "id": "shared-high",
+                        "score": 0.7,
+                        "metadata": {"importance": "normal"},
+                    },
+                    {
+                        "id": "shared-low",
+                        "score": 0.15,
+                        "metadata": {"importance": "normal"},
+                    },
+                ]
+            },
         ]
-        result = self._rerank(memories)
-        # critical: 0.7*0.7 + 1.0*0.3 = 0.79
-        # normal:   0.8*0.7 + 0.4*0.3 = 0.68
-        assert result[0]["metadata"]["importance"] == "critical"
+        results = service.search_memories_dual_scope(
+            query="test",
+            user_id="filip",
+            session_agent_id="bot",
+        )
+        ids = [r["id"] for r in results]
+        assert "agent-high" in ids
+        assert "shared-high" in ids
+        assert "agent-low" not in ids
+        assert "shared-low" not in ids
 
-    def test_high_similarity_wins_over_low_importance(self):
-        memories = [
-            {"score": 0.3, "metadata": {"importance": "critical"}},
-            {"score": 0.95, "metadata": {"importance": "normal"}},
+    def test_threshold_configurable(self):
+        """Custom threshold should be respected."""
+        service = _make_service()
+        service._config.memory.search_score_threshold = 0.5
+        service.vector.search.return_value = {
+            "results": [
+                {"id": "above", "score": 0.6, "metadata": {"importance": "normal"}},
+                {"id": "below", "score": 0.4, "metadata": {"importance": "normal"}},
+            ]
+        }
+        results = service.search_memories(query="test", user_id="filip")
+        ids = [r["id"] for r in results]
+        assert "above" in ids
+        assert "below" not in ids
+
+
+# ── Dedup similarity threshold ────────────────────────────────────────
+
+
+class TestDedupSimilarityThreshold:
+    """Test that low-similarity results are filtered before LLM dedup."""
+
+    def test_low_similarity_filtered_before_llm(self):
+        """search_similar results below threshold should not reach the LLM."""
+
+        service = _make_service()
+        # search_similar returns one high and one low similarity result
+        service.vector.search_similar.return_value = [
+            {
+                "id": "similar-uuid",
+                "text": "User likes cats",
+                "score": 0.8,
+                "type": "fact",
+                "categories": ["personal"],
+            },
+            {
+                "id": "unrelated-uuid",
+                "text": "User works at Google",
+                "score": 0.2,
+                "type": "fact",
+                "categories": ["work"],
+            },
         ]
-        result = self._rerank(memories)
-        # critical: 0.3*0.7 + 1.0*0.3 = 0.51
-        # normal:   0.95*0.7 + 0.4*0.3 = 0.785
-        assert result[0]["metadata"]["importance"] == "normal"
+        service.vector.get_all.return_value = {"results": []}
+        service._llm.generate.return_value = '{"memories": []}'
 
-    def test_combined_score_not_in_output(self):
-        memories = [{"score": 0.5, "metadata": {"importance": "normal"}}]
-        result = self._rerank(memories)
-        assert "_combined_score" not in result[0]
+        service.add_memory(content="I love cats", user_id="filip", infer=True)
 
-    def test_missing_importance_defaults_to_normal(self):
-        memories = [
-            {"score": 0.5, "metadata": {}},
-            {"score": 0.5, "metadata": {"importance": "high"}},
+        # Check what was passed to build_extraction_prompt via the LLM call
+        call_args = service._llm.generate.call_args
+        system_prompt = call_args[0][0][0]["content"]
+        # The high-similarity memory should be in the prompt
+        assert "User likes cats" in system_prompt
+        # The low-similarity memory should NOT be in the prompt
+        assert "User works at Google" not in system_prompt
+
+    def test_all_below_threshold_means_no_existing(self):
+        """If all similar results are below threshold, LLM sees no existing."""
+
+        service = _make_service()
+        service.vector.search_similar.return_value = [
+            {
+                "id": "low-uuid",
+                "text": "Something",
+                "score": 0.1,
+                "type": "fact",
+                "categories": [],
+            },
         ]
-        result = self._rerank(memories)
-        # high: 0.5*0.7 + 0.7*0.3 = 0.56
-        # default (normal): 0.5*0.7 + 0.4*0.3 = 0.47
-        assert result[0]["metadata"]["importance"] == "high"
+        service.vector.get_all.return_value = {"results": []}
+        service._llm.generate.return_value = '{"memories": []}'
 
-    def test_empty_list(self):
-        assert self._rerank([]) == []
+        service.add_memory(content="test", user_id="filip", infer=True)
 
-    def test_all_same_score_sorted_by_importance(self):
-        memories = [
-            {"score": 0.5, "metadata": {"importance": "low"}},
-            {"score": 0.5, "metadata": {"importance": "critical"}},
-            {"score": 0.5, "metadata": {"importance": "normal"}},
-            {"score": 0.5, "metadata": {"importance": "high"}},
+        system_prompt = service._llm.generate.call_args[0][0][0]["content"]
+        assert "None yet" in system_prompt
+
+    def test_threshold_configurable(self):
+        """Custom dedup threshold should be respected."""
+
+        service = _make_service()
+        service._config.memory.dedup_similarity_threshold = 0.8
+
+        service.vector.search_similar.return_value = [
+            {
+                "id": "uuid-1",
+                "text": "Fact A",
+                "score": 0.75,
+                "type": "fact",
+                "categories": [],
+            },
+            {
+                "id": "uuid-2",
+                "text": "Fact B",
+                "score": 0.85,
+                "type": "fact",
+                "categories": [],
+            },
         ]
-        result = self._rerank(memories)
-        importances = [m["metadata"]["importance"] for m in result]
-        assert importances == ["critical", "high", "normal", "low"]
+        service.vector.get_all.return_value = {"results": []}
+        service._llm.generate.return_value = '{"memories": []}'
+
+        service.add_memory(content="test", user_id="filip", infer=True)
+
+        system_prompt = service._llm.generate.call_args[0][0][0]["content"]
+        assert "Fact B" in system_prompt
+        assert "Fact A" not in system_prompt
 
 
 # ── Core memory cache ─────────────────────────────────────────────────
@@ -1124,7 +1253,13 @@ class TestExtractionPipeline:
         service = _make_service()
         # Existing memory found by similarity search
         service.vector.search_similar.return_value = [
-            {"id": "existing-uuid", "text": "Uses VS Code", "score": 0.9}
+            {
+                "id": "existing-uuid",
+                "text": "Uses VS Code",
+                "score": 0.9,
+                "type": "preference",
+                "categories": ["technical"],
+            }
         ]
         service.vector.get_all.return_value = {"results": []}
         service.vector.get_by_id.return_value = {
@@ -1188,6 +1323,422 @@ class TestExtractionPipeline:
 
         assert result.get("error") is True
         assert "extraction failed" in result["message"].lower()
+
+
+# ── Fact length validation ────────────────────────────────────────────
+
+
+class TestValidateFactLengths:
+    """Test _validate_fact_lengths retry and error logic."""
+
+    def test_short_facts_pass_through(self):
+        """Facts within max length should pass through unchanged."""
+        service = _make_service()
+        actions = [
+            {
+                "text": "Short fact",
+                "action": "ADD",
+                "target_id": None,
+                "old_memory": None,
+                "memory_type": "fact",
+                "categories": [],
+                "importance": "normal",
+                "pinned": False,
+            },
+        ]
+        result = service._validate_fact_lengths(actions, 1000)
+        assert result == actions
+
+    def test_oversized_fact_triggers_retry(self):
+        """Fact exceeding max length should trigger a shorten LLM call."""
+        import json
+
+        service = _make_service()
+        long_text = "x" * 200
+        actions = [
+            {
+                "text": long_text,
+                "action": "ADD",
+                "target_id": None,
+                "old_memory": None,
+                "memory_type": "fact",
+                "categories": [],
+                "importance": "normal",
+                "pinned": False,
+            },
+        ]
+
+        # Mock LLM to return a shortened version
+        shortened_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Short version",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": [],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ]
+            }
+        )
+        service._llm.generate.return_value = shortened_response
+
+        result = service._validate_fact_lengths(actions, 100)
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]["text"] == "Short version"
+
+    def test_oversized_fact_split_into_multiple(self):
+        """Retry can split one oversized fact into multiple shorter ones."""
+        import json
+
+        service = _make_service()
+        long_text = "x" * 200
+        actions = [
+            {
+                "text": long_text,
+                "action": "ADD",
+                "target_id": None,
+                "old_memory": None,
+                "memory_type": "fact",
+                "categories": [],
+                "importance": "normal",
+                "pinned": False,
+            },
+        ]
+
+        # Mock LLM to return two shorter facts
+        split_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Part one",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": [],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                    {
+                        "text": "Part two",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": [],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                ]
+            }
+        )
+        service._llm.generate.return_value = split_response
+
+        result = service._validate_fact_lengths(actions, 100)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["text"] == "Part one"
+        assert result[1]["text"] == "Part two"
+
+    def test_retry_still_oversized_returns_error(self):
+        """If retry still produces oversized output, return error."""
+        import json
+
+        service = _make_service()
+        long_text = "x" * 200
+        actions = [
+            {
+                "text": long_text,
+                "action": "ADD",
+                "target_id": None,
+                "old_memory": None,
+                "memory_type": "fact",
+                "categories": [],
+                "importance": "normal",
+                "pinned": False,
+            },
+        ]
+
+        # Mock LLM to return still-oversized text
+        still_long_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "y" * 200,
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": [],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ]
+            }
+        )
+        service._llm.generate.return_value = still_long_response
+
+        result = service._validate_fact_lengths(actions, 100)
+        assert isinstance(result, dict)
+        assert result["error"] is True
+        assert "max length" in result["message"].lower()
+
+    def test_retry_llm_failure_returns_error(self):
+        """If the shorten LLM call fails, return error."""
+        service = _make_service()
+        long_text = "x" * 200
+        actions = [
+            {
+                "text": long_text,
+                "action": "ADD",
+                "target_id": None,
+                "old_memory": None,
+                "memory_type": "fact",
+                "categories": [],
+                "importance": "normal",
+                "pinned": False,
+            },
+        ]
+
+        service._llm.generate.side_effect = Exception("LLM error")
+
+        result = service._validate_fact_lengths(actions, 100)
+        assert isinstance(result, dict)
+        assert result["error"] is True
+        assert "retry failed" in result["message"].lower()
+
+    def test_retry_empty_response_returns_error(self):
+        """If retry returns empty memories, return error."""
+        service = _make_service()
+        long_text = "x" * 200
+        actions = [
+            {
+                "text": long_text,
+                "action": "ADD",
+                "target_id": None,
+                "old_memory": None,
+                "memory_type": "fact",
+                "categories": [],
+                "importance": "normal",
+                "pinned": False,
+            },
+        ]
+
+        service._llm.generate.return_value = '{"memories": []}'
+
+        result = service._validate_fact_lengths(actions, 100)
+        assert isinstance(result, dict)
+        assert result["error"] is True
+
+    def test_delete_actions_not_checked(self):
+        """DELETE actions should not be checked for length."""
+        service = _make_service()
+        actions = [
+            {
+                "text": "x" * 200,
+                "action": "DELETE",
+                "target_id": "some-id",
+                "old_memory": None,
+                "memory_type": "fact",
+                "categories": [],
+                "importance": "normal",
+                "pinned": False,
+            },
+        ]
+        result = service._validate_fact_lengths(actions, 100)
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    def test_update_action_inherits_target_on_split(self):
+        """When an UPDATE is split, first result should inherit target_id."""
+        import json
+
+        service = _make_service()
+        long_text = "x" * 200
+        actions = [
+            {
+                "text": long_text,
+                "action": "UPDATE",
+                "target_id": "existing-id",
+                "old_memory": "old text",
+                "memory_type": "fact",
+                "categories": [],
+                "importance": "normal",
+                "pinned": False,
+            },
+        ]
+
+        split_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Updated part",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": [],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                    {
+                        "text": "New part",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": [],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                ]
+            }
+        )
+        service._llm.generate.return_value = split_response
+
+        result = service._validate_fact_lengths(actions, 100)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        # First result should inherit the UPDATE action and target
+        assert result[0]["action"] == "UPDATE"
+        assert result[0]["target_id"] == "existing-id"
+        assert result[0]["old_memory"] == "old text"
+        # Second result stays as ADD
+        assert result[1]["action"] == "ADD"
+
+
+# ── build_shorten_prompt ──────────────────────────────────────────────
+
+
+class TestBuildShortenPrompt:
+    """Test the shorten/split retry prompt builder."""
+
+    def test_returns_messages_and_schema(self):
+        """Should return valid messages and schema."""
+        from mnemory.prompts import build_shorten_prompt
+
+        action = {
+            "text": "Very long fact text",
+            "action": "ADD",
+            "target_id": None,
+            "old_memory": None,
+            "memory_type": "fact",
+            "categories": ["work"],
+            "importance": "normal",
+            "pinned": False,
+        }
+        messages, schema = build_shorten_prompt(action, max_memory_length=100)
+
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert "100" in messages[0]["content"]
+        assert schema is not None
+        assert schema["name"] == "memory_extraction"
+
+    def test_action_included_in_user_message(self):
+        """The oversized action should be in the user message as JSON."""
+        import json
+
+        from mnemory.prompts import build_shorten_prompt
+
+        action = {
+            "text": "Some long text",
+            "action": "ADD",
+            "target_id": None,
+            "old_memory": None,
+            "memory_type": "fact",
+            "categories": [],
+            "importance": "normal",
+            "pinned": False,
+        }
+        messages, _ = build_shorten_prompt(action, max_memory_length=50)
+
+        user_content = messages[1]["content"]
+        parsed = json.loads(user_content)
+        assert parsed["memories"][0]["text"] == "Some long text"
+
+
+# ── build_extraction_prompt enriched context ──────────────────────────
+
+
+class TestExtractionPromptEnrichedContext:
+    """Test that build_extraction_prompt includes type/categories."""
+
+    def test_type_and_categories_in_existing_memories(self):
+        """Existing memories with type/categories should appear in prompt."""
+        from mnemory.prompts import build_extraction_prompt
+
+        existing = [
+            {
+                "id": "uuid-1",
+                "text": "User likes cats",
+                "score": 0.9,
+                "type": "preference",
+                "categories": ["personal"],
+            },
+            {
+                "id": "uuid-2",
+                "text": "User works at Google",
+                "score": 0.8,
+                "type": "fact",
+                "categories": ["work"],
+            },
+        ]
+        messages, _, _ = build_extraction_prompt(
+            "test content",
+            existing_memories=existing,
+        )
+        system_prompt = messages[0]["content"]
+        assert '"type": "preference"' in system_prompt
+        assert '"type": "fact"' in system_prompt
+        assert '"categories": ["personal"]' in system_prompt
+        assert '"categories": ["work"]' in system_prompt
+
+    def test_empty_type_and_categories_omitted(self):
+        """Existing memories without type/categories should omit them."""
+        import json
+
+        from mnemory.prompts import build_extraction_prompt
+
+        existing = [
+            {
+                "id": "uuid-1",
+                "text": "Some memory",
+                "score": 0.9,
+                "type": "",
+                "categories": [],
+            },
+        ]
+        messages, _, _ = build_extraction_prompt(
+            "test content",
+            existing_memories=existing,
+        )
+        system_prompt = messages[0]["content"]
+        # Extract the JSON block from the existing memories section
+        json_start = system_prompt.index("```\n[") + 4
+        json_end = system_prompt.index("\n```", json_start)
+        existing_json = json.loads(system_prompt[json_start:json_end])
+        # Empty type and categories should not appear in the memory entries
+        assert "type" not in existing_json[0]
+        assert "categories" not in existing_json[0]
+
+    def test_max_memory_length_in_prompt(self):
+        """max_memory_length should appear in the prompt."""
+        from mnemory.prompts import build_extraction_prompt
+
+        messages, _, _ = build_extraction_prompt(
+            "test content",
+            max_memory_length=500,
+        )
+        system_prompt = messages[0]["content"]
+        assert "500" in system_prompt
 
 
 # ── _point_to_memory integration ──────────────────────────────────────

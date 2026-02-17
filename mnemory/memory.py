@@ -16,7 +16,6 @@ from typing import Any
 
 from mnemory.cache import TTLCache
 from mnemory.categories import (
-    IMPORTANCE_WEIGHTS,
     PREDEFINED_CATEGORIES,
     count_categories,
     matches_category_filter,
@@ -29,6 +28,7 @@ from mnemory.llm import LLMClient, parse_json_response
 from mnemory.prompts import (
     build_classification_prompt,
     build_extraction_prompt,
+    build_shorten_prompt,
     parse_extraction_response,
 )
 from mnemory.storage.artifact import ArtifactStore
@@ -191,12 +191,16 @@ class MemoryService:
         content_vector = self.vector.embedding.embed(content)
 
         # 2. Search for similar existing memories (excludes expired/decayed)
-        existing = self.vector.search_similar(
+        existing_raw = self.vector.search_similar(
             content_vector,
             user_id=user_id,
             agent_id=agent_id,
             limit=10,
         )
+
+        # Filter out low-similarity results to avoid false dedup matches
+        dedup_threshold = self._config.memory.dedup_similarity_threshold
+        existing = [m for m in existing_raw if m.get("score", 0) >= dedup_threshold]
 
         # 3. Build the unified prompt
         available_cats = self._get_available_categories(user_id)
@@ -212,12 +216,14 @@ class MemoryService:
         if pinned is not None:
             explicit_fields["pinned"] = pinned
 
+        max_len = self._config.memory.max_memory_length
         messages, json_schema, id_mapping = build_extraction_prompt(
             content,
             role=role,
             existing_memories=existing,
             available_categories=available_cats,
             explicit_fields=explicit_fields if explicit_fields else None,
+            max_memory_length=max_len,
         )
 
         # 4. Single LLM call
@@ -236,6 +242,11 @@ class MemoryService:
 
         if not actions:
             return {"results": []}
+
+        # 5b. Validate extracted fact lengths; retry oversized ones
+        actions = self._validate_fact_lengths(actions, max_len)
+        if isinstance(actions, dict) and actions.get("error"):
+            return actions
 
         # Batch embed all new/updated texts
         texts_to_embed = [
@@ -267,6 +278,101 @@ class MemoryService:
                 )
 
         return {"results": results}
+
+    def _validate_fact_lengths(
+        self,
+        actions: list[dict[str, Any]],
+        max_len: int,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """Validate extracted fact lengths, retrying oversized ones via LLM.
+
+        For each action whose text exceeds max_len, makes a focused LLM call
+        to shorten or split the fact. If the retry still produces oversized
+        output, returns an error dict.
+
+        Returns:
+            The (possibly modified) actions list, or an error dict on failure.
+        """
+        oversized = [
+            (i, a)
+            for i, a in enumerate(actions)
+            if a["action"] in ("ADD", "UPDATE") and len(a["text"]) > max_len
+        ]
+
+        if not oversized:
+            return actions
+
+        for idx, action in oversized:
+            logger.info(
+                "Extracted fact too long (%d chars, max %d), retrying: %.80s...",
+                len(action["text"]),
+                max_len,
+                action["text"],
+            )
+            try:
+                messages, schema = build_shorten_prompt(
+                    action, max_memory_length=max_len
+                )
+                response_text = self._llm.generate(
+                    messages, json_schema=schema, max_tokens=2000
+                )
+                shortened = parse_extraction_response(response_text, {})
+            except Exception:
+                logger.exception("LLM shorten/split call failed")
+                return {
+                    "error": True,
+                    "message": (
+                        f"Extracted fact exceeds max length "
+                        f"({len(action['text'])} chars, max {max_len}) "
+                        f"and retry failed. Please reformulate the memory "
+                        f"content to be more concise."
+                    ),
+                }
+
+            if not shortened:
+                return {
+                    "error": True,
+                    "message": (
+                        f"Extracted fact exceeds max length "
+                        f"({len(action['text'])} chars, max {max_len}) "
+                        f"and retry produced no results. Please reformulate "
+                        f"the memory content to be more concise."
+                    ),
+                }
+
+            # Check retry results are within limits
+            still_oversized = [
+                s
+                for s in shortened
+                if s["action"] in ("ADD", "UPDATE") and len(s["text"]) > max_len
+            ]
+            if still_oversized:
+                return {
+                    "error": True,
+                    "message": (
+                        f"Extracted fact exceeds max length "
+                        f"({len(still_oversized[0]['text'])} chars, max "
+                        f"{max_len}) even after retry. Please reformulate "
+                        f"the memory content to be more concise."
+                    ),
+                }
+
+            # Replace the oversized action with the shortened/split results.
+            # For retry results: preserve the original action type and
+            # target_id for UPDATE/DELETE, force ADD for split results.
+            for s in shortened:
+                if s["action"] == "ADD" and action["action"] == "UPDATE":
+                    # First split result inherits the UPDATE target
+                    s["action"] = action["action"]
+                    s["target_id"] = action["target_id"]
+                    s["old_memory"] = action.get("old_memory")
+                    # Only the first one gets UPDATE, rest stay ADD
+                    break
+
+            # Replace original action with shortened results
+            actions[idx : idx + 1] = shortened
+
+        return actions
 
     def _execute_action(
         self,
@@ -540,6 +646,10 @@ class MemoryService:
 
         memories = result.get("results", [])
 
+        # Filter out low-relevance results
+        threshold = self._config.memory.search_score_threshold
+        memories = [m for m in memories if m.get("score", 0) >= threshold]
+
         # Post-filtering for decayed memories (when include_decayed=True,
         # the search doesn't filter them, so we need to mark them)
         if include_decayed:
@@ -619,8 +729,14 @@ class MemoryService:
                 seen_ids.add(mid)
                 memories.append(mem)
 
-        # Rerank merged results by importance
-        memories = self._rerank_by_importance(memories)
+        # Sort merged results by score (Qdrant FormulaQuery already applied
+        # importance reranking, so the score already includes importance weight)
+        memories.sort(key=lambda m: m.get("score", 0), reverse=True)
+
+        # Filter out low-relevance results
+        threshold = self._config.memory.search_score_threshold
+        memories = [m for m in memories if m.get("score", 0) >= threshold]
+
         memories = memories[:limit]
 
         # Lazily mark decayed_at on expired memories found via include_decayed
@@ -1483,22 +1599,3 @@ class MemoryService:
                 self.vector.batch_update_metadata(updates)
             except Exception:
                 logger.warning("Failed to track memory access")
-
-    def _rerank_by_importance(self, memories: list[dict]) -> list[dict]:
-        """Rerank search results by combined similarity + importance score.
-
-        Combined score = similarity * 0.7 + importance_weight * 0.3
-        """
-        for mem in memories:
-            sim_score = mem.get("score", 0.0)
-            importance = (mem.get("metadata") or {}).get("importance", "normal")
-            imp_weight = IMPORTANCE_WEIGHTS.get(importance, 0.4)
-            mem["_combined_score"] = sim_score * 0.7 + imp_weight * 0.3
-
-        memories.sort(key=lambda m: m.get("_combined_score", 0), reverse=True)
-
-        # Clean up internal field
-        for mem in memories:
-            mem.pop("_combined_score", None)
-
-        return memories

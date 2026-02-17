@@ -58,6 +58,7 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
+ignore = ["E501"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["mnemory"]

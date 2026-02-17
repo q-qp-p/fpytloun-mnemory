@@ -94,6 +94,51 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
 }
 
 
+# ── Retry prompt for oversized facts ─────────────────────────────────
+
+_SHORTEN_SYSTEM_PROMPT = """\
+You are a memory manager. A previously extracted memory fact is too long.
+Rewrite it more concisely or split it into multiple shorter facts.
+Preserve ALL important information — do not lose detail.
+
+Each fact must be under {max_length} characters.
+Keep the same JSON schema as the original.
+
+Return a JSON object with a "memories" array using the same format:
+text, action, target_id, old_memory, memory_type, categories, importance, pinned.
+
+Return ONLY the JSON object. No explanation, no markdown."""
+
+
+def build_shorten_prompt(
+    oversized_action: dict[str, Any],
+    *,
+    max_memory_length: int = 1000,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Build a prompt to shorten or split an oversized extracted fact.
+
+    Args:
+        oversized_action: The action dict with text exceeding max length.
+        max_memory_length: Maximum character length for each fact.
+
+    Returns:
+        Tuple of (messages, json_schema) for the LLM call.
+    """
+    system_prompt = _SHORTEN_SYSTEM_PROMPT.format(max_length=max_memory_length)
+
+    user_content = json.dumps(
+        {"memories": [oversized_action]},
+        indent=2,
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    return messages, EXTRACTION_SCHEMA
+
+
 # ── Prompt templates ─────────────────────────────────────────────────
 
 _USER_SYSTEM_PROMPT = """\
@@ -106,8 +151,15 @@ You are a memory manager for an AI assistant. Your job is to:
 
 - Extract facts ONLY from the user's messages. IGNORE assistant/system messages.
 - Each fact should be a single, atomic piece of information.
-- Write facts in third person (e.g., "Prefers dark mode", "Works at Google").
-- Detect the language of the input and record facts in the same language.
+- Write facts in third person, always including the subject
+  explicitly (e.g., "User prefers dark mode",
+  "User's partner likes hiking").
+- Preserve all important information — do not over-compress
+  at the cost of losing detail.
+- Each fact must be under {max_length} characters. If content
+  is too detailed for a single fact, split into multiple facts.
+- Detect the language of the input and record facts in the
+  same language.
 - If no relevant facts can be extracted, return an empty list.
 - Today's date is {today}.
 
@@ -118,13 +170,24 @@ Output: {{"memories": []}}
 
 Input: "My name is John and I'm a software engineer at Google"
 Output: {{"memories": [
-  {{"text": "Name is John", "action": "ADD", "target_id": null, "old_memory": null, "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": true}},
-  {{"text": "Software engineer at Google", "action": "ADD", "target_id": null, "old_memory": null, "memory_type": "fact", "categories": ["work"], "importance": "normal", "pinned": true}}
+  {{"text": "User's name is John", "action": "ADD",
+    "target_id": null, "old_memory": null,
+    "memory_type": "fact", "categories": ["personal"],
+    "importance": "normal", "pinned": true}},
+  {{"text": "User is a software engineer at Google",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "fact", "categories": ["work"],
+    "importance": "normal", "pinned": true}}
 ]}}
 
 Input: "I switched from VS Code to Neovim last week"
 Output: {{"memories": [
-  {{"text": "Uses Neovim as primary editor", "action": "UPDATE", "target_id": "0", "old_memory": "Uses VS Code as primary editor", "memory_type": "preference", "categories": ["technical"], "importance": "normal", "pinned": false}}
+  {{"text": "User uses Neovim as primary editor",
+    "action": "UPDATE", "target_id": "0",
+    "old_memory": "User uses VS Code as primary editor",
+    "memory_type": "preference",
+    "categories": ["technical"],
+    "importance": "normal", "pinned": false}}
 ]}}
 
 ## Classification Rules
@@ -162,15 +225,27 @@ Compare each extracted fact against the existing memories below.
 - **DELETE**: Contradicts an existing memory that should be removed. Set target_id to the existing memory's ID. The text field should contain the memory being deleted.
 - **NONE**: Already captured in existing memories. Skip it (do not include in output).
 
-When updating, keep the same meaning but incorporate new information.
-When facts overlap, merge them into a single updated memory.
+### Subject preservation
+
+- Only UPDATE when the new fact is about the SAME subject
+  as the existing memory.
+- "User's partner likes dogs" must NOT update
+  "User does not like dogs" — different subjects.
+- "User moved to Berlin" CAN update "User lives in Prague"
+  — same subject (user's location).
+- When in doubt, prefer ADD over UPDATE.
+
+When updating, keep the same meaning but incorporate new
+information. When facts overlap, merge them into a single
+updated memory.
 
 {existing_section}
 
 ## Output Format
 
-Return a JSON object with a "memories" array. Each entry must have ALL fields:
-text, action, target_id, old_memory, memory_type, categories, importance, pinned.
+Return a JSON object with a "memories" array. Each entry
+must have ALL fields: text, action, target_id, old_memory,
+memory_type, categories, importance, pinned.
 
 Return ONLY the JSON object. No explanation, no markdown."""
 
@@ -185,21 +260,37 @@ You are a memory manager for an AI assistant. Your job is to:
 - Extract facts ONLY from the assistant's messages. IGNORE user/system messages.
 - Focus on the assistant's: personality traits, preferences, capabilities,
   knowledge areas, communication style, and self-descriptions.
-- Write facts in third person (e.g., "Prefers concise responses", "Expert in Python").
-- Detect the language of the input and record facts in the same language.
+- Write facts in third person, always including the subject
+  explicitly (e.g., "Assistant prefers concise responses",
+  "Assistant is expert in Python").
+- Preserve all important information — do not over-compress
+  at the cost of losing detail.
+- Each fact must be under {max_length} characters. If content
+  is too detailed for a single fact, split into multiple facts.
+- Detect the language of the input and record facts in the
+  same language.
 - If no relevant facts can be extracted, return an empty list.
 - Today's date is {today}.
 
 ### Examples
 
-Input: "assistant: I prefer to give concise, direct answers without unnecessary filler."
+Input: "assistant: I prefer to give concise, direct answers."
 Output: {{"memories": [
-  {{"text": "Prefers concise, direct answers without filler", "action": "ADD", "target_id": null, "old_memory": null, "memory_type": "preference", "categories": ["preferences"], "importance": "normal", "pinned": true}}
+  {{"text": "Assistant prefers concise, direct answers",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "preference",
+    "categories": ["preferences"],
+    "importance": "normal", "pinned": true}}
 ]}}
 
-Input: "assistant: I've been researching Kubernetes networking and concluded that Cilium is the best CNI for our use case."
+Input: "assistant: I researched Kubernetes networking and \
+concluded Cilium is the best CNI for our use case."
 Output: {{"memories": [
-  {{"text": "Researched Kubernetes networking, concluded Cilium is the best CNI", "action": "ADD", "target_id": null, "old_memory": null, "memory_type": "episodic", "categories": ["technical"], "importance": "high", "pinned": false}}
+  {{"text": "Assistant researched Kubernetes networking, \
+concluded Cilium is the best CNI",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "episodic", "categories": ["technical"],
+    "importance": "high", "pinned": false}}
 ]}}
 
 ## Classification Rules
@@ -236,15 +327,27 @@ Compare each extracted fact against the existing memories below.
 - **DELETE**: Contradicts an existing memory that should be removed. Set target_id to the existing memory's ID. The text field should contain the memory being deleted.
 - **NONE**: Already captured in existing memories. Skip it (do not include in output).
 
-When updating, keep the same meaning but incorporate new information.
-When facts overlap, merge them into a single updated memory.
+### Subject preservation
+
+- Only UPDATE when the new fact is about the SAME subject
+  as the existing memory.
+- "Assistant learned to use Helm" must NOT update
+  "Assistant is expert in Kubernetes" — different subjects.
+- "Assistant now prefers brief responses" CAN update
+  "Assistant prefers verbose responses" — same subject.
+- When in doubt, prefer ADD over UPDATE.
+
+When updating, keep the same meaning but incorporate new
+information. When facts overlap, merge them into a single
+updated memory.
 
 {existing_section}
 
 ## Output Format
 
-Return a JSON object with a "memories" array. Each entry must have ALL fields:
-text, action, target_id, old_memory, memory_type, categories, importance, pinned.
+Return a JSON object with a "memories" array. Each entry
+must have ALL fields: text, action, target_id, old_memory,
+memory_type, categories, importance, pinned.
 
 Return ONLY the JSON object. No explanation, no markdown."""
 
@@ -259,6 +362,7 @@ def build_extraction_prompt(
     existing_memories: list[dict[str, Any]] | None = None,
     available_categories: list[str] | None = None,
     explicit_fields: dict[str, Any] | None = None,
+    max_memory_length: int = 1000,
 ) -> tuple[list[dict[str, str]], dict[str, Any], dict[str, str]]:
     """Build the unified extraction+classification+dedup prompt.
 
@@ -266,12 +370,15 @@ def build_extraction_prompt(
         content: The raw content to process.
         role: "user" or "assistant" — determines which extraction prompt to use.
         existing_memories: Similar existing memories from vector search.
-            Each dict should have "id" and "text" keys.
+            Each dict should have "id" and "text" keys, and optionally
+            "type" and "categories" for richer LLM context.
         available_categories: List of valid category names including
             dynamic project:* subcategories.
         explicit_fields: Fields explicitly provided by the caller that
             should NOT be classified by the LLM. The prompt will instruct
             the LLM to use these exact values.
+        max_memory_length: Maximum character length for each extracted fact.
+            Communicated to the LLM in the prompt.
 
     Returns:
         Tuple of (messages, json_schema, id_mapping) for the LLM call.
@@ -297,7 +404,12 @@ def build_extraction_prompt(
         for idx, mem in enumerate(existing_memories):
             str_idx = str(idx)
             id_mapping[str_idx] = mem["id"]
-            mapped.append({"id": str_idx, "text": mem["text"]})
+            entry: dict[str, Any] = {"id": str_idx, "text": mem["text"]}
+            if mem.get("type"):
+                entry["type"] = mem["type"]
+            if mem.get("categories"):
+                entry["categories"] = mem["categories"]
+            mapped.append(entry)
 
         existing_json = json.dumps(mapped, indent=2)
         existing_section = (
@@ -328,6 +440,7 @@ def build_extraction_prompt(
 
     system_prompt = template.format(
         today=today,
+        max_length=max_memory_length,
         memory_types=memory_types,
         importance_levels=importance_levels,
         categories_section=categories_section,

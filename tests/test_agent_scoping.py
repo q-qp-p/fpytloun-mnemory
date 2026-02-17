@@ -177,6 +177,7 @@ class TestSearchMemoriesDualScope:
         service._config = MagicMock()
         service._config.memory.track_memory_access = False
         service._config.memory.classify_cache_ttl = 300
+        service._config.memory.search_score_threshold = 0.25
         from mnemory.cache import TTLCache
 
         service._category_cache = TTLCache(ttl_seconds=300)
@@ -538,8 +539,8 @@ class TestNoneMetadataSafety:
         assert result["results"][0]["memory"] == "test fact"
         assert result["results"][1]["memory"] == "another fact"
 
-    def test_rerank_with_none_metadata(self):
-        """_rerank_by_importance should handle None metadata."""
+    def test_format_with_none_metadata_in_search(self):
+        """Search results with None metadata should not crash score filtering."""
         from unittest.mock import patch
 
         mock_config = MagicMock()
@@ -552,6 +553,8 @@ class TestNoneMetadataSafety:
         mock_config.memory.classify_cache_ttl = 300
         mock_config.memory.core_memories_cache_ttl = 300
         mock_config.memory.auto_classify = False
+        mock_config.memory.track_memory_access = False
+        mock_config.memory.search_score_threshold = 0.25
 
         with (
             patch("mnemory.memory.VectorStore"),
@@ -560,13 +563,16 @@ class TestNoneMetadataSafety:
         ):
             service = MemoryService(mock_config)
 
-        memories = [
-            {"id": "1", "memory": "test", "score": 0.9, "metadata": None},
-            {"id": "2", "memory": "test2", "score": 0.8},
-        ]
-        # Should not crash
-        result = service._rerank_by_importance(memories)
-        assert len(result) == 2
+        service.vector = MagicMock()
+        service.vector.search.return_value = {
+            "results": [
+                {"id": "1", "memory": "test", "score": 0.9, "metadata": None},
+                {"id": "2", "memory": "test2", "score": 0.8},
+            ]
+        }
+        # Should not crash — score filtering handles missing metadata
+        results = service.search_memories(query="test", user_id="filip")
+        assert len(results) == 2
 
 
 # ── add_memories server-level validation ───────────────────────────────
