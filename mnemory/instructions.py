@@ -51,8 +51,9 @@ ALWAYS call get_core_memories to load essential context about the user
 and yourself. Use what you learn to personalize from the very first
 response. Do this before generating any substantive reply.
 
-### Before answering
-Before answering any non-trivial question, call search_memories with a
+### Before responding
+Before any substantive response — answering questions, writing code,
+making decisions, continuing tasks, call search_memories with a
 relevant query. When in doubt, search — it is better to search and find
 nothing than to miss relevant context.
 
@@ -106,6 +107,22 @@ Pick the right memory type and the system handles TTL defaults. Override
 with ttl_days only when the default does not fit. Frequently accessed
 memories are automatically reinforced — their TTL resets when searched,
 so important memories stay alive naturally. Pinned memories never expire.
+
+### Enriching context
+When the user references a topic, project, or situation that you have
+limited context on — search before responding. Use get_recent_memories
+with category filters for broad context, or multiple targeted
+search_memories calls for specific aspects. Use find_memories for
+complex multi-faceted questions.
+
+When working on a specific project, use project:<name> categories
+(e.g., project:myapp) to scope your searches and stores. This keeps
+project context organized and retrievable. Call list_categories first
+to discover existing projects and categories if you have not done so
+already in the conversation.
+
+Do not ask the user to provide context that may already be in memory.
+Search first, ask only if memory has no relevant results.
 """
 
 _PERSONALITY_BEHAVIOR = (
