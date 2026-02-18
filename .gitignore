@@ -15,3 +15,7 @@ env/
 .mypy_cache/
 *.db
 /data/
+
+# Benchmark artifacts
+benchmarks/locomo/data/
+benchmarks/locomo/results/
