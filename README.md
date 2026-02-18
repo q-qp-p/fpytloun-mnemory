@@ -572,4 +572,4 @@ ruff check mnemory/
 
 ## License
 
-MIT
+Apache 2.0

@@ -7,7 +7,7 @@
 - **Language**: Python 3.11+
 - **Framework**: MCP SDK (`mcp.server.fastmcp.FastMCP`) with Starlette for HTTP
 - **Core dependencies**: [qdrant-client](https://github.com/qdrant/qdrant-client) for vector storage, [openai](https://github.com/openai/openai-python) for LLM and embeddings
-- **License**: MIT
+- **License**: Apache 2.0
 - **Repository**: https://github.com/fpytloun/mnemory
 
 ## Architecture
