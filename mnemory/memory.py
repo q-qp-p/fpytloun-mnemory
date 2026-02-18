@@ -468,6 +468,66 @@ class MemoryService:
 
         return actions
 
+    def _validate_metadata(
+        self,
+        text: str,
+        mem_type: str,
+        cats: list[str],
+        imp: str,
+        user_id: str,
+    ) -> tuple[str, list[str], str]:
+        """Validate metadata fields with LLM retry on failure.
+
+        Tries validation first. On ValueError (e.g., LLM hallucinated an
+        invalid category like 'professional'), re-classifies the failing
+        fields via a focused LLM call that includes the error message.
+        Falls back to safe defaults if retry also fails.
+
+        Returns:
+            Tuple of (mem_type, cats, imp) — always valid values.
+        """
+        try:
+            mem_type = validate_memory_type(mem_type)
+            if cats:
+                cats = validate_categories(cats)
+            imp = validate_importance(imp)
+            return mem_type, cats, imp
+        except ValueError as first_error:
+            validation_error = first_error
+            logger.warning(
+                "Metadata validation failed: %s — retrying via LLM", first_error
+            )
+
+        # Retry: re-classify all metadata fields with the error context
+        try:
+            available_cats = self._get_available_categories(user_id)
+            msgs, schema = build_classification_prompt(
+                f"{text}\n\nPrevious classification error: {validation_error}",
+                missing_fields={"memory_type", "categories", "importance"},
+                available_categories=available_cats,
+            )
+            if msgs:
+                response_text = self._llm.generate(msgs, json_schema=schema)
+                classified = parse_json_response(response_text)
+                mem_type = validate_memory_type(classified.get("memory_type", "fact"))
+                cats = validate_categories(classified.get("categories", []))
+                imp = validate_importance(classified.get("importance", "normal"))
+                logger.info(
+                    "Metadata re-classification succeeded: type=%s, "
+                    "categories=%s, importance=%s",
+                    mem_type,
+                    cats,
+                    imp,
+                )
+                return mem_type, cats, imp
+        except Exception:
+            logger.warning(
+                "Metadata re-classification also failed, using safe defaults"
+            )
+
+        # Final fallback — safe defaults, never lose the memory
+        return "fact", [], "normal"
+
     def _execute_action(
         self,
         action: dict[str, Any],
@@ -489,11 +549,10 @@ class MemoryService:
         imp = explicit_fields.get("importance", action["importance"])
         pin = explicit_fields.get("pinned", action["pinned"])
 
-        # Validate
-        mem_type = validate_memory_type(mem_type)
-        if cats:
-            cats = validate_categories(cats)
-        imp = validate_importance(imp)
+        # Validate (with LLM retry on failure)
+        mem_type, cats, imp = self._validate_metadata(
+            text, mem_type, cats, imp, user_id
+        )
 
         if act == "ADD":
             vector = vector_map.get(text)
@@ -657,11 +716,14 @@ class MemoryService:
             if pinned is None:
                 pinned = False
 
-        # Validate
-        memory_type = validate_memory_type(memory_type)  # type: ignore[arg-type]
-        importance = validate_importance(importance)  # type: ignore[arg-type]
-        if categories:
-            categories = validate_categories(categories)
+        # Validate (with LLM retry on failure)
+        memory_type, categories, importance = self._validate_metadata(
+            content,
+            memory_type,  # type: ignore[arg-type]
+            categories or [],
+            importance,  # type: ignore[arg-type]
+            user_id,
+        )
 
         metadata = {
             "memory_type": memory_type,
