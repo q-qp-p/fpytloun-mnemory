@@ -11,7 +11,7 @@ import logging
 import re
 from typing import Any
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 from mnemory.config import LLMConfig
 
@@ -34,6 +34,9 @@ class LLMClient:
         self._model = config.model
         self._temperature = config.temperature
         self._supports_structured: bool | None = None
+        # Tracks unsupported parameters for this model/provider.
+        # Maps param name -> fix action. Populated on first BadRequestError.
+        self._param_fixes: dict[str, str] = {}
 
     def generate(
         self,
@@ -96,19 +99,117 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
     ) -> str:
-        """Execute a single chat completion call."""
+        """Execute a single chat completion call.
+
+        Handles parameter incompatibilities across model versions and
+        providers. When a model rejects a parameter (e.g., max_tokens,
+        temperature), the fix is cached so subsequent calls skip the
+        unsupported parameter without any retry overhead.
+        """
+        params = self._build_params(messages, response_format, temperature, max_tokens)
+
+        try:
+            response = self._client.chat.completions.create(**params)
+        except BadRequestError as e:
+            if self._try_fix_params(e, params, max_tokens):
+                response = self._client.chat.completions.create(**params)
+            else:
+                raise
+
+        content = response.choices[0].message.content or ""
+        return _clean_response(content)
+
+    def _build_params(
+        self,
+        messages: list[dict[str, str]],
+        response_format: dict | None,
+        temperature: float,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        """Build API call parameters, applying any cached fixes."""
         params: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
         }
+
+        # temperature: omit if model doesn't support custom values
+        if "temperature" not in self._param_fixes:
+            params["temperature"] = temperature
+
+        # max_tokens: swap to max_completion_tokens if needed
+        if "max_tokens" in self._param_fixes:
+            params["max_completion_tokens"] = max_tokens
+        else:
+            params["max_tokens"] = max_tokens
+
         if response_format:
             params["response_format"] = response_format
 
-        response = self._client.chat.completions.create(**params)
-        content = response.choices[0].message.content or ""
-        return _clean_response(content)
+        return params
+
+    def _try_fix_params(
+        self,
+        error: BadRequestError,
+        params: dict[str, Any],
+        max_tokens: int,
+    ) -> bool:
+        """Try to fix params based on a BadRequestError.
+
+        Parses the error to identify the unsupported parameter, applies
+        the appropriate fix, caches it for future calls, and mutates
+        params in-place for the retry.
+
+        Returns True if a fix was applied and the call should be retried.
+        """
+        error_body = getattr(error, "body", None)
+        if not isinstance(error_body, dict):
+            return False
+
+        param = error_body.get("param", "")
+        code = error_body.get("code", "")
+
+        if not param or code not in (
+            "unsupported_parameter",
+            "unsupported_value",
+        ):
+            return False
+
+        # Already tried to fix this param — don't loop
+        if param in self._param_fixes:
+            return False
+
+        if param == "max_tokens":
+            logger.info(
+                "Model %s requires max_completion_tokens instead of "
+                "max_tokens — adapting",
+                self._model,
+            )
+            self._param_fixes["max_tokens"] = "use_max_completion_tokens"
+            params.pop("max_tokens", None)
+            params["max_completion_tokens"] = max_tokens
+            return True
+
+        if param == "temperature":
+            logger.info(
+                "Model %s does not support custom temperature — omitting",
+                self._model,
+            )
+            self._param_fixes["temperature"] = "omit"
+            params.pop("temperature", None)
+            return True
+
+        # Generic: try omitting the unsupported parameter
+        if param in params:
+            logger.info(
+                "Model %s does not support parameter '%s' — omitting",
+                self._model,
+                param,
+            )
+            self._param_fixes[param] = "omit"
+            params.pop(param, None)
+            return True
+
+        return False
 
 
 def _clean_response(text: str) -> str:
