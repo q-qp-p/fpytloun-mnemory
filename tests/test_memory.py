@@ -2117,6 +2117,7 @@ class TestVectorGetRecentMemories:
         store._client = client
         store._config = config
         store._embedding = embedding
+        store._write_lock = None
 
         return store
 
@@ -2264,6 +2265,7 @@ class TestVectorSearchTTLFilter:
         store._client = client
         store._config = config
         store._embedding = embedding
+        store._write_lock = None
 
         return store
 

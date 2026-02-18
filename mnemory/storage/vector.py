@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -48,6 +50,23 @@ class VectorStore:
         self._embedding = EmbeddingClient(config.embed)
         self._client = self._create_client(config)
         self._ensure_collection()
+
+        # Local embedded Qdrant uses SQLite which isn't thread-safe for
+        # concurrent writes. A lock serializes write operations in local
+        # mode. Remote Qdrant handles concurrency server-side, so no
+        # lock is needed.
+        self._write_lock: threading.Lock | None = (
+            threading.Lock() if not config.vector.is_remote else None
+        )
+
+    @contextmanager
+    def _write_guard(self):
+        """Acquire write lock for local embedded mode (no-op for remote)."""
+        if self._write_lock is not None:
+            with self._write_lock:
+                yield
+        else:
+            yield
 
     @staticmethod
     def _create_client(config: Config) -> QdrantClient:
@@ -161,10 +180,11 @@ class VectorStore:
         # Merge custom metadata (memory_type, categories, importance, etc.)
         payload.update(metadata)
 
-        self._client.upsert(
-            collection_name=self.collection_name,
-            points=[PointStruct(id=memory_id, vector=vector, payload=payload)],
-        )
+        with self._write_guard():
+            self._client.upsert(
+                collection_name=self.collection_name,
+                points=[PointStruct(id=memory_id, vector=vector, payload=payload)],
+            )
         return memory_id
 
     def insert_batch(
@@ -204,10 +224,11 @@ class VectorStore:
                 PointStruct(id=memory_id, vector=p["vector"], payload=payload)
             )
 
-        self._client.upsert(
-            collection_name=self.collection_name,
-            points=structs,
-        )
+        with self._write_guard():
+            self._client.upsert(
+                collection_name=self.collection_name,
+                points=structs,
+            )
         return ids
 
     def search(
@@ -534,21 +555,23 @@ class VectorStore:
         if vector is None:
             vector = self._embedding.embed(text)
 
-        self._client.upsert(
-            collection_name=self.collection_name,
-            points=[PointStruct(id=memory_id, vector=vector, payload=payload)],
-        )
+        with self._write_guard():
+            self._client.upsert(
+                collection_name=self.collection_name,
+                points=[PointStruct(id=memory_id, vector=vector, payload=payload)],
+            )
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:
         """Update metadata fields on a memory without changing content.
 
         Uses Qdrant's set_payload for efficient partial updates.
         """
-        self._client.set_payload(
-            collection_name=self.collection_name,
-            payload=metadata,
-            points=[memory_id],
-        )
+        with self._write_guard():
+            self._client.set_payload(
+                collection_name=self.collection_name,
+                payload=metadata,
+                points=[memory_id],
+            )
 
     def batch_update_metadata(self, updates: list[tuple[str, dict]]) -> None:
         """Batch update metadata on multiple memories.
@@ -556,22 +579,24 @@ class VectorStore:
         Args:
             updates: List of (memory_id, metadata_dict) tuples.
         """
-        for memory_id, metadata in updates:
-            try:
-                self._client.set_payload(
-                    collection_name=self.collection_name,
-                    payload=metadata,
-                    points=[memory_id],
-                )
-            except Exception:
-                logger.warning("Failed to update metadata for memory %s", memory_id)
+        with self._write_guard():
+            for memory_id, metadata in updates:
+                try:
+                    self._client.set_payload(
+                        collection_name=self.collection_name,
+                        payload=metadata,
+                        points=[memory_id],
+                    )
+                except Exception:
+                    logger.warning("Failed to update metadata for memory %s", memory_id)
 
     def delete(self, memory_id: str) -> None:
         """Delete a single memory by ID."""
-        self._client.delete(
-            collection_name=self.collection_name,
-            points_selector=PointIdsList(points=[memory_id]),
-        )
+        with self._write_guard():
+            self._client.delete(
+                collection_name=self.collection_name,
+                points_selector=PointIdsList(points=[memory_id]),
+            )
 
     def delete_all(self, *, user_id: str, agent_id: str | None = None) -> None:
         """Delete all memories for a user/agent scope.
@@ -586,10 +611,11 @@ class VectorStore:
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
             )
 
-        self._client.delete(
-            collection_name=self.collection_name,
-            points_selector=Filter(must=must_conditions),
-        )
+        with self._write_guard():
+            self._client.delete(
+                collection_name=self.collection_name,
+                points_selector=Filter(must=must_conditions),
+            )
 
     # ── Specialized queries ──────────────────────────────────────────
 
