@@ -33,6 +33,7 @@ class LLMClient:
         )
         self._model = config.model
         self._temperature = config.temperature
+        self._reasoning_effort = config.reasoning_effort
         self._supports_structured: bool | None = None
         # Tracks unsupported parameters for this model/provider.
         # Maps param name -> fix action. Populated on first BadRequestError.
@@ -153,6 +154,10 @@ class LLMClient:
 
         if response_format:
             params["response_format"] = response_format
+
+        # reasoning_effort: optional, omit if not set or if model rejected it
+        if self._reasoning_effort and "reasoning_effort" not in self._param_fixes:
+            params["reasoning_effort"] = self._reasoning_effort
 
         return params
 

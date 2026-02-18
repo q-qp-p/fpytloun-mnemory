@@ -4,10 +4,11 @@ For each conversation, creates a unique user_id and ingests all turns
 from all sessions using MemoryService.
 
 Two modes:
-- infer=False (default): Batch-embeds all turns and inserts directly
-  into the vector store. Fast (~seconds per conversation).
-- infer=True: Calls add_memory per turn with LLM extraction + dedup.
-  Slow but tests the full mnemory pipeline.
+- infer=True (default): Calls add_memory per turn with LLM extraction,
+  classification, and deduplication. Tests the full mnemory pipeline.
+- infer=False (--no-infer): Batch-embeds all turns and inserts directly
+  into the vector store. Fast (~seconds per conversation) but no
+  extraction or dedup.
 """
 
 from __future__ import annotations
@@ -109,6 +110,7 @@ def make_user_id(conversation_index: int) -> str:
 def _ingest_batch(
     conversation: Conversation,
     memory_service: Any,
+    config: BenchmarkConfig,
 ) -> IngestResult:
     """Batch-ingest all turns for a conversation (no-infer mode).
 
@@ -123,12 +125,11 @@ def _ingest_batch(
     user_id = make_user_id(conversation.index)
     start = time.time()
 
-    # Collect all turns
-    texts = [
-        turn.format_for_memory()
-        for session in conversation.sessions
-        for turn in session.turns
-    ]
+    # Collect all turns (respecting max_turns limit)
+    all_turns = [turn for session in conversation.sessions for turn in session.turns]
+    if config.max_turns > 0:
+        all_turns = all_turns[: config.max_turns]
+    texts = [turn.format_for_memory() for turn in all_turns]
     total = len(texts)
 
     logger.info(
@@ -243,17 +244,24 @@ def _ingest_sequential(
     start = time.time()
 
     total_turns = conversation.total_turns
+    effective_total = total_turns
+    if config.max_turns > 0:
+        effective_total = min(total_turns, config.max_turns)
     logger.info(
-        "Ingesting conversation %d (%s & %s): %d sessions, %d turns (infer=True)",
+        "Ingesting conversation %d (%s & %s): %d sessions, %d/%d turns (infer=True)",
         conversation.index,
         conversation.speaker_a,
         conversation.speaker_b,
         len(conversation.sessions),
+        effective_total,
         total_turns,
     )
 
+    turn_count = 0
     for session in conversation.sessions:
         for turn in session.turns:
+            if config.max_turns > 0 and turn_count >= config.max_turns:
+                break
             content = turn.format_for_memory()
             try:
                 result = memory_service.add_memory(
@@ -275,7 +283,7 @@ def _ingest_sequential(
                         "  [conv %d] %d/%d turns processed, %d memories",
                         conversation.index,
                         turns_processed,
-                        total_turns,
+                        effective_total,
                         memories_created,
                     )
 
@@ -287,6 +295,9 @@ def _ingest_sequential(
                 )
                 errors += 1
                 turns_processed += 1
+            turn_count += 1
+        if config.max_turns > 0 and turn_count >= config.max_turns:
+            break
 
     elapsed = time.time() - start
     logger.info(
@@ -316,9 +327,10 @@ def run_ingest(
 ) -> IngestState:
     """Run the ingest stage for all selected conversations.
 
-    When infer=False (default): Uses batch embedding + batch insert with
-    parallel workers across conversations.
-    When infer=True: Sequential per-turn ingestion with full LLM pipeline.
+    When infer=True (default): Sequential per-turn ingestion with full
+    LLM extraction, classification, and deduplication pipeline.
+    When infer=False (--no-infer): Uses batch embedding + batch insert
+    with parallel workers across conversations.
     """
     state = IngestState()
     start = time.time()
@@ -342,7 +354,7 @@ def run_ingest(
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(_ingest_batch, conv, memory_service): conv
+                pool.submit(_ingest_batch, conv, memory_service, config): conv
                 for conv in conversations
             }
             for future in as_completed(futures):

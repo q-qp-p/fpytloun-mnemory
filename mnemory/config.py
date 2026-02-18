@@ -112,6 +112,9 @@ class LLMConfig:
     base_url: str = field(default_factory=_llm_base_url)
     api_key: str = field(default_factory=_llm_api_key)
     temperature: float = 0.1
+    reasoning_effort: str | None = field(
+        default_factory=lambda: _env("LLM_REASONING_EFFORT") or None
+    )
 
 
 @dataclass

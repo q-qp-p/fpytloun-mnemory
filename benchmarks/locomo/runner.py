@@ -56,7 +56,9 @@ def _create_mnemory_config(
             qdrant_host="",  # local embedded mode
             qdrant_path=os.path.join(data_dir, "qdrant"),
         ),
-        llm=LLMConfig(),
+        llm=LLMConfig(
+            reasoning_effort=bench_config.reasoning_effort or None,
+        ),
         embed=EmbedConfig(),
         artifact=ArtifactConfig(
             backend="filesystem",
@@ -164,6 +166,9 @@ class BenchmarkRunner:
             "embed_model": self.config.embed_model,
             "conversations": self.config.conversations,
             "categories": self.config.categories,
+            "max_questions": self.config.max_questions,
+            "max_turns": self.config.max_turns,
+            "reasoning_effort": self.config.reasoning_effort,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         # Add resolved model names after mnemory config is created
@@ -215,6 +220,12 @@ class BenchmarkRunner:
         print(f"Infer: {self.config.infer}")
         print(f"Workers: {self.config.effective_workers}")
         print(f"Search: {self.config.search_method} (limit={self.config.search_limit})")
+        if self.config.max_questions > 0:
+            print(f"Max questions per category: {self.config.max_questions}")
+        if self.config.max_turns > 0:
+            print(f"Max turns per conversation: {self.config.max_turns}")
+        if self.config.reasoning_effort:
+            print(f"Reasoning effort: {self.config.reasoning_effort}")
         print()
 
         # Initialize mnemory

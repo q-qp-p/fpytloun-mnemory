@@ -216,6 +216,7 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `LLM_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for LLM provider |
 | `LLM_BASE_URL` | (falls back to `OPENAI_API_BASE`, then `https://api.openai.com/v1`) | OpenAI-compatible API base URL |
 | `LLM_MODEL` | `gpt-5-mini` | LLM model for fact extraction and deduplication |
+| `LLM_REASONING_EFFORT` | | Reasoning effort for LLM (none/minimal/low/medium/high). Models that don't support it auto-skip. |
 | `EMBED_MODEL` | `text-embedding-3-small` | Embedding model |
 | `EMBED_BASE_URL` | (falls back to `LLM_BASE_URL`) | Separate base URL for embeddings |
 | `EMBED_DIMS` | `1536` | Embedding dimensions |

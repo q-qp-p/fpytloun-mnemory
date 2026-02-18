@@ -26,18 +26,40 @@ python -m benchmarks.locomo download
 python -m benchmarks.locomo run
 ```
 
-By default, ingestion uses raw storage (embedding only, no LLM extraction) with batch processing and parallel workers. This completes ingestion in ~1-2 minutes.
+By default, ingestion uses the full LLM extraction pipeline (fact extraction, classification, and deduplication). Use `--no-infer` for fast raw storage (embedding only, ~1-2 minutes).
 
 ### Pipeline Stages
 
 The benchmark runs 4 sequential stages:
 
-1. **Ingest** — Batch-embed and store conversation turns (or use `--infer` for full LLM extraction)
+1. **Ingest** — Extract facts from conversation turns via LLM and store in mnemory (or use `--no-infer` for raw embedding-only storage)
 2. **Search** — Query mnemory for each question via `search_memories` or `find_memories`
 3. **Answer** — Generate answers using an eval LLM with retrieved memories as context
 4. **Evaluate** — LLM judge scores answers against ground truth (CORRECT/WRONG)
 
 Each stage saves its state to disk, so you can resume or re-run individual stages.
+
+### Quick Test
+
+For fast iteration (testing models, parameters, etc.):
+
+```bash
+# Quick smoke test: 1 conversation, 10 questions per category (~40 total)
+python -m benchmarks.locomo run --quick
+
+# Compare models quickly
+python -m benchmarks.locomo run --quick --llm-model gpt-5-nano
+python -m benchmarks.locomo run --quick --llm-model gpt-5-mini
+
+# Quick test with reduced reasoning effort
+python -m benchmarks.locomo run --quick --reasoning-effort low
+
+# Cap ingestion to first 50 turns (composable with --quick)
+python -m benchmarks.locomo run --quick --max-turns 50
+
+# Custom quick test: 1 conversation, 20 questions per category
+python -m benchmarks.locomo run --conversations 0 --max-questions 20
+```
 
 ### Configuration
 
@@ -46,10 +68,19 @@ Each stage saves its state to disk, so you can resume or re-run individual stage
 python -m benchmarks.locomo run --stages ingest
 python -m benchmarks.locomo run --stages search,answer,evaluate
 
-# Enable full LLM extraction + classification (slow, tests mnemory's pipeline)
-python -m benchmarks.locomo run --infer
+# Disable LLM extraction — raw storage with embedding only (fast, cheap)
+python -m benchmarks.locomo run --no-infer
 
-# Control parallel workers for ingestion (default: auto — 4 for raw, 1 for --infer)
+# Limit questions per category (useful for quick tests)
+python -m benchmarks.locomo run --max-questions 10
+
+# Limit turns per conversation (cap slow infer=True ingestion)
+python -m benchmarks.locomo run --max-turns 100
+
+# Set reasoning effort for mnemory's LLM (none/minimal/low/medium/high)
+python -m benchmarks.locomo run --reasoning-effort low
+
+# Control parallel workers for ingestion (default: auto — 1 for infer, 4 for --no-infer)
 python -m benchmarks.locomo run --workers 8
 
 # Use find_memories (AI-powered multi-query search) instead of search_memories
@@ -110,15 +141,16 @@ mnemory            ?.?     ?.?       ?.?     ?.?      ?.?
 
 ### Cost Estimate
 
-| Stage | Approximate Cost (gpt-4o-mini) |
+| Stage | Approximate Cost (gpt-5-mini) |
 |---|---|
-| Ingest (default, raw) | ~$0.10 |
-| Ingest (`--infer`) | ~$3-5 |
+| Ingest (default, LLM extraction) | ~$3-5 |
+| Ingest (`--no-infer`, raw) | ~$0.10 |
 | Search | ~$0.05 |
 | Answer | ~$1-2 |
 | Evaluate | ~$1-2 |
-| **Total (default)** | **~$2-4** |
-| **Total (--infer)** | **~$5-10** |
+| **Total (default)** | **~$5-10** |
+| **Total (--no-infer)** | **~$2-4** |
+| **Total (--quick)** | **~$1-2** |
 
 ### Reference
 

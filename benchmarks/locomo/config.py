@@ -54,7 +54,7 @@ class BenchmarkConfig:
     categories: list[int] = field(default_factory=lambda: list(DEFAULT_CATEGORIES))
 
     # Ingestion
-    infer: bool = False  # Default: raw storage (fast). --infer enables LLM extraction.
+    infer: bool = True  # Default: LLM extraction + classification. --no-infer for raw.
 
     # Search
     search_method: str = "search_memories"  # or "find_memories"
@@ -67,6 +67,15 @@ class BenchmarkConfig:
     # mnemory configuration overrides
     llm_model: str = ""  # Override LLM_MODEL for mnemory
     embed_model: str = ""  # Override EMBED_MODEL for mnemory
+
+    # Question limiting (for quick tests)
+    max_questions: int = 0  # 0 = all questions. Per-category limit when > 0.
+
+    # Turn limiting (for quick tests)
+    max_turns: int = 0  # 0 = all turns. Per-conversation limit when > 0.
+
+    # mnemory LLM tuning
+    reasoning_effort: str = ""  # Override reasoning_effort (low/medium/high)
 
     # Parallelization
     workers: int = 0  # 0 = auto (4 for no-infer, 1 for infer)
@@ -136,11 +145,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated category numbers to evaluate (default: 1,2,3,4)",
     )
     run.add_argument(
-        "--infer",
+        "--no-infer",
         action="store_true",
         help=(
-            "Enable LLM fact extraction + classification during ingestion. "
-            "Default is off (raw storage with embedding only, much faster)."
+            "Disable LLM fact extraction — use raw storage with embedding "
+            "only. Much faster and cheaper, but no deduplication or "
+            "classification. Default is on (full LLM extraction pipeline)."
         ),
     )
     run.add_argument(
@@ -180,10 +190,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override EMBED_MODEL for mnemory's embeddings",
     )
     run.add_argument(
+        "--max-questions",
+        type=int,
+        default=0,
+        help=(
+            "Max questions per category to evaluate (default: 0 = all). "
+            "Useful for quick tests — e.g., 10 gives ~40 questions total."
+        ),
+    )
+    run.add_argument(
+        "--max-turns",
+        type=int,
+        default=0,
+        help=(
+            "Max turns per conversation to ingest (default: 0 = all). "
+            "Composable with --quick. Useful to cap slow infer=True ingestion."
+        ),
+    )
+    run.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default="",
+        choices=["", "none", "minimal", "low", "medium", "high"],
+        help=(
+            "Set reasoning_effort for mnemory's LLM (none/minimal/low/medium/high). "
+            "Passed to the OpenAI API; models that don't support it will "
+            "auto-skip via the retry mechanism."
+        ),
+    )
+    run.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Quick test mode — runs 1 conversation with 10 questions per "
+            "category (~40 questions). Shortcut for "
+            "'--conversations 0 --max-questions 10'."
+        ),
+    )
+    run.add_argument(
         "--workers",
         type=int,
         default=0,
-        help="Parallel workers for ingestion (default: auto — 4 for raw, 1 for --infer)",
+        help="Parallel workers for ingestion (default: auto — 1 for infer, 4 for --no-infer)",
     )
     run.add_argument(
         "--data-dir",
@@ -239,13 +287,16 @@ def parse_args(argv: list[str] | None = None) -> tuple[str, BenchmarkConfig]:
 
     if args.command == "run":
         config.stages = [s.strip() for s in args.stages.split(",")]
-        config.infer = args.infer
+        config.infer = not args.no_infer
         config.search_method = args.search_method
         config.search_limit = args.search_limit
         config.eval_model = args.eval_model
         config.judge_model = args.judge_model
         config.llm_model = args.llm_model
         config.embed_model = args.embed_model
+        config.max_questions = args.max_questions
+        config.max_turns = args.max_turns
+        config.reasoning_effort = args.reasoning_effort
         config.workers = args.workers
         config.results_dir = args.results_dir
         config.resume = args.resume
@@ -253,6 +304,13 @@ def parse_args(argv: list[str] | None = None) -> tuple[str, BenchmarkConfig]:
         config.categories = [int(c) for c in args.categories.split(",")]
         if args.conversations:
             config.conversations = [int(c) for c in args.conversations.split(",")]
+
+        # --quick is a shortcut for --conversations 0 --max-questions 10
+        if args.quick:
+            if not args.conversations:
+                config.conversations = [0]
+            if args.max_questions == 0:
+                config.max_questions = 10
 
     elif args.command == "report":
         config.resume = args.run_dir

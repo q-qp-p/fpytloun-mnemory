@@ -132,6 +132,24 @@ def _search_single(
     )
 
 
+def _limit_questions_per_category(
+    questions: list[Question],
+    max_per_category: int,
+) -> list[Question]:
+    """Limit questions to max_per_category per category.
+
+    Preserves original ordering within each category.
+    """
+    counts: dict[int, int] = {}
+    result: list[Question] = []
+    for q in questions:
+        count = counts.get(q.category, 0)
+        if count < max_per_category:
+            result.append(q)
+            counts[q.category] = count + 1
+    return result
+
+
 def run_search(
     conversations: list[Conversation],
     memory_service: Any,
@@ -152,6 +170,11 @@ def run_search(
             continue
 
         questions = conv.get_questions(config.categories)
+
+        # Apply per-category question limit if configured
+        if config.max_questions > 0:
+            questions = _limit_questions_per_category(questions, config.max_questions)
+
         logger.info(
             "Searching conversation %d: %d questions (user_id=%s, method=%s)",
             conv.index,
