@@ -54,7 +54,7 @@ class BenchmarkConfig:
     categories: list[int] = field(default_factory=lambda: list(DEFAULT_CATEGORIES))
 
     # Ingestion
-    infer: bool = True  # Use LLM extraction (infer=True) or raw storage
+    infer: bool = False  # Default: raw storage (fast). --infer enables LLM extraction.
 
     # Search
     search_method: str = "search_memories"  # or "find_memories"
@@ -68,6 +68,9 @@ class BenchmarkConfig:
     llm_model: str = ""  # Override LLM_MODEL for mnemory
     embed_model: str = ""  # Override EMBED_MODEL for mnemory
 
+    # Parallelization
+    workers: int = 0  # 0 = auto (4 for no-infer, 1 for infer)
+
     # Runtime
     verbose: bool = False
 
@@ -78,6 +81,13 @@ class BenchmarkConfig:
     @property
     def dataset_path(self) -> Path:
         return self.data_dir / "locomo10.json"
+
+    @property
+    def effective_workers(self) -> int:
+        """Resolve worker count: 0 = auto-detect based on infer mode."""
+        if self.workers > 0:
+            return self.workers
+        return 1 if self.infer else 4
 
     def resolve_eval_model(self, fallback: str) -> str:
         """Resolve eval model, falling back to mnemory's LLM model."""
@@ -126,9 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated category numbers to evaluate (default: 1,2,3,4)",
     )
     run.add_argument(
-        "--no-infer",
+        "--infer",
         action="store_true",
-        help="Skip LLM extraction during ingestion (infer=False)",
+        help=(
+            "Enable LLM fact extraction + classification during ingestion. "
+            "Default is off (raw storage with embedding only, much faster)."
+        ),
     )
     run.add_argument(
         "--search-method",
@@ -165,6 +178,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="",
         help="Override EMBED_MODEL for mnemory's embeddings",
+    )
+    run.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Parallel workers for ingestion (default: auto — 4 for raw, 1 for --infer)",
     )
     run.add_argument(
         "--data-dir",
@@ -220,13 +239,14 @@ def parse_args(argv: list[str] | None = None) -> tuple[str, BenchmarkConfig]:
 
     if args.command == "run":
         config.stages = [s.strip() for s in args.stages.split(",")]
-        config.infer = not args.no_infer
+        config.infer = args.infer
         config.search_method = args.search_method
         config.search_limit = args.search_limit
         config.eval_model = args.eval_model
         config.judge_model = args.judge_model
         config.llm_model = args.llm_model
         config.embed_model = args.embed_model
+        config.workers = args.workers
         config.results_dir = args.results_dir
         config.resume = args.resume
         config.verbose = args.verbose

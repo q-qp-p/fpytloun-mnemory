@@ -26,11 +26,13 @@ python -m benchmarks.locomo download
 python -m benchmarks.locomo run
 ```
 
+By default, ingestion uses raw storage (embedding only, no LLM extraction) with batch processing and parallel workers. This completes ingestion in ~1-2 minutes.
+
 ### Pipeline Stages
 
 The benchmark runs 4 sequential stages:
 
-1. **Ingest** — Feed conversation turns into mnemory via `add_memory(infer=True)`
+1. **Ingest** — Batch-embed and store conversation turns (or use `--infer` for full LLM extraction)
 2. **Search** — Query mnemory for each question via `search_memories` or `find_memories`
 3. **Answer** — Generate answers using an eval LLM with retrieved memories as context
 4. **Evaluate** — LLM judge scores answers against ground truth (CORRECT/WRONG)
@@ -44,6 +46,12 @@ Each stage saves its state to disk, so you can resume or re-run individual stage
 python -m benchmarks.locomo run --stages ingest
 python -m benchmarks.locomo run --stages search,answer,evaluate
 
+# Enable full LLM extraction + classification (slow, tests mnemory's pipeline)
+python -m benchmarks.locomo run --infer
+
+# Control parallel workers for ingestion (default: auto — 4 for raw, 1 for --infer)
+python -m benchmarks.locomo run --workers 8
+
 # Use find_memories (AI-powered multi-query search) instead of search_memories
 python -m benchmarks.locomo run --search-method find_memories
 
@@ -55,9 +63,6 @@ python -m benchmarks.locomo run --eval-model gpt-4o-mini --judge-model gpt-4o-mi
 
 # Override mnemory's LLM model for extraction
 python -m benchmarks.locomo run --llm-model gpt-4o-mini
-
-# Skip LLM extraction (infer=False) for faster ingestion
-python -m benchmarks.locomo run --no-infer
 
 # Run only specific conversations (0-indexed)
 python -m benchmarks.locomo run --conversations 0,1,2
@@ -107,15 +112,16 @@ mnemory            ?.?     ?.?       ?.?     ?.?      ?.?
 
 | Stage | Approximate Cost (gpt-4o-mini) |
 |---|---|
-| Ingest (infer=True) | ~$3-5 |
-| Ingest (infer=False) | ~$0.10 |
+| Ingest (default, raw) | ~$0.10 |
+| Ingest (`--infer`) | ~$3-5 |
 | Search | ~$0.05 |
 | Answer | ~$1-2 |
 | Evaluate | ~$1-2 |
-| **Total** | **~$5-10** |
+| **Total (default)** | **~$2-4** |
+| **Total (--infer)** | **~$5-10** |
 
 ### Reference
 
 - Paper: [Evaluating Very Long-Term Conversational Memory of LLM Agents](https://arxiv.org/abs/2402.17753) (ACL 2024)
 - Dataset: [snap-research/locomo](https://github.com/snap-research/locomo)
-- Published scores from [EverMemOS evaluation](https://github.com/EverMind-AI/EverMemOS/blob/main/evaluation/README.md)
+- Published scores from [Memobase evaluation](https://github.com/memodb-io/memobase/blob/main/docs/experiments/locomo-benchmark/README.md)

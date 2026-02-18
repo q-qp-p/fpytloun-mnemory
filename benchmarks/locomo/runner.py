@@ -70,6 +70,9 @@ def _create_mnemory_config(
             ttl_episodic=None,
             ttl_procedural=None,
             ttl_context=None,
+            # Disable auto-classification when not using inference —
+            # avoids a separate LLM call per memory during raw ingestion
+            auto_classify=bench_config.infer,
         ),
     )
     config.validate()
@@ -210,6 +213,7 @@ class BenchmarkRunner:
         print(f"Selected conversations: {len(conversations)}")
         print(f"Stages: {', '.join(self.config.stages)}")
         print(f"Infer: {self.config.infer}")
+        print(f"Workers: {self.config.effective_workers}")
         print(f"Search: {self.config.search_method} (limit={self.config.search_limit})")
         print()
 
