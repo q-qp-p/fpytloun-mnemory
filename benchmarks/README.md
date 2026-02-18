@@ -89,8 +89,8 @@ python -m benchmarks.locomo run --search-method find_memories
 # Adjust search result count
 python -m benchmarks.locomo run --search-limit 20
 
-# Use a specific model for answering/judging
-python -m benchmarks.locomo run --eval-model gpt-4o-mini --judge-model gpt-4o-mini
+# Override eval/judge model (default: gpt-4o-mini, matching published baselines)
+python -m benchmarks.locomo run --eval-model gpt-4o --judge-model gpt-4o
 
 # Override mnemory's LLM model for extraction
 python -m benchmarks.locomo run --llm-model gpt-4o-mini

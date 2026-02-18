@@ -60,9 +60,9 @@ class BenchmarkConfig:
     search_method: str = "search_memories"  # or "find_memories"
     search_limit: int = 10
 
-    # LLM models
-    eval_model: str = ""  # Model for answering questions (default: use mnemory's LLM)
-    judge_model: str = ""  # Model for judging answers (default: use mnemory's LLM)
+    # LLM models for evaluation (default: gpt-4o-mini to match published baselines)
+    eval_model: str = "gpt-4o-mini"  # Model for answering questions
+    judge_model: str = ""  # Model for judging answers (default: use eval_model)
 
     # mnemory configuration overrides
     llm_model: str = ""  # Override LLM_MODEL for mnemory
@@ -168,8 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--eval-model",
         type=str,
-        default="",
-        help="LLM model for answering questions (default: mnemory's LLM_MODEL)",
+        default="gpt-4o-mini",
+        help=(
+            "LLM model for answering questions "
+            "(default: gpt-4o-mini, matching published baselines)"
+        ),
     )
     run.add_argument(
         "--judge-model",
