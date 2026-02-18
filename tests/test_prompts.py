@@ -68,18 +68,18 @@ class TestBuildExtractionPrompt:
         assert isinstance(id_mapping, dict)
 
     def test_user_role_uses_user_prompt(self):
-        messages, _, _ = build_extraction_prompt("test", role="user")
+        messages, _, _ = build_extraction_prompt("test content", role="user")
         system = messages[0]["content"]
-        assert "user's messages" in system.lower() or "user" in system.lower()
-        # User message should be prefixed with "user:"
-        assert messages[1]["content"].startswith("user:")
+        assert "user" in system.lower()
+        # Content should be passed as-is without role prefix
+        assert messages[1]["content"] == "test content"
 
     def test_assistant_role_uses_agent_prompt(self):
-        messages, _, _ = build_extraction_prompt("test", role="assistant")
+        messages, _, _ = build_extraction_prompt("test content", role="assistant")
         system = messages[0]["content"]
         assert "assistant" in system.lower()
-        # User message should be prefixed with "assistant:"
-        assert messages[1]["content"].startswith("assistant:")
+        # Content should be passed as-is without role prefix
+        assert messages[1]["content"] == "test content"
 
     def test_existing_memories_mapped_to_integer_ids(self):
         existing = [

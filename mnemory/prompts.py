@@ -149,11 +149,19 @@ You are a memory manager for an AI assistant. Your job is to:
 
 ## Fact Extraction Rules
 
-- Extract facts ONLY from the user's messages. IGNORE assistant/system messages.
+- Extract distinct facts from the provided content.
 - Each fact should be a single, atomic piece of information.
+- Identify the subject of each fact from the content itself:
+  - When a named person is the subject, use their name
+    (e.g., "Caroline prefers dark mode", "John works at Google").
+  - When the content is first-person with no named speaker,
+    use "User" as the subject (e.g., "User prefers dark mode").
 - Write facts in third person, always including the subject
-  explicitly (e.g., "User prefers dark mode",
-  "User's partner likes hiking").
+  explicitly.
+- If the content is a conversation or transcript, extract facts
+  about all participants — not just one speaker.
+- Do not extract generic responses, pleasantries, or procedural
+  statements (e.g., "Sure, I can help with that" is not a fact).
 - Preserve all important information — do not over-compress
   at the cost of losing detail.
 - Each fact must be under {max_length} characters. If content
@@ -187,6 +195,27 @@ Output: {{"memories": [
     "old_memory": "User uses VS Code as primary editor",
     "memory_type": "preference",
     "categories": ["technical"],
+    "importance": "normal", "pinned": false}}
+]}}
+
+Input: "Caroline: I just got promoted to senior engineer at Google"
+Output: {{"memories": [
+  {{"text": "Caroline was promoted to senior engineer at Google",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "fact", "categories": ["work"],
+    "importance": "normal", "pinned": false}}
+]}}
+
+Input: "John: I think we should use Kubernetes. Sarah: I disagree, \
+ECS is better for our scale."
+Output: {{"memories": [
+  {{"text": "John proposed using Kubernetes",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "episodic", "categories": ["technical"],
+    "importance": "normal", "pinned": false}},
+  {{"text": "Sarah prefers ECS over Kubernetes for their scale",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "episodic", "categories": ["technical"],
     "importance": "normal", "pinned": false}}
 ]}}
 
@@ -257,9 +286,13 @@ You are a memory manager for an AI assistant. Your job is to:
 
 ## Fact Extraction Rules
 
-- Extract facts ONLY from the assistant's messages. IGNORE user/system messages.
-- Focus on the assistant's: personality traits, preferences, capabilities,
-  knowledge areas, communication style, and self-descriptions.
+- Focus on extracting facts about the assistant — its identity,
+  personality traits, preferences, capabilities, knowledge areas,
+  communication style, and self-descriptions.
+- You may also extract facts from user messages that reveal how
+  the user perceives the assistant (e.g., "User thinks the
+  assistant is great at explaining complex topics").
+- Do not extract general user facts — those belong in user memories.
 - Write facts in third person, always including the subject
   explicitly (e.g., "Assistant prefers concise responses",
   "Assistant is expert in Python").
@@ -450,11 +483,12 @@ def build_extraction_prompt(
     if explicit_note:
         system_prompt += explicit_note
 
-    # Build user message
-    if role == "assistant":
-        user_content = f"assistant: {content}"
-    else:
-        user_content = f"user: {content}"
+    # Build user message — pass content as-is without role prefix.
+    # The chat message role already provides context about who submitted
+    # the content. Adding "user:" or "assistant:" inside the content is
+    # redundant and confuses subject identification when the content
+    # contains named speakers (e.g., "Caroline: I went to...").
+    user_content = content
 
     messages = [
         {"role": "system", "content": system_prompt},
