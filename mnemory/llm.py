@@ -108,14 +108,23 @@ class LLMClient:
         """
         params = self._build_params(messages, response_format, temperature, max_tokens)
 
-        try:
-            response = self._client.chat.completions.create(**params)
-        except BadRequestError as e:
-            if self._try_fix_params(e, params, max_tokens):
+        # Retry loop: some models reject multiple parameters (e.g., gpt-5-mini
+        # rejects both max_tokens and temperature), each discovered one at a
+        # time. After fixes are cached, subsequent calls have zero overhead.
+        max_retries = 3
+        response = None
+        for attempt in range(1 + max_retries):
+            try:
                 response = self._client.chat.completions.create(**params)
-            else:
+                break
+            except BadRequestError as e:
+                if attempt < max_retries and self._try_fix_params(
+                    e, params, max_tokens
+                ):
+                    continue
                 raise
 
+        assert response is not None  # guaranteed by break or raise above
         content = response.choices[0].message.content or ""
         return _clean_response(content)
 
