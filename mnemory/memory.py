@@ -150,16 +150,23 @@ def _validate_id(value: str, name: str) -> str:
     return value
 
 
-def _parse_event_date(value: str) -> str:
+def _parse_event_date(value: str, default_tz: str = "") -> str:
     """Parse and normalize an event_date string to UTC ISO 8601.
 
     Accepts ISO 8601 strings (with or without timezone).
-    If no timezone is provided, assumes server local timezone.
     Returns UTC ISO 8601 string with timezone offset.
+
+    Args:
+        value: ISO 8601 datetime string to parse.
+        default_tz: IANA timezone name (e.g., "UTC", "Europe/Prague") to
+            assume for naive datetimes (no timezone info). Empty string
+            means use the server's local timezone.
 
     Raises:
         ValueError: If the string cannot be parsed as a datetime.
     """
+    from zoneinfo import ZoneInfo
+
     try:
         dt = datetime.fromisoformat(value)
     except (ValueError, TypeError) as e:
@@ -169,10 +176,20 @@ def _parse_event_date(value: str) -> str:
             "or '2023-05-08')."
         ) from e
 
-    # If no timezone, assume server local timezone
+    # If no timezone, apply the configured default
     if dt.tzinfo is None:
-        local_tz = datetime.now().astimezone().tzinfo
-        dt = dt.replace(tzinfo=local_tz)
+        if default_tz:
+            try:
+                tz = ZoneInfo(default_tz)
+            except (KeyError, Exception) as e:
+                raise ValueError(
+                    f"Invalid DEFAULT_TIMEZONE: '{default_tz}'. "
+                    "Use an IANA timezone name (e.g., 'UTC', 'Europe/Prague')."
+                ) from e
+        else:
+            # Server local timezone
+            tz = datetime.now().astimezone().tzinfo
+        dt = dt.replace(tzinfo=tz)
 
     # Normalize to UTC
     dt_utc = dt.astimezone(timezone.utc)
@@ -217,6 +234,7 @@ class MemoryService:
         role: str = "user",
         ttl_days: int | None = None,
         event_date: str | None = None,
+        session_timezone: str | None = None,
     ) -> dict:
         """Store a fast memory with metadata.
 
@@ -237,7 +255,11 @@ class MemoryService:
                   Requires agent_id when set to "assistant".
             event_date: ISO 8601 datetime for when the event occurred. Used to
                   anchor relative time references during extraction and stored
-                  as metadata. If no timezone, server local time is assumed.
+                  as metadata.
+            session_timezone: IANA timezone from X-Timezone header. Overrides
+                  DEFAULT_TIMEZONE for naive event_date parsing. Priority:
+                  explicit tz in event_date > session_timezone > DEFAULT_TIMEZONE
+                  > server local.
 
         Returns dict with "results" key containing list of memory actions.
         """
@@ -251,9 +273,11 @@ class MemoryService:
             raise ValueError("agent_id is required when role='assistant'")
 
         # Parse and normalize event_date to UTC ISO 8601
+        # Timezone priority: explicit tz in string > session header > config > server local
         normalized_event_date: str | None = None
         if event_date is not None:
-            normalized_event_date = _parse_event_date(event_date)
+            default_tz = session_timezone or self._config.memory.default_timezone
+            normalized_event_date = _parse_event_date(event_date, default_tz)
 
         max_len = self._config.memory.max_memory_length
         if len(content) > max_len:
@@ -1034,6 +1058,7 @@ class MemoryService:
         limit: int = 10,
         role: str | None = None,
         include_decayed: bool = False,
+        session_timezone: str | None = None,
     ) -> dict:
         """Find memories relevant to a complex question using AI-powered search.
 
@@ -1051,6 +1076,8 @@ class MemoryService:
             limit: Maximum results to return.
             role: Optional role filter ("user" or "assistant").
             include_decayed: If True, include expired/decayed memories.
+            session_timezone: IANA timezone from X-Timezone header. Used to
+                determine "today's date" for temporal query generation.
 
         Returns:
             Dict with "results" (list of memory dicts sorted by relevance),
@@ -1064,6 +1091,22 @@ class MemoryService:
         num_queries = self._config.memory.find_memories_queries
         threshold = self._config.memory.search_score_threshold
 
+        # Compute today's date in the session timezone (for temporal queries)
+        today: str | None = None
+        if session_timezone:
+            try:
+                from zoneinfo import ZoneInfo
+
+                today = datetime.now(ZoneInfo(session_timezone)).strftime("%Y-%m-%d")
+            except (KeyError, Exception):
+                logger.warning(
+                    "Invalid session timezone '%s', falling back to server local",
+                    session_timezone,
+                )
+                today = datetime.now().astimezone().strftime("%Y-%m-%d")
+        else:
+            today = datetime.now().astimezone().strftime("%Y-%m-%d")
+
         # Statistics tracking
         total_searched = 0
 
@@ -1071,6 +1114,7 @@ class MemoryService:
         messages, schema = build_query_generation_prompt(
             question,
             num_queries=num_queries,
+            today=today,
         )
         raw_response = self._llm.generate(messages, json_schema=schema)
         try:
@@ -1196,7 +1240,7 @@ class MemoryService:
 
         # Step 6: LLM reranking with the original question as context
         # Uses numeric indices instead of UUIDs to reduce output tokens
-        messages, schema = build_rerank_prompt(question, rerank_candidates)
+        messages, schema = build_rerank_prompt(question, rerank_candidates, today=today)
         raw_response = self._llm.generate(messages, json_schema=schema)
         try:
             data = parse_json_response(raw_response)

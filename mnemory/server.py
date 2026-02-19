@@ -54,6 +54,9 @@ _session_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _session_agent_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "session_agent_id", default=None
 )
+_session_timezone: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "session_timezone", default=None
+)
 
 # ── Configuration ─────────────────────────────────────────────────────
 # Lazy initialization: config and service are created on first access
@@ -182,6 +185,11 @@ def _resolve_agent_id_for_core(
 def _get_session_agent_id() -> str | None:
     """Get the session-level agent_id (from X-Agent-Id header), or None."""
     return _session_agent_id.get()
+
+
+def _get_session_timezone() -> str | None:
+    """Get the session-level timezone (from X-Timezone header), or None."""
+    return _session_timezone.get()
 
 
 # ── MCP Server ────────────────────────────────────────────────────────
@@ -362,7 +370,8 @@ def add_memory(
                     anchor relative time references during extraction (e.g.,
                     "yesterday" resolves to the day before event_date, not
                     today). Also stored as metadata for temporal queries.
-                    If no timezone is provided, server local time is assumed.
+                    Timezone priority: explicit offset in the string >
+                    X-Timezone header > DEFAULT_TIMEZONE env > server local.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -379,6 +388,7 @@ def add_memory(
             role=role,
             ttl_days=ttl_days,
             event_date=event_date,
+            session_timezone=_get_session_timezone(),
         )
         return json.dumps(result, default=str)
     except ValueError as e:
@@ -415,7 +425,7 @@ def add_memories(
                   Optional per-item fields: memory_type, categories,
                   importance, pinned, role, ttl_days, event_date. Example:
                   [{"content": "User lives in Prague", "categories": ["personal"]},
-                   {"content": "Prefers dark mode", "importance": "high"}]
+                   {"content": "Started new job", "event_date": "2023-05-08"}]
         user_id: User identifier (shared for all items). Optional if
                  pre-configured via API key mapping.
         agent_id: Agent scope (shared for all items). Same rules as
@@ -475,6 +485,7 @@ def add_memories(
                 role=item_role,
                 ttl_days=mem.get("ttl_days"),
                 event_date=mem.get("event_date"),
+                session_timezone=_get_session_timezone(),
             )
             # Check for error returned by add_memory (e.g., content too long)
             if result.get("error"):
@@ -638,6 +649,8 @@ def find_memories(
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
 
+        session_tz = _get_session_timezone()
+
         if session_aid:
             result = _get_service().find_memories(
                 question,
@@ -648,6 +661,7 @@ def find_memories(
                 role=role,
                 limit=limit,
                 include_decayed=include_decayed,
+                session_timezone=session_tz,
             )
         else:
             aid = _resolve_agent_id(agent_id)
@@ -660,6 +674,7 @@ def find_memories(
                 role=role,
                 limit=limit,
                 include_decayed=include_decayed,
+                session_timezone=session_tz,
             )
         memories = result.get("results", [])
         queries = result.get("queries", [])
@@ -1282,6 +1297,11 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             if header_aid:
                 _session_agent_id.set(header_aid)
 
+            # Timezone from header (overrides DEFAULT_TIMEZONE for this session)
+            header_tz = request.headers.get("x-timezone", "").strip()
+            if header_tz:
+                _session_timezone.set(header_tz)
+
         try:
             return await call_next(request)
         finally:
@@ -1289,6 +1309,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             # between requests, regardless of auth path taken.
             _session_user_id.set(None)
             _session_agent_id.set(None)
+            _session_timezone.set(None)
 
     def _extract_token(self, request: Request) -> str:
         """Extract API token from request headers."""
@@ -1308,6 +1329,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         header_aid = request.headers.get("x-agent-id", "").strip()
         if header_aid:
             _session_agent_id.set(header_aid)
+        header_tz = request.headers.get("x-timezone", "").strip()
+        if header_tz:
+            _session_timezone.set(header_tz)
 
 
 async def health_check(request: Request) -> JSONResponse:

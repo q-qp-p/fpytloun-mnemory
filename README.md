@@ -286,6 +286,8 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 - Open WebUI: `X-Agent-Id: open-webui`
 - Claude Code: `X-Agent-Id: claude-code`
 
+**Timezone** is set via the `X-Timezone` HTTP header per client connection. This overrides the `DEFAULT_TIMEZONE` env var for the session, affecting how naive `event_date` values are interpreted. Use an IANA timezone name (e.g., `Europe/Prague`, `America/New_York`).
+
 `MCP_API_KEY` (single key) is kept for backward compatibility — it authenticates but does not bind to a user. If both `MCP_API_KEYS` and `MCP_API_KEY` are set, `MCP_API_KEYS` is checked first, then `MCP_API_KEY` as fallback.
 
 ### Memory Behavior
@@ -311,6 +313,7 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 | `DEDUP_SIMILARITY_THRESHOLD` | `0.4` | Minimum similarity for deduplication matching during memory ingestion |
 | `SEARCH_SIMILARITY_WEIGHT` | `0.9` | Weight for cosine similarity in search ranking (remainder goes to importance). Default 0.9 = 90% similarity, 10% importance |
 | `SEARCH_KEYWORD_WEIGHT` | `0.2` | Weight for keyword overlap boost in search results. Set to 0.0 to disable |
+| `DEFAULT_TIMEZONE` | | Default IANA timezone for naive `event_date` values (e.g., `Europe/Prague`). Empty = server local timezone. Can be overridden per session via `X-Timezone` header |
 | `FIND_MEMORIES_QUERIES` | `5` | Number of search queries the LLM generates for `find_memories` |
 
 ## Memory Model
@@ -441,10 +444,10 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 
 | Tool | Description |
 |---|---|
-| `add_memory` | Store a memory with optional metadata, `infer` flag, and `role` |
+| `add_memory` | Store a memory with optional metadata, `infer` flag, `role`, and `event_date` |
 | `add_memories` | Batch-add multiple memories in a single call |
 | `search_memories` | Semantic search with type/category/role filters, importance reranking |
-| `find_memories` | AI-powered search: generates multiple queries, searches, and reranks by relevance to your question |
+| `find_memories` | AI-powered search: generates multiple queries, searches, and reranks by relevance to your question. Temporal-aware — resolves "last week", "in 2023", etc. |
 | `get_core_memories` | Load pinned + recent context at conversation start. Use for clients that inject MCP server instructions (e.g., Claude Code). |
 | `get_recent_memories` | Get recent activity from the last N days with scope filter (user/agent/all) |
 | `list_memories` | List all/filtered memories |
@@ -474,6 +477,8 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 
 With `infer=false`, the LLM call is skipped — the content is embedded and stored directly. This is much faster (single embedding call vs. LLM + embedding).
 
+**Temporal anchoring:** Pass `event_date` to anchor relative time references. For example, if the content says "I bought it yesterday" and `event_date="2023-05-08"`, the extraction resolves "yesterday" to May 7, 2023 — not today's date. The `event_date` is also stored as metadata for temporal search queries.
+
 ### Searching
 
 **search_memories** — fast single-query search:
@@ -488,10 +493,10 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 **find_memories** — AI-powered multi-query search:
 
 1. You call `find_memories(question="What do I think about dogs? Should I buy one?")`
-2. LLM generates multiple search queries covering different angles and associations (e.g., dogs, pets, partner, house, garden, lifestyle)
+2. LLM generates multiple search queries covering different angles and associations (e.g., dogs, pets, partner, house, garden, lifestyle). Temporal-aware — knows today's date to resolve "last week", "recently", etc.
 3. Each query runs through `search_memories` independently
 4. Results are merged and deduplicated across all queries
-5. LLM reranks all results by relevance to the original question
+5. LLM reranks all results by relevance to the original question, using `event_date` metadata for temporal scoring
 6. Returns top N results with scores on the same 0.0-1.0 scale
 
 ### Core Memories

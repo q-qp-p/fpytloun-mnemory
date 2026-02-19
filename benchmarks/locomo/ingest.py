@@ -23,6 +23,7 @@ from typing import Any
 
 from benchmarks.locomo.config import BenchmarkConfig
 from benchmarks.locomo.dataset import Conversation
+from mnemory.memory import _parse_event_date
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,7 @@ def _ingest_batch(
     conversation: Conversation,
     memory_service: Any,
     config: BenchmarkConfig,
+    memory_config: Any = None,
 ) -> IngestResult:
     """Batch-ingest all turns for a conversation (no-infer mode).
 
@@ -182,6 +184,9 @@ def _ingest_batch(
     3. Batch-inserts into Qdrant using insert_batch()
 
     Much faster than per-turn add_memory — reduces API calls from N to N/100.
+
+    Args:
+        memory_config: MemoryConfig for TTL defaults. Required for batch mode.
     """
     from mnemory.ttl import build_expiry_metadata
 
@@ -191,7 +196,9 @@ def _ingest_batch(
     # Collect all turns with their session dates (respecting max_turns limit)
     all_turn_data: list[tuple] = []  # (turn, session_event_date)
     for session in conversation.sessions:
-        session_event_date = _parse_locomo_date(session.date_time)
+        raw_date = _parse_locomo_date(session.date_time)
+        # Normalize to UTC ISO 8601 (same as the infer path via add_memory)
+        session_event_date = _parse_event_date(raw_date) if raw_date else None
         for turn in session.turns:
             all_turn_data.append((turn, session_event_date))
     if config.max_turns > 0:
@@ -244,7 +251,7 @@ def _ingest_batch(
         "artifacts": [],
         "created_at_utc": now,
     }
-    ttl_meta = build_expiry_metadata(None, "episodic", memory_service._config.memory)
+    ttl_meta = build_expiry_metadata(None, "episodic", memory_config)
     base_metadata.update(ttl_meta)
 
     # Build points for batch insert (skip any with empty vectors from errors)
@@ -398,6 +405,7 @@ def run_ingest(
     conversations: list[Conversation],
     memory_service: Any,
     config: BenchmarkConfig,
+    memory_config: Any = None,
 ) -> IngestState:
     """Run the ingest stage for all selected conversations.
 
@@ -405,6 +413,9 @@ def run_ingest(
     LLM extraction, classification, and deduplication pipeline.
     When infer=False (--no-infer): Uses batch embedding + batch insert
     with parallel workers across conversations.
+
+    Args:
+        memory_config: MemoryConfig for TTL defaults (needed for batch mode).
     """
     state = IngestState()
     start = time.time()
@@ -428,7 +439,9 @@ def run_ingest(
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(_ingest_batch, conv, memory_service, config): conv
+                pool.submit(
+                    _ingest_batch, conv, memory_service, config, memory_config
+                ): conv
                 for conv in conversations
             }
             for future in as_completed(futures):

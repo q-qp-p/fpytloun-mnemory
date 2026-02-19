@@ -790,7 +790,7 @@ _QUERY_GENERATION_SYSTEM_PROMPT = """\
 You are a memory search assistant. Given a user's question, generate \
 {num_queries} diverse search queries to find relevant memories in a \
 personal memory database.
-
+{today_line}
 Think like a human searching their memory — follow associations:
 - Direct matches for the question topic
 - Related concepts and associations (e.g., dogs → pets, house, garden, \
@@ -798,6 +798,8 @@ lifestyle, partner)
 - People and relationships that might be relevant
 - Past decisions, opinions, or preferences on the topic
 - Practical considerations and context
+- When the question involves time (last week, recently, in 2023, etc.), \
+include date-specific queries
 
 Each query should target a different angle or aspect. Keep queries short \
 (2-5 words each). Do not repeat the same angle.
@@ -825,18 +827,29 @@ def build_query_generation_prompt(
     question: str,
     *,
     num_queries: int = 5,
+    today: str | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Build a prompt to generate diverse search queries from a question.
 
     Args:
         question: The user's natural language question.
         num_queries: Number of search queries to generate.
+        today: Today's date as YYYY-MM-DD string. When provided, injected
+            into the system prompt so the LLM can resolve temporal references
+            (e.g., "last month", "recently") into date-specific queries.
 
     Returns:
         Tuple of (messages, json_schema) for the LLM call.
     """
+    today_line = (
+        f"\nToday's date is {today}. Use this to resolve temporal references "
+        "in the question (e.g., 'last week', 'in May') into concrete dates.\n"
+        if today
+        else ""
+    )
     system_prompt = _QUERY_GENERATION_SYSTEM_PROMPT.format(
         num_queries=num_queries,
+        today_line=today_line,
     )
 
     messages = [
@@ -851,7 +864,7 @@ _RERANK_SYSTEM_PROMPT = """\
 You are a memory relevance scorer. Given a user's question and a list of \
 candidate memories, score each memory for relevance on a scale from 0.0 \
 to 1.0.
-
+{today_line}
 ## Subject awareness
 
 Pay close attention to WHO or WHAT the memory is about. The subject \
@@ -860,8 +873,15 @@ matters as much as the topic:
 - "User likes dogs" is NOT about "partner likes dogs"
 - "User's work project" is NOT about "partner's work"
 Match the specific subject asked about in the question, not just \
-topic keywords. Use the metadata tags (type, categories, role) for \
-additional context when the memory text is ambiguous.
+topic keywords. Use the metadata tags (type, categories, role, \
+event_date) for additional context when the memory text is ambiguous.
+
+## Temporal awareness
+
+When the question involves time (e.g., "last month", "in 2023", \
+"recently"), use the event_date metadata tag to assess temporal \
+relevance. Memories with matching dates should score higher. Memories \
+without event_date should be scored on content relevance alone.
 
 ## Score guide
 
@@ -906,17 +926,23 @@ RERANK_SCHEMA: dict[str, Any] = {
 def build_rerank_prompt(
     question: str,
     memories: list[dict],
+    *,
+    today: str | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Build a prompt to rerank memories by relevance to a question.
 
     Args:
         question: The user's natural language question.
         memories: List of memory dicts with "id" and "memory" fields.
+        today: Today's date as YYYY-MM-DD string. When provided, injected
+            into the system prompt so the LLM can resolve temporal references
+            in the question and match against event_date metadata.
 
     Returns:
         Tuple of (messages, json_schema) for the LLM call.
     """
-    system_prompt = _RERANK_SYSTEM_PROMPT
+    today_line = f"\nToday's date is {today}.\n" if today else ""
+    system_prompt = _RERANK_SYSTEM_PROMPT.format(today_line=today_line)
 
     # Build memory list with numeric indices and metadata context for the LLM
     mem_lines = []
@@ -933,6 +959,8 @@ def build_rerank_prompt(
             tags.append(f"importance: {metadata['importance']}")
         if metadata.get("role") and metadata["role"] != "user":
             tags.append(f"role: {metadata['role']}")
+        if metadata.get("event_date"):
+            tags.append(f"event_date: {metadata['event_date']}")
         tag_str = f" [{' | '.join(tags)}]" if tags else ""
         mem_lines.append(f"[{idx}] {text}{tag_str}")
     mem_text = "\n".join(mem_lines)

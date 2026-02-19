@@ -10,6 +10,8 @@ from mnemory.prompts import (
     _validate_memory_type,
     build_classification_prompt,
     build_extraction_prompt,
+    build_query_generation_prompt,
+    build_rerank_prompt,
     parse_extraction_response,
 )
 
@@ -396,3 +398,123 @@ class TestBuildClassificationPrompt:
             "I prefer Python", missing_fields={"memory_type"}
         )
         assert messages[1]["content"] == "I prefer Python"
+
+
+# ── build_query_generation_prompt ────────────────────────────────────
+
+
+class TestBuildQueryGenerationPrompt:
+    def test_returns_messages_and_schema(self):
+        messages, schema = build_query_generation_prompt("What car do I have?")
+        assert isinstance(messages, list)
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert messages[1]["content"] == "What car do I have?"
+        assert schema["name"] == "query_generation"
+
+    def test_num_queries_in_system_prompt(self):
+        messages, _ = build_query_generation_prompt("test", num_queries=7)
+        system = messages[0]["content"]
+        assert "7" in system
+
+    def test_without_today_no_date_in_prompt(self):
+        messages, _ = build_query_generation_prompt("What happened?")
+        system = messages[0]["content"]
+        assert "Today's date" not in system
+
+    def test_with_today_date_in_prompt(self):
+        messages, _ = build_query_generation_prompt(
+            "What happened last week?", today="2026-02-19"
+        )
+        system = messages[0]["content"]
+        assert "Today's date is 2026-02-19" in system
+        assert "temporal references" in system
+
+    def test_temporal_query_guidance_in_prompt(self):
+        messages, _ = build_query_generation_prompt("test")
+        system = messages[0]["content"]
+        assert "date-specific queries" in system
+
+
+# ── build_rerank_prompt ──────────────────────────────────────────────
+
+
+class TestBuildRerankPrompt:
+    def test_returns_messages_and_schema(self):
+        memories = [{"id": "1", "memory": "User likes dogs"}]
+        messages, schema = build_rerank_prompt("Do I like dogs?", memories)
+        assert isinstance(messages, list)
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert schema["name"] == "memory_rerank"
+
+    def test_question_in_user_content(self):
+        memories = [{"id": "1", "memory": "User likes dogs"}]
+        messages, _ = build_rerank_prompt("Do I like dogs?", memories)
+        assert "Do I like dogs?" in messages[1]["content"]
+
+    def test_memory_text_in_user_content(self):
+        memories = [{"id": "1", "memory": "User likes dogs"}]
+        messages, _ = build_rerank_prompt("test", memories)
+        assert "User likes dogs" in messages[1]["content"]
+
+    def test_without_today_no_date_in_system(self):
+        memories = [{"id": "1", "memory": "test"}]
+        messages, _ = build_rerank_prompt("test", memories)
+        system = messages[0]["content"]
+        assert "Today's date is" not in system
+
+    def test_with_today_date_in_system(self):
+        memories = [{"id": "1", "memory": "test"}]
+        messages, _ = build_rerank_prompt("test", memories, today="2026-02-19")
+        system = messages[0]["content"]
+        assert "Today's date is 2026-02-19" in system
+
+    def test_temporal_awareness_section_in_system(self):
+        memories = [{"id": "1", "memory": "test"}]
+        messages, _ = build_rerank_prompt("test", memories)
+        system = messages[0]["content"]
+        assert "Temporal awareness" in system
+        assert "event_date" in system
+
+    def test_event_date_in_metadata_tags(self):
+        memories = [
+            {
+                "id": "1",
+                "memory": "Bought a car",
+                "metadata": {"event_date": "2023-05-08T00:00:00+00:00"},
+            }
+        ]
+        messages, _ = build_rerank_prompt("test", memories)
+        user_content = messages[1]["content"]
+        assert "event_date: 2023-05-08T00:00:00+00:00" in user_content
+
+    def test_no_event_date_no_tag(self):
+        memories = [{"id": "1", "memory": "Likes dogs", "metadata": {}}]
+        messages, _ = build_rerank_prompt("test", memories)
+        user_content = messages[1]["content"]
+        assert "event_date" not in user_content
+
+    def test_metadata_tags_include_type_and_categories(self):
+        memories = [
+            {
+                "id": "1",
+                "memory": "test",
+                "metadata": {
+                    "memory_type": "fact",
+                    "categories": ["personal", "vehicles"],
+                    "importance": "high",
+                    "role": "assistant",
+                    "event_date": "2023-05-08T00:00:00+00:00",
+                },
+            }
+        ]
+        messages, _ = build_rerank_prompt("test", memories)
+        user_content = messages[1]["content"]
+        assert "type: fact" in user_content
+        assert "categories: personal, vehicles" in user_content
+        assert "importance: high" in user_content
+        assert "role: assistant" in user_content
+        assert "event_date: 2023-05-08T00:00:00+00:00" in user_content

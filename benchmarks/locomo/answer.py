@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from benchmarks.locomo.config import BenchmarkConfig
@@ -144,9 +145,7 @@ def _format_memories(memories: list[dict[str, Any]]) -> str:
         if event_date:
             # Extract just the date portion for readability
             try:
-                from datetime import datetime as _dt
-
-                dt = _dt.fromisoformat(event_date)
+                dt = datetime.fromisoformat(event_date)
                 ts_prefix = f"[{dt.strftime('%d %B %Y')}] "
             except (ValueError, TypeError):
                 ts_prefix = f"[{event_date}] "

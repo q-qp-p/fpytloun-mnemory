@@ -81,29 +81,6 @@ def _create_mnemory_config(
     return config
 
 
-def _create_eval_llm_client(
-    mnemory_config: Any,
-    model: str,
-) -> Any:
-    """Create an LLM client for eval/judge, potentially with a different model.
-
-    If model matches mnemory's configured model, reuses the same config.
-    Otherwise creates a new LLMConfig with the specified model.
-    """
-    from mnemory.config import LLMConfig
-    from mnemory.llm import LLMClient
-
-    if not model or model == mnemory_config.llm.model:
-        return LLMClient(mnemory_config.llm)
-
-    eval_config = LLMConfig(
-        model=model,
-        base_url=mnemory_config.llm.base_url,
-        api_key=mnemory_config.llm.api_key,
-    )
-    return eval_config, LLMClient(eval_config)
-
-
 class BenchmarkRunner:
     """Orchestrates the LoCoMo benchmark pipeline."""
 
@@ -238,7 +215,12 @@ class BenchmarkRunner:
             print("=" * 60)
             print("Stage 1: INGEST")
             print("=" * 60)
-            ingest_state = run_ingest(conversations, self._memory_service, self.config)
+            ingest_state = run_ingest(
+                conversations,
+                self._memory_service,
+                self.config,
+                memory_config=self._mnemory_config.memory,
+            )
             self._save_state("ingest", ingest_state)
             print(
                 f"  Turns: {ingest_state.total_turns}, "
@@ -345,12 +327,9 @@ class BenchmarkRunner:
         from mnemory.config import LLMConfig
         from mnemory.llm import LLMClient
 
-        if model == self._mnemory_config.llm.model:
-            return self._memory_service._llm
-
         return LLMClient(
             LLMConfig(
-                model=model,
+                model=model or self._mnemory_config.llm.model,
                 base_url=self._mnemory_config.llm.base_url,
                 api_key=self._mnemory_config.llm.api_key,
             )

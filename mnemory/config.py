@@ -278,6 +278,11 @@ class MemoryConfig:
         default_factory=lambda: _env_int("FIND_MEMORIES_QUERIES", 5)
     )
 
+    # Default timezone for naive event_date values (no timezone info).
+    # IANA timezone name (e.g., "UTC", "Europe/Prague", "America/New_York").
+    # Empty string = use server's local timezone.
+    default_timezone: str = field(default_factory=lambda: _env("DEFAULT_TIMEZONE", ""))
+
 
 @dataclass
 class Config:

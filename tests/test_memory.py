@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mnemory.memory import MemoryService, _validate_id
+from mnemory.memory import MemoryService, _parse_event_date, _validate_id
 
 
 def _mock_memory_config(mock_config: MagicMock) -> None:
@@ -3129,3 +3129,164 @@ class TestFindMemoriesBatchEmbed:
         result = service.find_memories("test", user_id="filip")
         assert result["results"] == []
         assert result["queries"] == []
+
+
+# ── _parse_event_date tests ──────────────────────────────────────────
+
+
+class TestParseEventDate:
+    """Tests for the _parse_event_date helper function."""
+
+    def test_iso8601_with_utc_timezone(self):
+        """ISO 8601 with explicit UTC timezone returns as-is (normalized)."""
+        result = _parse_event_date("2023-05-08T13:56:00+00:00")
+        assert result == "2023-05-08T13:56:00+00:00"
+
+    def test_iso8601_with_positive_offset(self):
+        """ISO 8601 with positive offset is normalized to UTC."""
+        result = _parse_event_date("2023-05-08T15:56:00+02:00")
+        assert result == "2023-05-08T13:56:00+00:00"
+
+    def test_iso8601_with_negative_offset(self):
+        """ISO 8601 with negative offset is normalized to UTC."""
+        result = _parse_event_date("2023-05-08T08:56:00-05:00")
+        assert result == "2023-05-08T13:56:00+00:00"
+
+    def test_naive_datetime_with_default_tz_utc(self):
+        """Naive datetime with default_tz='UTC' is treated as UTC."""
+        result = _parse_event_date("2023-05-08T13:56:00", default_tz="UTC")
+        assert result == "2023-05-08T13:56:00+00:00"
+
+    def test_naive_datetime_with_default_tz_named(self):
+        """Naive datetime with a named timezone applies that timezone."""
+        result = _parse_event_date("2023-05-08T15:56:00", default_tz="Europe/Prague")
+        # Prague is UTC+2 in May (CEST), so 15:56 CEST = 13:56 UTC
+        assert result == "2023-05-08T13:56:00+00:00"
+
+    def test_naive_datetime_with_default_tz_empty(self):
+        """Naive datetime with empty default_tz uses server local timezone."""
+        # We can't assert the exact result (depends on server tz), but
+        # it should return a valid UTC ISO 8601 string with +00:00
+        result = _parse_event_date("2023-05-08T13:56:00", default_tz="")
+        assert "+00:00" in result
+        assert result.startswith("2023-05-08T")
+
+    def test_naive_datetime_no_default_tz(self):
+        """Naive datetime without default_tz parameter uses server local."""
+        result = _parse_event_date("2023-05-08T13:56:00")
+        assert "+00:00" in result
+        assert result.startswith("2023-05-08T")
+
+    def test_date_only_string(self):
+        """Date-only string (no time) is accepted and normalized."""
+        result = _parse_event_date("2023-05-08", default_tz="UTC")
+        assert result == "2023-05-08T00:00:00+00:00"
+
+    def test_date_only_with_named_tz(self):
+        """Date-only string with named timezone."""
+        result = _parse_event_date("2023-05-08", default_tz="America/New_York")
+        # May 8 midnight EDT (UTC-4) = May 8 04:00 UTC
+        assert result == "2023-05-08T04:00:00+00:00"
+
+    def test_explicit_tz_ignores_default_tz(self):
+        """When input has explicit timezone, default_tz is ignored."""
+        result = _parse_event_date("2023-05-08T13:56:00+00:00", default_tz="Asia/Tokyo")
+        # Should stay UTC, not shift to Tokyo
+        assert result == "2023-05-08T13:56:00+00:00"
+
+    def test_invalid_format_raises_valueerror(self):
+        """Invalid format raises ValueError with helpful message."""
+        with pytest.raises(ValueError, match="Invalid event_date format"):
+            _parse_event_date("not-a-date")
+
+    def test_empty_string_raises_valueerror(self):
+        """Empty string raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid event_date format"):
+            _parse_event_date("")
+
+    def test_none_raises_valueerror(self):
+        """None raises ValueError (via TypeError caught internally)."""
+        with pytest.raises(ValueError, match="Invalid event_date format"):
+            _parse_event_date(None)  # type: ignore[arg-type]
+
+    def test_invalid_default_tz_raises_valueerror(self):
+        """Invalid timezone name raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid DEFAULT_TIMEZONE"):
+            _parse_event_date("2023-05-08T13:56:00", default_tz="Not/A/Timezone")
+
+
+class TestSessionTimezoneInAddMemory:
+    """Tests for session_timezone parameter in add_memory (X-Timezone header flow)."""
+
+    def test_session_timezone_overrides_config_default(self):
+        """session_timezone should override config.memory.default_timezone."""
+        service = _make_service()
+        # Config default is "" (server local), but session says Europe/Prague
+        service._config.memory.default_timezone = "UTC"
+
+        # Mock _add_direct to capture the normalized event_date
+        captured = {}
+
+        def mock_add_direct(*args, **kwargs):
+            captured["event_date"] = kwargs.get("event_date")
+            return {"results": []}
+
+        service._add_direct = mock_add_direct
+
+        service.add_memory(
+            "test content",
+            user_id="test-user",
+            infer=False,
+            event_date="2023-05-08T15:56:00",  # naive — needs timezone
+            session_timezone="Europe/Prague",
+        )
+
+        # Prague is UTC+2 in May (CEST), so 15:56 CEST = 13:56 UTC
+        assert captured["event_date"] == "2023-05-08T13:56:00+00:00"
+
+    def test_session_timezone_none_falls_back_to_config(self):
+        """When session_timezone is None, config default_timezone is used."""
+        service = _make_service()
+        service._config.memory.default_timezone = "UTC"
+
+        captured = {}
+
+        def mock_add_direct(*args, **kwargs):
+            captured["event_date"] = kwargs.get("event_date")
+            return {"results": []}
+
+        service._add_direct = mock_add_direct
+
+        service.add_memory(
+            "test content",
+            user_id="test-user",
+            infer=False,
+            event_date="2023-05-08T15:56:00",  # naive
+            session_timezone=None,  # no session override
+        )
+
+        # With UTC default, 15:56 naive = 15:56 UTC
+        assert captured["event_date"] == "2023-05-08T15:56:00+00:00"
+
+    def test_explicit_tz_in_event_date_ignores_session_timezone(self):
+        """Explicit timezone in event_date string takes priority over session."""
+        service = _make_service()
+
+        captured = {}
+
+        def mock_add_direct(*args, **kwargs):
+            captured["event_date"] = kwargs.get("event_date")
+            return {"results": []}
+
+        service._add_direct = mock_add_direct
+
+        service.add_memory(
+            "test content",
+            user_id="test-user",
+            infer=False,
+            event_date="2023-05-08T15:56:00+02:00",  # explicit +02:00
+            session_timezone="America/New_York",  # should be ignored
+        )
+
+        # Explicit +02:00 → 13:56 UTC, regardless of session timezone
+        assert captured["event_date"] == "2023-05-08T13:56:00+00:00"
