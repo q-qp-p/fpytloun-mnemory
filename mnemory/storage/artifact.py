@@ -5,7 +5,11 @@ Supports two backends:
 - Local filesystem for development and simple setups
 
 Artifacts are stored as objects keyed by:
-  {user_id}/{memory_id}/{artifact_id}/{filename}
+  {user_id}/{artifact_id}/{filename}
+
+Note: memory_id was removed from the storage path to support M:N artifact
+linking (one artifact referenced by multiple memories). This is a breaking
+change from the previous path format {user_id}/{memory_id}/{artifact_id}/{filename}.
 """
 
 from __future__ import annotations
@@ -85,12 +89,16 @@ class ArtifactMetadata:
 
 
 class ArtifactBackend(Protocol):
-    """Protocol for artifact storage backends."""
+    """Protocol for artifact storage backends.
+
+    Storage path: {user_id}/{artifact_id}/{filename}
+    memory_id is NOT part of the storage path — artifacts are independent
+    entities referenced by one or more memories via metadata.
+    """
 
     def save(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
         content: bytes,
@@ -100,7 +108,6 @@ class ArtifactBackend(Protocol):
     def load(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
     ) -> bytes: ...
@@ -108,17 +115,17 @@ class ArtifactBackend(Protocol):
     def delete(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
     ) -> None: ...
 
-    def delete_all_for_memory(self, user_id: str, memory_id: str) -> None: ...
+    def delete_artifact(self, user_id: str, artifact_id: str) -> None: ...
+
+    def delete_all_for_user(self, user_id: str) -> None: ...
 
     def exists(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
     ) -> bool: ...
@@ -156,28 +163,24 @@ class S3Backend:
                 # Bucket may already exist (race condition) or we lack permissions
                 logger.warning("Could not create bucket %s: %s", self._bucket, e)
 
-    def _key(
-        self, user_id: str, memory_id: str, artifact_id: str, filename: str
-    ) -> str:
+    def _key(self, user_id: str, artifact_id: str, filename: str) -> str:
         for val, name in [
             (user_id, "user_id"),
-            (memory_id, "memory_id"),
             (artifact_id, "artifact_id"),
             (filename, "filename"),
         ]:
             _validate_path_component(val, name)
-        return f"{user_id}/{memory_id}/{artifact_id}/{filename}"
+        return f"{user_id}/{artifact_id}/{filename}"
 
     def save(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
         content: bytes,
         content_type: str,
     ) -> None:
-        key = self._key(user_id, memory_id, artifact_id, filename)
+        key = self._key(user_id, artifact_id, filename)
         self._client.put_object(
             Bucket=self._bucket,
             Key=key,
@@ -188,26 +191,45 @@ class S3Backend:
     def load(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
     ) -> bytes:
-        key = self._key(user_id, memory_id, artifact_id, filename)
+        key = self._key(user_id, artifact_id, filename)
         response = self._client.get_object(Bucket=self._bucket, Key=key)
         return response["Body"].read()
 
     def delete(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
     ) -> None:
-        key = self._key(user_id, memory_id, artifact_id, filename)
+        key = self._key(user_id, artifact_id, filename)
         self._client.delete_object(Bucket=self._bucket, Key=key)
 
-    def delete_all_for_memory(self, user_id: str, memory_id: str) -> None:
-        prefix = f"{user_id}/{memory_id}/"
+    def delete_artifact(self, user_id: str, artifact_id: str) -> None:
+        """Delete all files for a specific artifact."""
+        prefix = f"{user_id}/{artifact_id}/"
+        continuation_token = None
+        while True:
+            kwargs: dict[str, Any] = {"Bucket": self._bucket, "Prefix": prefix}
+            if continuation_token:
+                kwargs["ContinuationToken"] = continuation_token
+            response = self._client.list_objects_v2(**kwargs)
+            objects = response.get("Contents", [])
+            if objects:
+                self._client.delete_objects(
+                    Bucket=self._bucket,
+                    Delete={"Objects": [{"Key": obj["Key"]} for obj in objects]},
+                )
+            if not response.get("IsTruncated"):
+                break
+            continuation_token = response.get("NextContinuationToken")
+
+    def delete_all_for_user(self, user_id: str) -> None:
+        """Delete all artifacts for a user."""
+        _validate_path_component(user_id, "user_id")
+        prefix = f"{user_id}/"
         continuation_token = None
         while True:
             kwargs: dict[str, Any] = {"Bucket": self._bucket, "Prefix": prefix}
@@ -227,11 +249,10 @@ class S3Backend:
     def exists(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
     ) -> bool:
-        key = self._key(user_id, memory_id, artifact_id, filename)
+        key = self._key(user_id, artifact_id, filename)
         try:
             self._client.head_object(Bucket=self._bucket, Key=key)
             return True
@@ -246,19 +267,14 @@ class FilesystemBackend:
         self._base_path = Path(config.filesystem_path)
         self._base_path.mkdir(parents=True, exist_ok=True)
 
-    def _path(
-        self, user_id: str, memory_id: str, artifact_id: str, filename: str
-    ) -> Path:
+    def _path(self, user_id: str, artifact_id: str, filename: str) -> Path:
         for val, name in [
             (user_id, "user_id"),
-            (memory_id, "memory_id"),
             (artifact_id, "artifact_id"),
             (filename, "filename"),
         ]:
             _validate_path_component(val, name)
-        path = (
-            self._base_path / user_id / memory_id / artifact_id / filename
-        ).resolve()
+        path = (self._base_path / user_id / artifact_id / filename).resolve()
         if not path.is_relative_to(self._base_path.resolve()):
             raise ValueError(
                 "Invalid path components: resolved path escapes base directory"
@@ -268,13 +284,12 @@ class FilesystemBackend:
     def save(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
         content: bytes,
         content_type: str,
     ) -> None:
-        path = self._path(user_id, memory_id, artifact_id, filename)
+        path = self._path(user_id, artifact_id, filename)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         # Store content_type in a sidecar metadata file
@@ -288,11 +303,10 @@ class FilesystemBackend:
     def load(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
     ) -> bytes:
-        path = self._path(user_id, memory_id, artifact_id, filename)
+        path = self._path(user_id, artifact_id, filename)
         if not path.exists():
             raise FileNotFoundError(f"Artifact not found: {path}")
         return path.read_bytes()
@@ -300,11 +314,10 @@ class FilesystemBackend:
     def delete(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
     ) -> None:
-        path = self._path(user_id, memory_id, artifact_id, filename)
+        path = self._path(user_id, artifact_id, filename)
         if path.exists():
             path.unlink()
         # Clean up empty parent directories
@@ -314,19 +327,36 @@ class FilesystemBackend:
         ):
             shutil.rmtree(artifact_dir)
 
-    def delete_all_for_memory(self, user_id: str, memory_id: str) -> None:
-        memory_dir = self._base_path / user_id / memory_id
-        if memory_dir.exists():
-            shutil.rmtree(memory_dir)
+    def delete_artifact(self, user_id: str, artifact_id: str) -> None:
+        """Delete all files for a specific artifact."""
+        _validate_path_component(user_id, "user_id")
+        _validate_path_component(artifact_id, "artifact_id")
+        artifact_dir = (self._base_path / user_id / artifact_id).resolve()
+        if not artifact_dir.is_relative_to(self._base_path.resolve()):
+            raise ValueError(
+                "Invalid path components: resolved path escapes base directory"
+            )
+        if artifact_dir.exists():
+            shutil.rmtree(artifact_dir)
+
+    def delete_all_for_user(self, user_id: str) -> None:
+        """Delete all artifacts for a user."""
+        _validate_path_component(user_id, "user_id")
+        user_dir = (self._base_path / user_id).resolve()
+        if not user_dir.is_relative_to(self._base_path.resolve()):
+            raise ValueError(
+                "Invalid path components: resolved path escapes base directory"
+            )
+        if user_dir.exists():
+            shutil.rmtree(user_dir)
 
     def exists(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         filename: str,
     ) -> bool:
-        return self._path(user_id, memory_id, artifact_id, filename).exists()
+        return self._path(user_id, artifact_id, filename).exists()
 
 
 class ArtifactStore:
@@ -351,21 +381,22 @@ class ArtifactStore:
     def save(
         self,
         user_id: str,
-        memory_id: str,
         content: str | bytes,
         filename: str = "note.md",
         content_type: str = "text/markdown",
+        artifact_id: str | None = None,
     ) -> ArtifactMetadata:
-        """Save an artifact attached to a memory.
+        """Save an artifact.
 
         Args:
-            user_id: Owner of the memory.
-            memory_id: ID of the parent fast memory.
+            user_id: Owner of the artifact.
             content: Text content (str) or binary content (bytes).
                      If str and content_type starts with "text/", encoded as UTF-8.
                      If str and content_type is binary, decoded from base64.
             filename: Name for the artifact file.
             content_type: MIME type of the content.
+            artifact_id: Optional pre-generated artifact ID. If None, a new
+                         UUID-based ID is generated.
 
         Returns:
             ArtifactMetadata with the artifact details.
@@ -387,12 +418,12 @@ class ArtifactStore:
                 "into multiple artifacts."
             )
 
-        artifact_id = uuid.uuid4().hex[:12]
+        if artifact_id is None:
+            artifact_id = uuid.uuid4().hex[:12]
         now = datetime.now(timezone.utc).isoformat()
 
         self._backend.save(
             user_id=user_id,
-            memory_id=memory_id,
             artifact_id=artifact_id,
             filename=filename,
             content=content_bytes,
@@ -410,7 +441,6 @@ class ArtifactStore:
     def load(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         artifacts_meta: list[dict],
         offset: int = 0,
@@ -419,10 +449,10 @@ class ArtifactStore:
         """Load artifact content with pagination.
 
         Args:
-            user_id: Owner of the memory.
-            memory_id: ID of the parent fast memory.
+            user_id: Owner of the artifact.
             artifact_id: ID of the artifact to load.
-            artifacts_meta: List of artifact metadata dicts from the memory.
+            artifacts_meta: List of artifact metadata dicts from a referencing
+                memory. Used to look up filename and content_type.
             offset: Character offset for text content, byte offset for binary.
             limit: Max characters/bytes to return.
 
@@ -436,14 +466,13 @@ class ArtifactStore:
                 meta = a
                 break
         if meta is None:
-            raise ValueError(f"Artifact {artifact_id} not found on memory {memory_id}")
+            raise ValueError(f"Artifact {artifact_id} not found in metadata")
 
         filename = meta["filename"]
         content_type = meta.get("content_type", "text/plain")
 
         raw = self._backend.load(
             user_id=user_id,
-            memory_id=memory_id,
             artifact_id=artifact_id,
             filename=filename,
         )
@@ -478,26 +507,36 @@ class ArtifactStore:
     def delete(
         self,
         user_id: str,
-        memory_id: str,
         artifact_id: str,
         artifacts_meta: list[dict],
     ) -> None:
-        """Delete a specific artifact."""
+        """Delete a specific artifact by ID.
+
+        Uses artifacts_meta to look up the filename for the backend delete.
+        """
         meta = None
         for a in artifacts_meta:
             if a.get("id") == artifact_id:
                 meta = a
                 break
         if meta is None:
-            raise ValueError(f"Artifact {artifact_id} not found on memory {memory_id}")
+            raise ValueError(f"Artifact {artifact_id} not found in metadata")
 
         self._backend.delete(
             user_id=user_id,
-            memory_id=memory_id,
             artifact_id=artifact_id,
             filename=meta["filename"],
         )
 
-    def delete_all_for_memory(self, user_id: str, memory_id: str) -> None:
-        """Delete all artifacts for a memory."""
-        self._backend.delete_all_for_memory(user_id=user_id, memory_id=memory_id)
+    def delete_by_id(self, user_id: str, artifact_id: str) -> None:
+        """Delete an artifact by ID without needing metadata.
+
+        Uses the backend's delete_artifact method which removes all files
+        under the artifact's directory. Used by garbage collection when
+        we know the artifact_id but may not have metadata.
+        """
+        self._backend.delete_artifact(user_id=user_id, artifact_id=artifact_id)
+
+    def delete_all_for_user(self, user_id: str) -> None:
+        """Delete all artifacts for a user."""
+        self._backend.delete_all_for_user(user_id=user_id)

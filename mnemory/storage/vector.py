@@ -617,6 +617,42 @@ class VectorStore:
                 points_selector=Filter(must=must_conditions),
             )
 
+    def artifact_has_references(
+        self,
+        *,
+        artifact_id: str,
+        exclude_memory_id: str,
+    ) -> bool:
+        """Check if any memory (other than exclude_memory_id) references an artifact.
+
+        Uses Qdrant nested field filtering on artifacts[].id to find
+        memories that reference the given artifact_id, excluding the
+        specified memory.
+
+        Returns True if at least one other memory references the artifact.
+        """
+        from qdrant_client.models import HasIdCondition
+
+        scroll_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="artifacts[].id",
+                    match=MatchValue(value=artifact_id),
+                ),
+            ],
+            must_not=[
+                HasIdCondition(has_id=[exclude_memory_id]),
+            ],
+        )
+
+        results, _ = self._client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=scroll_filter,
+            limit=1,
+        )
+
+        return len(results) > 0
+
     # ── Specialized queries ──────────────────────────────────────────
 
     def get_recent_memories(

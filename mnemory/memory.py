@@ -713,11 +713,9 @@ class MemoryService:
 
         elif act == "DELETE":
             target_id = action["target_id"]
-            # Delete artifacts first
+            # Clean up artifacts with reference checking
             try:
-                self.artifact.delete_all_for_memory(
-                    user_id=user_id, memory_id=target_id
-                )
+                self._cleanup_memory_artifacts(user_id, target_id)
             except Exception:
                 logger.warning("Failed to delete artifacts for %s", target_id)
 
@@ -1851,12 +1849,12 @@ class MemoryService:
     # ── Delete Memory ─────────────────────────────────────────────────
 
     def delete_memory(self, memory_id: str, *, user_id: str) -> dict:
-        """Delete a memory and all its artifacts."""
+        """Delete a memory and clean up orphaned artifacts."""
         user_id = _validate_id(user_id, "user_id")
 
-        # Delete artifacts first
+        # Clean up artifacts with reference checking
         try:
-            self.artifact.delete_all_for_memory(user_id=user_id, memory_id=memory_id)
+            self._cleanup_memory_artifacts(user_id, memory_id)
         except Exception as e:
             logger.warning("Failed to delete artifacts for %s: %s", memory_id, e)
 
@@ -1873,22 +1871,36 @@ class MemoryService:
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
 
-        # Delete artifacts for each memory before removing vector entries
-        try:
-            result = self.vector.get_all(user_id=user_id, agent_id=agent_id, limit=1000)
-            for mem in result.get("results", []):
-                mem_id = mem.get("id")
-                if mem_id and (mem.get("metadata") or {}).get("artifacts"):
-                    try:
-                        self.artifact.delete_all_for_memory(
-                            user_id=user_id, memory_id=mem_id
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to delete artifacts for %s: %s", mem_id, e
-                        )
-        except Exception as e:
-            logger.warning("Failed to enumerate memories for artifact cleanup: %s", e)
+        # When deleting all memories, we can bulk-delete all artifacts
+        # for the user since no references will remain.
+        # For agent-scoped deletes, we need per-artifact reference checking.
+        if agent_id is None:
+            # Deleting ALL user memories — safe to delete all artifacts
+            try:
+                self.artifact.delete_all_for_user(user_id=user_id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to bulk-delete artifacts for user %s: %s", user_id, e
+                )
+        else:
+            # Deleting only agent-scoped memories — need reference checking
+            try:
+                result = self.vector.get_all(
+                    user_id=user_id, agent_id=agent_id, limit=1000
+                )
+                for mem in result.get("results", []):
+                    mem_id = mem.get("id")
+                    if mem_id and (mem.get("metadata") or {}).get("artifacts"):
+                        try:
+                            self._cleanup_memory_artifacts(user_id, mem_id)
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to delete artifacts for %s: %s", mem_id, e
+                            )
+            except Exception as e:
+                logger.warning(
+                    "Failed to enumerate memories for artifact cleanup: %s", e
+                )
 
         self.vector.delete_all(user_id=user_id, agent_id=agent_id)
 
@@ -1961,7 +1973,6 @@ class MemoryService:
 
         meta = self.artifact.save(
             user_id=user_id,
-            memory_id=memory_id,
             content=content,
             filename=filename,
             content_type=content_type,
@@ -2000,7 +2011,6 @@ class MemoryService:
         artifacts_meta = self._get_artifacts_meta(user_id, memory_id)
         return self.artifact.load(
             user_id=user_id,
-            memory_id=memory_id,
             artifact_id=artifact_id,
             artifacts_meta=artifacts_meta,
             offset=offset,
@@ -2018,24 +2028,94 @@ class MemoryService:
         *,
         user_id: str,
     ) -> dict:
-        """Delete an artifact and update the memory's metadata."""
+        """Delete an artifact and update the memory's metadata.
+
+        Checks if other memories still reference this artifact before
+        deleting the actual content. If other references exist, only
+        removes the reference from this memory's metadata.
+        """
         user_id = _validate_id(user_id, "user_id")
         artifacts_meta = self._get_artifacts_meta(user_id, memory_id)
-
-        self.artifact.delete(
-            user_id=user_id,
-            memory_id=memory_id,
-            artifact_id=artifact_id,
-            artifacts_meta=artifacts_meta,
-        )
 
         # Update memory metadata to remove the artifact reference
         updated = [a for a in artifacts_meta if a.get("id") != artifact_id]
         self.vector.update_metadata(memory_id, {"artifacts": updated})
 
+        # Check if other memories still reference this artifact
+        if not self._artifact_has_other_references(
+            artifact_id, exclude_memory_id=memory_id
+        ):
+            # No other references — safe to delete the actual content
+            try:
+                self.artifact.delete(
+                    user_id=user_id,
+                    artifact_id=artifact_id,
+                    artifacts_meta=artifacts_meta,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to delete artifact content %s: %s", artifact_id, e
+                )
+
         return {"status": "deleted", "artifact_id": artifact_id, "memory_id": memory_id}
 
     # ── Private Helpers ───────────────────────────────────────────────
+
+    def _artifact_has_other_references(
+        self,
+        artifact_id: str,
+        *,
+        exclude_memory_id: str,
+    ) -> bool:
+        """Check if any other memory references this artifact.
+
+        Uses Qdrant nested field filtering on artifacts[].id to find
+        memories that reference the artifact, excluding the memory being
+        deleted.
+
+        Returns True if at least one other memory references the artifact.
+        """
+        try:
+            return self.vector.artifact_has_references(
+                artifact_id=artifact_id,
+                exclude_memory_id=exclude_memory_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to check artifact references for %s, assuming referenced",
+                artifact_id,
+            )
+            # Safe fallback: assume referenced (don't delete)
+            return True
+
+    def _cleanup_memory_artifacts(self, user_id: str, memory_id: str) -> None:
+        """Clean up artifacts when a memory is deleted.
+
+        For each artifact referenced by the memory, checks if other memories
+        still reference it. If not, deletes the artifact content from storage.
+        """
+        mem = self.vector.get_by_id(memory_id)
+        if mem is None:
+            return
+
+        artifacts = (mem.get("metadata") or {}).get("artifacts", [])
+        if not artifacts:
+            return
+
+        for art in artifacts:
+            art_id = art.get("id")
+            if not art_id:
+                continue
+            if not self._artifact_has_other_references(
+                art_id, exclude_memory_id=memory_id
+            ):
+                # No other references — delete the artifact content
+                try:
+                    self.artifact.delete_by_id(user_id=user_id, artifact_id=art_id)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to delete orphaned artifact %s: %s", art_id, e
+                    )
 
     def _get_available_categories(self, user_id: str) -> list[str]:
         """Get the list of available categories for auto-classification.
