@@ -170,6 +170,10 @@ You are a memory manager for an AI assistant. Your job is to:
   same language.
 - If no relevant facts can be extracted, return an empty list.
 - Today's date is {today}.
+- When dates, times, or temporal references are mentioned, preserve
+  them in the extracted fact. Convert relative references (yesterday,
+  last week, last year, recently, etc.) to absolute dates using
+  Today's date.
 
 ### Examples
 
@@ -189,12 +193,22 @@ Output: {{"memories": [
 ]}}
 
 Input: "I switched from VS Code to Neovim last week"
+(Today's date: 2025-03-15)
 Output: {{"memories": [
-  {{"text": "User uses Neovim as primary editor",
+  {{"text": "User switched from VS Code to Neovim around 8 March 2025",
     "action": "UPDATE", "target_id": "0",
     "old_memory": "User uses VS Code as primary editor",
     "memory_type": "preference",
     "categories": ["technical"],
+    "importance": "normal", "pinned": false}}
+]}}
+
+Input: "Caroline: I went to a LGBTQ support group yesterday"
+(Today's date: 2023-05-08)
+Output: {{"memories": [
+  {{"text": "Caroline attended a LGBTQ support group on 7 May 2023",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "episodic", "categories": ["personal"],
     "importance": "normal", "pinned": false}}
 ]}}
 
@@ -304,6 +318,10 @@ You are a memory manager for an AI assistant. Your job is to:
   same language.
 - If no relevant facts can be extracted, return an empty list.
 - Today's date is {today}.
+- When dates, times, or temporal references are mentioned, preserve
+  them in the extracted fact. Convert relative references (yesterday,
+  last week, last year, recently, etc.) to absolute dates using
+  Today's date.
 
 ### Examples
 
@@ -396,6 +414,7 @@ def build_extraction_prompt(
     available_categories: list[str] | None = None,
     explicit_fields: dict[str, Any] | None = None,
     max_memory_length: int = 1000,
+    event_date: str | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any], dict[str, str]]:
     """Build the unified extraction+classification+dedup prompt.
 
@@ -412,6 +431,11 @@ def build_extraction_prompt(
             the LLM to use these exact values.
         max_memory_length: Maximum character length for each extracted fact.
             Communicated to the LLM in the prompt.
+        event_date: Optional UTC ISO 8601 datetime string for when the event
+            occurred. When provided, its date portion is used as "Today's date"
+            in the extraction prompt instead of the current date. This allows
+            the LLM to resolve relative time references (e.g., "yesterday",
+            "last week") to the correct absolute dates.
 
     Returns:
         Tuple of (messages, json_schema, id_mapping) for the LLM call.
@@ -422,7 +446,16 @@ def build_extraction_prompt(
     if available_categories is None:
         available_categories = list(PREDEFINED_CATEGORIES.keys())
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Use event_date's date portion as "Today's date" when provided,
+    # so the LLM resolves relative references (yesterday, last week)
+    # against the event's actual date rather than the current date.
+    if event_date:
+        try:
+            today = datetime.fromisoformat(event_date).strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    else:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     memory_types = ", ".join(VALID_MEMORY_TYPES)
     importance_levels = ", ".join(IMPORTANCE_WEIGHTS.keys())
 

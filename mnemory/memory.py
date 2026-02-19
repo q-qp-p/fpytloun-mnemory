@@ -150,6 +150,35 @@ def _validate_id(value: str, name: str) -> str:
     return value
 
 
+def _parse_event_date(value: str) -> str:
+    """Parse and normalize an event_date string to UTC ISO 8601.
+
+    Accepts ISO 8601 strings (with or without timezone).
+    If no timezone is provided, assumes server local timezone.
+    Returns UTC ISO 8601 string with timezone offset.
+
+    Raises:
+        ValueError: If the string cannot be parsed as a datetime.
+    """
+    try:
+        dt = datetime.fromisoformat(value)
+    except (ValueError, TypeError) as e:
+        raise ValueError(
+            f"Invalid event_date format: '{value}'. "
+            "Use ISO 8601 format (e.g., '2023-05-08T13:56:00+02:00' "
+            "or '2023-05-08')."
+        ) from e
+
+    # If no timezone, assume server local timezone
+    if dt.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo
+        dt = dt.replace(tzinfo=local_tz)
+
+    # Normalize to UTC
+    dt_utc = dt.astimezone(timezone.utc)
+    return dt_utc.isoformat()
+
+
 class MemoryService:
     """High-level memory service combining fast and slow memory tiers.
 
@@ -187,6 +216,7 @@ class MemoryService:
         infer: bool = True,
         role: str = "user",
         ttl_days: int | None = None,
+        event_date: str | None = None,
     ) -> dict:
         """Store a fast memory with metadata.
 
@@ -205,6 +235,9 @@ class MemoryService:
                   extracts facts about the user. "assistant" extracts facts
                   about the agent (identity, personality, capabilities).
                   Requires agent_id when set to "assistant".
+            event_date: ISO 8601 datetime for when the event occurred. Used to
+                  anchor relative time references during extraction and stored
+                  as metadata. If no timezone, server local time is assumed.
 
         Returns dict with "results" key containing list of memory actions.
         """
@@ -216,6 +249,11 @@ class MemoryService:
             agent_id = _validate_id(agent_id, "agent_id")
         if role == "assistant" and not agent_id:
             raise ValueError("agent_id is required when role='assistant'")
+
+        # Parse and normalize event_date to UTC ISO 8601
+        normalized_event_date: str | None = None
+        if event_date is not None:
+            normalized_event_date = _parse_event_date(event_date)
 
         max_len = self._config.memory.max_memory_length
         if len(content) > max_len:
@@ -239,6 +277,7 @@ class MemoryService:
                 pinned=pinned,
                 role=role,
                 ttl_days=ttl_days,
+                event_date=normalized_event_date,
             )
         else:
             result = self._add_direct(
@@ -251,6 +290,7 @@ class MemoryService:
                 pinned=pinned,
                 role=role,
                 ttl_days=ttl_days,
+                event_date=normalized_event_date,
             )
 
         # Invalidate caches — new memory may affect core memories or categories
@@ -271,6 +311,7 @@ class MemoryService:
         pinned: bool | None,
         role: str,
         ttl_days: int | None,
+        event_date: str | None = None,
     ) -> dict:
         """Add memory with LLM-driven extraction, classification, and dedup.
 
@@ -318,6 +359,7 @@ class MemoryService:
             available_categories=available_cats,
             explicit_fields=explicit_fields if explicit_fields else None,
             max_memory_length=max_len,
+            event_date=event_date,
         )
 
         # 4. Single LLM call
@@ -363,6 +405,7 @@ class MemoryService:
                     ttl_days=ttl_days,
                     explicit_fields=explicit_fields,
                     vector_map=vector_map,
+                    event_date=event_date,
                 )
                 if result_entry:
                     results.append(result_entry)
@@ -538,6 +581,7 @@ class MemoryService:
         ttl_days: int | None,
         explicit_fields: dict[str, Any],
         vector_map: dict[str, list[float]],
+        event_date: str | None = None,
     ) -> dict[str, Any] | None:
         """Execute a single memory action (ADD, UPDATE, or DELETE)."""
         act = action["action"]
@@ -567,6 +611,8 @@ class MemoryService:
                 "artifacts": [],
                 "created_at_utc": datetime.now(timezone.utc).isoformat(),
             }
+            if event_date is not None:
+                metadata["event_date"] = event_date
             ttl_meta = build_expiry_metadata(ttl_days, mem_type, self._config.memory)
             metadata.update(ttl_meta)
 
@@ -604,6 +650,7 @@ class MemoryService:
                     ttl_days=ttl_days,
                     explicit_fields=explicit_fields,
                     vector_map=vector_map,
+                    event_date=event_date,
                 )
 
             # Build updated metadata — preserve existing, override with new
@@ -614,6 +661,11 @@ class MemoryService:
                 "importance": imp,
                 "pinned": pin,
             }
+            # Preserve or update event_date
+            if event_date is not None:
+                metadata_update["event_date"] = event_date
+            elif existing_meta.get("event_date"):
+                metadata_update["event_date"] = existing_meta["event_date"]
             # Recalculate TTL based on new memory_type
             ttl_meta = build_expiry_metadata(ttl_days, mem_type, self._config.memory)
             metadata_update.update(ttl_meta)
@@ -662,6 +714,7 @@ class MemoryService:
         pinned: bool | None,
         role: str,
         ttl_days: int | None,
+        event_date: str | None = None,
     ) -> dict:
         """Add memory directly without LLM inference (infer=False path).
 
@@ -733,6 +786,8 @@ class MemoryService:
             "artifacts": [],
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         }
+        if event_date is not None:
+            metadata["event_date"] = event_date
 
         # Add TTL metadata
         ttl_meta = build_expiry_metadata(ttl_days, memory_type, self._config.memory)

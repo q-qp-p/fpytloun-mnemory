@@ -14,6 +14,7 @@ Two modes:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -27,6 +28,68 @@ logger = logging.getLogger(__name__)
 
 # Batch size for embedding API calls (OpenAI supports up to ~2048)
 EMBED_BATCH_SIZE = 100
+
+# Regex for LoCoMo date format: "1:56 pm on 8 May, 2023"
+_LOCOMO_DATE_RE = re.compile(
+    r"(\d{1,2}):(\d{2})\s*(am|pm)\s+on\s+(\d{1,2})\s+(\w+),?\s+(\d{4})",
+    re.IGNORECASE,
+)
+
+_MONTH_MAP = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+
+
+def _parse_locomo_date(date_str: str) -> str | None:
+    """Parse LoCoMo's human-readable date to ISO 8601.
+
+    Input format: "1:56 pm on 8 May, 2023"
+    Output format: "2023-05-08T13:56:00" (naive, no timezone)
+
+    Returns None if parsing fails.
+    """
+    if not date_str:
+        return None
+    m = _LOCOMO_DATE_RE.match(date_str.strip())
+    if not m:
+        logger.warning("Could not parse LoCoMo date: %s", date_str)
+        return None
+
+    hour = int(m.group(1))
+    minute = int(m.group(2))
+    ampm = m.group(3).lower()
+    day = int(m.group(4))
+    month_name = m.group(5).lower()
+    year = int(m.group(6))
+
+    month = _MONTH_MAP.get(month_name)
+    if month is None:
+        logger.warning("Unknown month '%s' in date: %s", month_name, date_str)
+        return None
+
+    # Convert 12-hour to 24-hour
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+
+    try:
+        dt = datetime(year, month, day, hour, minute)
+        return dt.isoformat()
+    except ValueError:
+        logger.warning("Invalid date components in: %s", date_str)
+        return None
 
 
 @dataclass
@@ -125,11 +188,16 @@ def _ingest_batch(
     user_id = make_user_id(conversation.index)
     start = time.time()
 
-    # Collect all turns (respecting max_turns limit)
-    all_turns = [turn for session in conversation.sessions for turn in session.turns]
+    # Collect all turns with their session dates (respecting max_turns limit)
+    all_turn_data: list[tuple] = []  # (turn, session_event_date)
+    for session in conversation.sessions:
+        session_event_date = _parse_locomo_date(session.date_time)
+        for turn in session.turns:
+            all_turn_data.append((turn, session_event_date))
     if config.max_turns > 0:
-        all_turns = all_turns[: config.max_turns]
-    texts = [turn.format_for_memory() for turn in all_turns]
+        all_turn_data = all_turn_data[: config.max_turns]
+    texts = [turn.format_for_memory() for turn, _ in all_turn_data]
+    event_dates = [ed for _, ed in all_turn_data]
     total = len(texts)
 
     logger.info(
@@ -181,15 +249,18 @@ def _ingest_batch(
 
     # Build points for batch insert (skip any with empty vectors from errors)
     points = []
-    for text, vec in zip(texts, all_vectors):
+    for text, vec, event_date in zip(texts, all_vectors, event_dates):
         if not vec:
             continue
+        meta = dict(base_metadata)
+        if event_date:
+            meta["event_date"] = event_date
         points.append(
             {
                 "text": text,
                 "vector": vec,
                 "user_id": user_id,
-                "metadata": dict(base_metadata),
+                "metadata": meta,
                 "role": "user",
             }
         )
@@ -259,6 +330,8 @@ def _ingest_sequential(
 
     turn_count = 0
     for session in conversation.sessions:
+        # Parse session date for temporal anchoring
+        session_event_date = _parse_locomo_date(session.date_time)
         for turn in session.turns:
             if config.max_turns > 0 and turn_count >= config.max_turns:
                 break
@@ -268,6 +341,7 @@ def _ingest_sequential(
                     content,
                     user_id=user_id,
                     infer=True,
+                    event_date=session_event_date,
                 )
                 turns_processed += 1
 

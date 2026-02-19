@@ -58,7 +58,7 @@ class BenchmarkConfig:
 
     # Search
     search_method: str = "search_memories"  # or "find_memories"
-    search_limit: int = 10
+    search_limit: int = 30
 
     # LLM models for evaluation (default: gpt-4o-mini to match published baselines)
     eval_model: str = "gpt-4o-mini"  # Model for answering questions
@@ -162,8 +162,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--search-limit",
         type=int,
-        default=10,
-        help="Number of search results to retrieve (default: 10)",
+        default=30,
+        help="Number of search results to retrieve (default: 30)",
     )
     run.add_argument(
         "--eval-model",

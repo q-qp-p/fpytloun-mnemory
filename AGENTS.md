@@ -129,6 +129,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 | `pinned` | bool | Whether to include in core memories |
 | `role` | str | "user" (default) or "assistant" — who the memory is about |
 | `artifacts` | list[dict] | Artifact metadata (id, filename, content_type, size, created_at) |
+| `event_date` | str\|None | ISO 8601 UTC datetime of when the event occurred (None = not set). Used to anchor relative time references during extraction and for temporal queries at search time. |
 | `created_at_utc` | str | Our own UTC timestamp |
 | `ttl_days` | int\|None | Original TTL setting in days (None = permanent) |
 | `expires_at` | str\|None | ISO 8601 expiration timestamp (None = never expires) |

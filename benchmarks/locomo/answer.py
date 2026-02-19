@@ -26,6 +26,18 @@ Answer the question concisely and directly based ONLY on the provided memories. 
 If the memories don't contain enough information to answer, say "I don't know" \
 or "Not enough information".
 
+## Temporal reasoning
+
+Some memories include a timestamp showing when the memory was recorded. \
+Use these timestamps to reason about time:
+- If a memory from 8 May 2023 mentions "yesterday", the event happened \
+on 7 May 2023.
+- If a memory from June 2023 mentions "last year", it refers to 2022.
+- If a memory from 3 July 2023 mentions "next month", it refers to August 2023.
+- When asked "when" something happened, calculate the actual date based on \
+the memory timestamp and any relative references in the memory text.
+- When asked about duration or "how long", calculate from the relevant dates.
+
 Keep your answer brief — a few words to one sentence is ideal."""
 
 _ANSWER_USER_TEMPLATE = """\
@@ -107,7 +119,12 @@ class AnswerState:
 
 
 def _format_memories(memories: list[dict[str, Any]]) -> str:
-    """Format retrieved memories into a context string for the LLM."""
+    """Format retrieved memories into a context string for the LLM.
+
+    Includes event_date as a timestamp prefix when available, following
+    Mem0's approach of "{timestamp}: {memory}" formatting for temporal
+    reasoning.
+    """
     if not memories:
         return "(No relevant memories found)"
 
@@ -115,11 +132,30 @@ def _format_memories(memories: list[dict[str, Any]]) -> str:
     for i, mem in enumerate(memories, 1):
         # Handle both search_memories and find_memories result formats
         text = mem.get("memory") or mem.get("text") or mem.get("content", "")
+
+        # Extract event_date from metadata or top-level (search results
+        # include it at top level via server._format_memories)
+        event_date = None
+        metadata = mem.get("metadata") or {}
+        event_date = mem.get("event_date") or metadata.get("event_date")
+
+        # Format timestamp prefix
+        ts_prefix = ""
+        if event_date:
+            # Extract just the date portion for readability
+            try:
+                from datetime import datetime as _dt
+
+                dt = _dt.fromisoformat(event_date)
+                ts_prefix = f"[{dt.strftime('%d %B %Y')}] "
+            except (ValueError, TypeError):
+                ts_prefix = f"[{event_date}] "
+
         score = mem.get("score", 0.0)
         if score:
-            lines.append(f"[{i}] (score: {score:.2f}) {text}")
+            lines.append(f"[{i}] {ts_prefix}(score: {score:.2f}) {text}")
         else:
-            lines.append(f"[{i}] {text}")
+            lines.append(f"[{i}] {ts_prefix}{text}")
     return "\n".join(lines)
 
 

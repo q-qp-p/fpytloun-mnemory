@@ -301,6 +301,7 @@ def add_memory(
     infer: bool = True,
     role: str = "user",
     ttl_days: int | None = None,
+    event_date: str | None = None,
 ) -> str:
     """Store a memory about the user or agent.
 
@@ -356,6 +357,12 @@ def add_memory(
                   procedural=60d, context=7d). Pinned memories are exempt
                   from TTL. Accessed memories have their TTL reset
                   (reinforcement).
+        event_date: ISO 8601 datetime for when the event occurred (e.g.,
+                    "2023-05-08T13:56:00+02:00" or "2023-05-08"). Used to
+                    anchor relative time references during extraction (e.g.,
+                    "yesterday" resolves to the day before event_date, not
+                    today). Also stored as metadata for temporal queries.
+                    If no timezone is provided, server local time is assumed.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -371,6 +378,7 @@ def add_memory(
             infer=infer,
             role=role,
             ttl_days=ttl_days,
+            event_date=event_date,
         )
         return json.dumps(result, default=str)
     except ValueError as e:
@@ -405,7 +413,7 @@ def add_memories(
     Args:
         memories: List of memory objects. Each must have "content" (str).
                   Optional per-item fields: memory_type, categories,
-                  importance, pinned, role, ttl_days. Example:
+                  importance, pinned, role, ttl_days, event_date. Example:
                   [{"content": "User lives in Prague", "categories": ["personal"]},
                    {"content": "Prefers dark mode", "importance": "high"}]
         user_id: User identifier (shared for all items). Optional if
@@ -466,6 +474,7 @@ def add_memories(
                 infer=infer,
                 role=item_role,
                 ttl_days=mem.get("ttl_days"),
+                event_date=mem.get("event_date"),
             )
             # Check for error returned by add_memory (e.g., content too long)
             if result.get("error"):
@@ -1182,6 +1191,10 @@ def _format_memories(memories: list[dict]) -> str:
         if metadata.get("artifacts"):
             entry["has_artifacts"] = True
             entry["artifact_count"] = len(metadata["artifacts"])
+
+        # Event date (when the event occurred)
+        if metadata.get("event_date"):
+            entry["event_date"] = metadata["event_date"]
 
         # TTL state
         if metadata.get("expires_at"):
