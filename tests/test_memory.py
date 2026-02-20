@@ -37,6 +37,8 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.search_keyword_weight = 0.2
     # find_memories config
     mock_config.memory.find_memories_queries = 5
+    # Auto-artifact threshold for remember()
+    mock_config.memory.remember_artifact_threshold = 4000
 
 
 def _make_service(auto_classify=False, track_access=False):
@@ -3299,3 +3301,753 @@ class TestSessionTimezoneInAddMemory:
 
         # Explicit +02:00 → 13:56 UTC, regardless of session timezone
         assert captured["event_date"] == "2023-05-08T13:56:00+00:00"
+
+
+# ── Auto-artifact integration tests (A12) ────────────────────────────
+
+
+def _make_artifact_meta(artifact_id="art-1", size=5000):
+    """Create a mock ArtifactMetadata for testing."""
+    from mnemory.storage.artifact import ArtifactMetadata
+
+    return ArtifactMetadata(
+        artifact_id=artifact_id,
+        filename="content.md",
+        content_type="text/markdown",
+        size=size,
+        created_at="2024-01-01T00:00:00+00:00",
+    )
+
+
+class TestAutoArtifactInferTrue:
+    """Test auto-artifact creation in the infer=True (_add_with_inference) path."""
+
+    def _setup_extraction(self, service, llm_response, *, num_memories=1):
+        """Common setup for extraction pipeline tests."""
+        service.vector.search_similar.return_value = []
+        service.vector.get_all.return_value = {"results": []}
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536 for _ in range(num_memories)
+        ]
+        # Each insert returns a unique ID
+        insert_ids = [f"mem-{i}" for i in range(1, num_memories + 1)]
+        service.vector.insert.side_effect = insert_ids
+        service._llm.generate.return_value = llm_response
+
+    def test_store_artifact_true_long_content_creates_artifact(self):
+        """LLM returns store_artifact=true, content > MAX_MEMORY_LENGTH → artifact created."""
+        import json
+
+        service = _make_service()
+        art_meta = _make_artifact_meta()
+        service.artifact.save.return_value = art_meta
+        service.vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "memory": "User researched washing machines",
+            "metadata": {"artifacts": []},
+        }
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User researched washing machines",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["home"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+                "store_artifact": True,
+            }
+        )
+        self._setup_extraction(service, llm_response)
+
+        # Content longer than MAX_MEMORY_LENGTH (1000)
+        long_content = "Washing machine research: " + "x" * 1000
+        result = service.add_memory(content=long_content, user_id="filip", infer=True)
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        assert "artifact" in result
+        assert result["artifact"]["id"] == "art-1"
+        assert result["artifact"]["linked_memories"] == 1
+        service.artifact.save.assert_called_once()
+        # Artifact should be linked to the memory via update_metadata
+        service.vector.update_metadata.assert_called()
+
+    def test_store_artifact_true_short_content_no_artifact(self):
+        """LLM returns store_artifact=true, content <= MAX_MEMORY_LENGTH → no artifact (size gate)."""
+        import json
+
+        service = _make_service()
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User likes blue",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "preference",
+                        "categories": ["preferences"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+                "store_artifact": True,
+            }
+        )
+        self._setup_extraction(service, llm_response)
+
+        # Content shorter than MAX_MEMORY_LENGTH (1000)
+        result = service.add_memory(content="I like blue", user_id="filip", infer=True)
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        assert "artifact" not in result
+        service.artifact.save.assert_not_called()
+
+    def test_store_artifact_false_long_content_no_artifact(self):
+        """LLM returns store_artifact=false, content > MAX_MEMORY_LENGTH → no artifact."""
+        import json
+
+        service = _make_service()
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User mentioned something",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "episodic",
+                        "categories": ["personal"],
+                        "importance": "low",
+                        "pinned": False,
+                    }
+                ],
+                "store_artifact": False,
+            }
+        )
+        self._setup_extraction(service, llm_response)
+
+        long_content = "x" * 2000
+        result = service.add_memory(content=long_content, user_id="filip", infer=True)
+
+        assert result.get("error") is None
+        assert "artifact" not in result
+        service.artifact.save.assert_not_called()
+
+    def test_store_artifact_missing_defaults_false(self):
+        """LLM doesn't return store_artifact field → defaults to false, no artifact."""
+        import json
+
+        service = _make_service()
+
+        # No store_artifact field in response
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User has a cat",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["personal"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+            }
+        )
+        self._setup_extraction(service, llm_response)
+
+        long_content = "x" * 2000
+        result = service.add_memory(content=long_content, user_id="filip", infer=True)
+
+        assert result.get("error") is None
+        assert "artifact" not in result
+        service.artifact.save.assert_not_called()
+
+    def test_empty_extraction_no_artifact(self):
+        """LLM returns empty memories → no artifact even if store_artifact=true."""
+        import json
+
+        service = _make_service()
+
+        llm_response = json.dumps(
+            {
+                "memories": [],
+                "store_artifact": True,
+            }
+        )
+        self._setup_extraction(service, llm_response, num_memories=0)
+
+        result = service.add_memory(content="x" * 2000, user_id="filip", infer=True)
+
+        assert result["results"] == []
+        assert "artifact" not in result
+        service.artifact.save.assert_not_called()
+
+    def test_artifact_save_fails_memories_still_stored(self):
+        """Artifact save failure should not prevent memories from being stored."""
+        import json
+
+        service = _make_service()
+        service.artifact.save.side_effect = Exception("S3 down")
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User researched topic X",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+                "store_artifact": True,
+            }
+        )
+        self._setup_extraction(service, llm_response)
+
+        long_content = "x" * 2000
+        result = service.add_memory(content=long_content, user_id="filip", infer=True)
+
+        # Memories should still be stored
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        # But no artifact in response (failed gracefully)
+        assert "artifact" not in result
+        service.vector.insert.assert_called_once()
+
+    def test_artifact_linked_to_multiple_memories(self):
+        """Artifact should be linked to all ADD/UPDATE memories from extraction."""
+        import json
+
+        service = _make_service()
+        art_meta = _make_artifact_meta()
+        service.artifact.save.return_value = art_meta
+
+        # Mock get_by_id for each memory
+        def get_by_id_side_effect(memory_id):
+            return {
+                "id": memory_id,
+                "memory": f"Memory {memory_id}",
+                "metadata": {"artifacts": []},
+            }
+
+        service.vector.get_by_id.side_effect = get_by_id_side_effect
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User lives in Prague",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["personal"],
+                        "importance": "high",
+                        "pinned": True,
+                    },
+                    {
+                        "text": "User works as DevOps engineer",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["work"],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                ],
+                "store_artifact": True,
+            }
+        )
+        self._setup_extraction(service, llm_response, num_memories=2)
+
+        long_content = "x" * 2000
+        result = service.add_memory(content=long_content, user_id="filip", infer=True)
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 2
+        assert "artifact" in result
+        assert result["artifact"]["linked_memories"] == 2
+        # update_metadata called once per linked memory
+        assert service.vector.update_metadata.call_count == 2
+
+
+class TestAutoArtifactInferFalse:
+    """Test auto-artifact creation in the infer=False (_add_direct) path."""
+
+    def test_artifact_save_fails_returns_error(self):
+        """When infer=False and content too long, artifact save failure returns error."""
+        service = _make_service()
+        service.artifact.save.side_effect = Exception("Disk full")
+
+        result = service.add_memory(content="x" * 1001, user_id="filip", infer=False)
+
+        assert result.get("error") is True
+        assert "artifact creation failed" in result["message"].lower()
+        service.vector.insert.assert_not_called()
+
+    def test_short_content_no_artifact(self):
+        """Content within MAX_MEMORY_LENGTH should not create artifact."""
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        result = service.add_memory(
+            content="Short content", user_id="filip", infer=False
+        )
+
+        assert result.get("error") is None
+        assert "artifact" not in result
+        service.artifact.save.assert_not_called()
+
+
+class TestRemember:
+    """Test the remember() method for plugin-driven memory extraction."""
+
+    def _setup_extraction(self, service, llm_response, *, num_memories=1):
+        """Common setup for extraction pipeline tests."""
+        service.vector.search_similar.return_value = []
+        service.vector.get_all.return_value = {"results": []}
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536 for _ in range(num_memories)
+        ]
+        insert_ids = [f"mem-{i}" for i in range(1, num_memories + 1)]
+        service.vector.insert.side_effect = insert_ids
+        service._llm.generate.return_value = llm_response
+
+    def test_basic_extraction(self):
+        """remember() should extract and store memories like add_memory(infer=True)."""
+        import json
+
+        service = _make_service()
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User prefers dark mode",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "preference",
+                        "categories": ["preferences"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+            }
+        )
+        self._setup_extraction(service, llm_response)
+
+        result = service.remember(
+            content="I always use dark mode in my editors",
+            user_id="filip",
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        assert result["results"][0]["event"] == "ADD"
+        assert result["results"][0]["memory"] == "User prefers dark mode"
+
+    def test_artifact_created_above_remember_threshold(self):
+        """Content > REMEMBER_ARTIFACT_THRESHOLD with store_artifact=true → artifact."""
+        import json
+
+        service = _make_service()
+        art_meta = _make_artifact_meta(size=5000)
+        service.artifact.save.return_value = art_meta
+        service.vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "memory": "User discussed project architecture",
+            "metadata": {"artifacts": []},
+        }
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User discussed project architecture",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "episodic",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+                "store_artifact": True,
+            }
+        )
+        self._setup_extraction(service, llm_response)
+
+        # Content longer than REMEMBER_ARTIFACT_THRESHOLD (4000)
+        long_content = "Architecture discussion: " + "x" * 4000
+        result = service.remember(content=long_content, user_id="filip")
+
+        assert result.get("error") is None
+        assert "artifact" in result
+        assert result["artifact"]["linked_memories"] == 1
+        service.artifact.save.assert_called_once()
+
+    def test_no_artifact_below_remember_threshold(self):
+        """Content <= REMEMBER_ARTIFACT_THRESHOLD with store_artifact=true → no artifact."""
+        import json
+
+        service = _make_service()
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User likes Python",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "preference",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+                "store_artifact": True,
+            }
+        )
+        self._setup_extraction(service, llm_response)
+
+        # Content shorter than REMEMBER_ARTIFACT_THRESHOLD (4000)
+        result = service.remember(
+            content="I really like Python for scripting",
+            user_id="filip",
+        )
+
+        assert result.get("error") is None
+        assert "artifact" not in result
+        service.artifact.save.assert_not_called()
+
+    def test_threshold_zero_creates_artifact_for_any_content(self):
+        """REMEMBER_ARTIFACT_THRESHOLD=0 → artifact for any non-empty content (threshold=0 means always eligible)."""
+        import json
+
+        service = _make_service()
+        # Override threshold to 0
+        service._config.memory.remember_artifact_threshold = 0
+        art_meta = _make_artifact_meta()
+        service.artifact.save.return_value = art_meta
+        service.vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "memory": "User discussed something",
+            "metadata": {"artifacts": []},
+        }
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User discussed something",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "episodic",
+                        "categories": ["personal"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+                "store_artifact": True,
+            }
+        )
+        self._setup_extraction(service, llm_response)
+
+        # Even short content gets artifact when threshold=0
+        result = service.remember(content="Short but threshold is 0", user_id="filip")
+
+        assert result.get("error") is None
+        # threshold=0 → effective_threshold=0 → len(content) > 0 is True
+        assert "artifact" in result
+        service.artifact.save.assert_called_once()
+
+    def test_role_assistant_requires_agent_id(self):
+        """remember() with role='assistant' but no agent_id should raise ValueError."""
+        service = _make_service()
+
+        with pytest.raises(ValueError, match="agent_id is required"):
+            service.remember(
+                content="I am a helpful assistant",
+                user_id="filip",
+                role="assistant",
+            )
+
+    def test_invalid_role_raises(self):
+        """remember() with invalid role should raise ValueError."""
+        service = _make_service()
+
+        with pytest.raises(ValueError, match="role must be"):
+            service.remember(
+                content="test",
+                user_id="filip",
+                role="system",
+            )
+
+    def test_empty_extraction_returns_empty(self):
+        """remember() with noise content should return empty results."""
+        import json
+
+        service = _make_service()
+
+        llm_response = json.dumps({"memories": []})
+        self._setup_extraction(service, llm_response, num_memories=0)
+
+        result = service.remember(
+            content="Hi, how are you?",
+            user_id="filip",
+        )
+
+        assert result["results"] == []
+        service.vector.insert.assert_not_called()
+
+
+class TestMNArtifactLinking:
+    """Test M:N artifact linking — multiple memories sharing the same artifact."""
+
+    def test_multiple_memories_share_artifact(self):
+        """When extraction produces multiple memories, all should reference the same artifact."""
+        import json
+
+        service = _make_service()
+        art_meta = _make_artifact_meta(artifact_id="shared-art")
+        service.artifact.save.return_value = art_meta
+
+        # Track update_metadata calls to verify artifact linking
+        update_calls = []
+        original_update = service.vector.update_metadata
+
+        def track_update(memory_id, metadata):
+            update_calls.append((memory_id, metadata))
+            return original_update(memory_id, metadata)
+
+        service.vector.update_metadata = MagicMock(side_effect=track_update)
+
+        def get_by_id_side_effect(memory_id):
+            return {
+                "id": memory_id,
+                "memory": f"Memory {memory_id}",
+                "metadata": {"artifacts": []},
+            }
+
+        service.vector.get_by_id.side_effect = get_by_id_side_effect
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Fact one",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["personal"],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                    {
+                        "text": "Fact two",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["work"],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                    {
+                        "text": "Fact three",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                ],
+                "store_artifact": True,
+            }
+        )
+        service.vector.search_similar.return_value = []
+        service.vector.get_all.return_value = {"results": []}
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536 for _ in range(3)
+        ]
+        service.vector.insert.side_effect = ["mem-1", "mem-2", "mem-3"]
+        service._llm.generate.return_value = llm_response
+
+        long_content = "x" * 2000
+        result = service.add_memory(content=long_content, user_id="filip", infer=True)
+
+        assert result["artifact"]["linked_memories"] == 3
+        # All 3 update_metadata calls should include the same artifact ID
+        assert service.vector.update_metadata.call_count == 3
+        for call_args in service.vector.update_metadata.call_args_list:
+            artifacts = call_args[0][1]["artifacts"]
+            assert len(artifacts) == 1
+            assert artifacts[0]["id"] == "shared-art"
+
+    def test_skip_action_not_linked(self):
+        """SKIP actions should not get artifact links."""
+        import json
+
+        service = _make_service()
+        art_meta = _make_artifact_meta()
+        service.artifact.save.return_value = art_meta
+        service.vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "memory": "Some fact",
+            "metadata": {"artifacts": []},
+        }
+
+        llm_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "New fact",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["personal"],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                    {
+                        "text": "Already known",
+                        "action": "SKIP",
+                        "target_id": "0",
+                        "old_memory": "Already known",
+                        "memory_type": "fact",
+                        "categories": ["personal"],
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                ],
+                "store_artifact": True,
+            }
+        )
+        service.vector.search_similar.return_value = [
+            {
+                "id": "existing-1",
+                "text": "Already known",
+                "score": 0.95,
+                "type": "fact",
+                "categories": ["personal"],
+            }
+        ]
+        service.vector.get_all.return_value = {"results": []}
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.insert.return_value = "mem-1"
+        service._llm.generate.return_value = llm_response
+
+        long_content = "x" * 2000
+        result = service.add_memory(content=long_content, user_id="filip", infer=True)
+
+        # Only 1 memory added (SKIP doesn't produce a result)
+        assert len(result["results"]) == 1
+        assert "artifact" in result
+        # Only linked to the ADD memory, not the SKIP
+        assert result["artifact"]["linked_memories"] == 1
+
+
+class TestArtifactCleanup:
+    """Test artifact cleanup when memories are deleted."""
+
+    def test_delete_memory_deletes_orphan_artifact(self):
+        """Deleting a memory should delete its artifact if no other references exist."""
+        service = _make_service()
+        service.vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "memory": "Some fact",
+            "metadata": {
+                "user_id": "filip",
+                "artifacts": [
+                    {
+                        "id": "art-1",
+                        "filename": "content.md",
+                        "content_type": "text/markdown",
+                        "size": 5000,
+                        "created_at": "2024-01-01T00:00:00+00:00",
+                    }
+                ],
+            },
+        }
+        # No other memories reference this artifact
+        service.vector.artifact_has_references.return_value = False
+
+        service.delete_memory("mem-1", user_id="filip")
+
+        service.vector.delete.assert_called_once_with("mem-1")
+        service.artifact.delete_by_id.assert_called_once_with(
+            user_id="filip", artifact_id="art-1"
+        )
+
+    def test_delete_memory_preserves_shared_artifact(self):
+        """Deleting a memory should NOT delete artifact if other memories reference it."""
+        service = _make_service()
+        service.vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "memory": "Some fact",
+            "metadata": {
+                "user_id": "filip",
+                "artifacts": [
+                    {
+                        "id": "shared-art",
+                        "filename": "content.md",
+                        "content_type": "text/markdown",
+                        "size": 5000,
+                        "created_at": "2024-01-01T00:00:00+00:00",
+                    }
+                ],
+            },
+        }
+        # Another memory also references this artifact
+        service.vector.artifact_has_references.return_value = True
+
+        service.delete_memory("mem-1", user_id="filip")
+
+        service.vector.delete.assert_called_once_with("mem-1")
+        # Artifact should NOT be deleted
+        service.artifact.delete_by_id.assert_not_called()
+
+    def test_delete_memory_no_artifacts(self):
+        """Deleting a memory with no artifacts should just delete the memory."""
+        service = _make_service()
+        service.vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "memory": "Simple fact",
+            "metadata": {
+                "user_id": "filip",
+                "artifacts": [],
+            },
+        }
+
+        service.delete_memory("mem-1", user_id="filip")
+
+        service.vector.delete.assert_called_once_with("mem-1")
+        service.artifact.delete_by_id.assert_not_called()
+        service.vector.artifact_has_references.assert_not_called()

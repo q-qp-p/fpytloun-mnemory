@@ -1,4 +1,4 @@
-"""Tests for artifact storage — path validation and filesystem."""
+"""Tests for artifact storage — path validation, filesystem backend, and store."""
 
 import pytest
 
@@ -98,7 +98,7 @@ class TestFilesystemBackendSecurity:
         backend = FilesystemBackend(config)
 
         with pytest.raises(ValueError):
-            backend._path("user1", "mem1", "art1", "../../etc/passwd")
+            backend._path("user1", "art1", "../../etc/passwd")
 
     def test_path_traversal_in_user_id(self, tmp_path):
         config = ArtifactConfig()
@@ -107,7 +107,7 @@ class TestFilesystemBackendSecurity:
         backend = FilesystemBackend(config)
 
         with pytest.raises(ValueError):
-            backend._path("../../etc", "mem1", "art1", "file.txt")
+            backend._path("../../etc", "art1", "file.txt")
 
     def test_valid_path_works(self, tmp_path):
         config = ArtifactConfig()
@@ -115,8 +115,20 @@ class TestFilesystemBackendSecurity:
         config.backend = "filesystem"
         backend = FilesystemBackend(config)
 
-        path = backend._path("user1", "mem1", "art1", "note.md")
+        path = backend._path("user1", "art1", "note.md")
         assert str(tmp_path) in str(path)
+
+    def test_path_format_no_memory_id(self, tmp_path):
+        """Path should be {base}/{user_id}/{artifact_id}/{filename}."""
+        config = ArtifactConfig()
+        config.filesystem_path = str(tmp_path)
+        config.backend = "filesystem"
+        backend = FilesystemBackend(config)
+
+        path = backend._path("user1", "art1", "note.md")
+        # Path should be: tmp_path/user1/art1/note.md
+        expected = tmp_path / "user1" / "art1" / "note.md"
+        assert path == expected
 
 
 # ── ArtifactStore ─────────────────────────────────────────────────────
@@ -132,7 +144,6 @@ class TestArtifactStore:
         with pytest.raises(ValueError, match="Artifact too large"):
             store.save(
                 user_id="user1",
-                memory_id="mem1",
                 content="x" * 200,
                 filename="big.txt",
                 content_type="text/plain",
@@ -146,7 +157,6 @@ class TestArtifactStore:
 
         meta = store.save(
             user_id="user1",
-            memory_id="mem1",
             content="Hello, world!",
             filename="note.txt",
             content_type="text/plain",
@@ -157,7 +167,6 @@ class TestArtifactStore:
 
         result = store.load(
             user_id="user1",
-            memory_id="mem1",
             artifact_id=meta.artifact_id,
             artifacts_meta=[meta.to_dict()],
         )
@@ -174,7 +183,6 @@ class TestArtifactStore:
         content = "A" * 100
         meta = store.save(
             user_id="user1",
-            memory_id="mem1",
             content=content,
             filename="big.txt",
             content_type="text/plain",
@@ -182,7 +190,6 @@ class TestArtifactStore:
 
         result = store.load(
             user_id="user1",
-            memory_id="mem1",
             artifact_id=meta.artifact_id,
             artifacts_meta=[meta.to_dict()],
             offset=0,
@@ -199,7 +206,6 @@ class TestArtifactStore:
 
         meta = store.save(
             user_id="user1",
-            memory_id="mem1",
             content="test",
             filename="note.txt",
             content_type="text/plain",
@@ -207,7 +213,6 @@ class TestArtifactStore:
 
         store.delete(
             user_id="user1",
-            memory_id="mem1",
             artifact_id=meta.artifact_id,
             artifacts_meta=[meta.to_dict()],
         )
@@ -215,7 +220,6 @@ class TestArtifactStore:
         with pytest.raises(FileNotFoundError):
             store.load(
                 user_id="user1",
-                memory_id="mem1",
                 artifact_id=meta.artifact_id,
                 artifacts_meta=[meta.to_dict()],
             )
@@ -229,7 +233,6 @@ class TestArtifactStore:
         with pytest.raises(ValueError, match="not found"):
             store.delete(
                 user_id="user1",
-                memory_id="mem1",
                 artifact_id="nonexistent",
                 artifacts_meta=[],
             )
@@ -239,3 +242,129 @@ class TestArtifactStore:
         config.backend = "invalid"
         with pytest.raises(ValueError, match="Unsupported artifact backend"):
             ArtifactStore(config)
+
+    def test_save_with_explicit_artifact_id(self, tmp_path):
+        """When artifact_id is provided, it should be used instead of generating one."""
+        config = ArtifactConfig()
+        config.filesystem_path = str(tmp_path)
+        config.backend = "filesystem"
+        store = ArtifactStore(config, max_artifact_size=102400)
+
+        meta = store.save(
+            user_id="user1",
+            content="test content",
+            filename="doc.md",
+            content_type="text/markdown",
+            artifact_id="custom-id-123",
+        )
+
+        assert meta.artifact_id == "custom-id-123"
+        assert meta.filename == "doc.md"
+
+        # Verify it can be loaded
+        result = store.load(
+            user_id="user1",
+            artifact_id="custom-id-123",
+            artifacts_meta=[meta.to_dict()],
+        )
+        assert result["content"] == "test content"
+
+    def test_delete_by_id(self, tmp_path):
+        """delete_by_id should remove artifact without needing metadata."""
+        config = ArtifactConfig()
+        config.filesystem_path = str(tmp_path)
+        config.backend = "filesystem"
+        store = ArtifactStore(config, max_artifact_size=102400)
+
+        meta = store.save(
+            user_id="user1",
+            content="test",
+            filename="note.txt",
+            content_type="text/plain",
+        )
+
+        # Delete using delete_by_id (no metadata needed)
+        store.delete_by_id(user_id="user1", artifact_id=meta.artifact_id)
+
+        # Verify it's gone
+        with pytest.raises(FileNotFoundError):
+            store.load(
+                user_id="user1",
+                artifact_id=meta.artifact_id,
+                artifacts_meta=[meta.to_dict()],
+            )
+
+    def test_delete_all_for_user(self, tmp_path):
+        """delete_all_for_user should remove all artifacts for a user."""
+        config = ArtifactConfig()
+        config.filesystem_path = str(tmp_path)
+        config.backend = "filesystem"
+        store = ArtifactStore(config, max_artifact_size=102400)
+
+        # Save two artifacts
+        meta1 = store.save(
+            user_id="user1",
+            content="first",
+            filename="a.txt",
+            content_type="text/plain",
+        )
+        meta2 = store.save(
+            user_id="user1",
+            content="second",
+            filename="b.txt",
+            content_type="text/plain",
+        )
+
+        store.delete_all_for_user(user_id="user1")
+
+        # Both should be gone
+        with pytest.raises(FileNotFoundError):
+            store.load(
+                user_id="user1",
+                artifact_id=meta1.artifact_id,
+                artifacts_meta=[meta1.to_dict()],
+            )
+        with pytest.raises(FileNotFoundError):
+            store.load(
+                user_id="user1",
+                artifact_id=meta2.artifact_id,
+                artifacts_meta=[meta2.to_dict()],
+            )
+
+    def test_delete_all_for_user_preserves_other_users(self, tmp_path):
+        """delete_all_for_user should not affect other users."""
+        config = ArtifactConfig()
+        config.filesystem_path = str(tmp_path)
+        config.backend = "filesystem"
+        store = ArtifactStore(config, max_artifact_size=102400)
+
+        meta1 = store.save(
+            user_id="user1",
+            content="user1 data",
+            filename="a.txt",
+            content_type="text/plain",
+        )
+        meta2 = store.save(
+            user_id="user2",
+            content="user2 data",
+            filename="b.txt",
+            content_type="text/plain",
+        )
+
+        store.delete_all_for_user(user_id="user1")
+
+        # user1's artifact should be gone
+        with pytest.raises(FileNotFoundError):
+            store.load(
+                user_id="user1",
+                artifact_id=meta1.artifact_id,
+                artifacts_meta=[meta1.to_dict()],
+            )
+
+        # user2's artifact should still exist
+        result = store.load(
+            user_id="user2",
+            artifact_id=meta2.artifact_id,
+            artifacts_meta=[meta2.to_dict()],
+        )
+        assert result["content"] == "user2 data"
