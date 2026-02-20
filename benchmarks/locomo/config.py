@@ -60,6 +60,11 @@ class BenchmarkConfig:
     search_method: str = "search_memories"  # or "find_memories"
     search_limit: int = 30
 
+    # Answer
+    answer_limit: int = (
+        0  # 0 = use all search results. >0 = cap memories in answer context
+    )
+
     # LLM models for evaluation (default: gpt-4o-mini to match published baselines)
     eval_model: str = "gpt-4o-mini"  # Model for answering questions
     judge_model: str = ""  # Model for judging answers (default: use eval_model)
@@ -164,6 +169,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=30,
         help="Number of search results to retrieve (default: 30)",
+    )
+    run.add_argument(
+        "--answer-limit",
+        type=int,
+        default=0,
+        help=(
+            "Max memories to include in answer context (default: 0 = all search results). "
+            "Reduces noise for the answering LLM — e.g., 15 uses only top-15."
+        ),
     )
     run.add_argument(
         "--eval-model",
@@ -293,6 +307,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[str, BenchmarkConfig]:
         config.infer = not args.no_infer
         config.search_method = args.search_method
         config.search_limit = args.search_limit
+        config.answer_limit = args.answer_limit
         config.eval_model = args.eval_model
         config.judge_model = args.judge_model
         config.llm_model = args.llm_model

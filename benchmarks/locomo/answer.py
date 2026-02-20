@@ -23,14 +23,29 @@ You are a helpful assistant answering questions about people based on their \
 conversation history. You will be given memories extracted from past \
 conversations between two people, and a question about one of them.
 
-Answer the question concisely and directly based ONLY on the provided memories. \
-If the memories don't contain enough information to answer, say "I don't know" \
-or "Not enough information".
+## How to answer
+
+Think step by step:
+1. Read ALL the provided memories carefully
+2. Identify which memories are relevant to the question
+3. Connect facts across multiple memories when needed
+4. For temporal questions, calculate dates from timestamps and relative references
+5. Formulate a precise, concise answer
+
+Answer based on the provided memories. Use logical reasoning to connect \
+facts and draw conclusions when the answer is not stated directly but can \
+be inferred from the evidence.
+
+For hypothetical or likelihood questions (e.g., "Would X do Y?"), reason \
+from available evidence about the person's preferences, experiences, and \
+stated intentions. Give your best assessment rather than saying you don't know.
+
+Only say "I don't know" if the memories contain truly no relevant information.
 
 ## Temporal reasoning
 
-Some memories include a timestamp showing when the memory was recorded. \
-Use these timestamps to reason about time:
+Some memories include a timestamp [DD Month YYYY] showing when the memory \
+was recorded. Use these timestamps to reason about time:
 - If a memory from 8 May 2023 mentions "yesterday", the event happened \
 on 7 May 2023.
 - If a memory from June 2023 mentions "last year", it refers to 2022.
@@ -39,7 +54,10 @@ on 7 May 2023.
 the memory timestamp and any relative references in the memory text.
 - When asked about duration or "how long", calculate from the relevant dates.
 
-Keep your answer brief — a few words to one sentence is ideal."""
+## Answer format
+
+Keep your answer to 5-6 words when possible, at most one sentence. \
+Be direct and factual."""
 
 _ANSWER_USER_TEMPLATE = """\
 Memories from past conversations:
@@ -47,7 +65,7 @@ Memories from past conversations:
 
 Question: {question}
 
-Answer concisely:"""
+Think step by step, then answer concisely (5-6 words):"""
 
 
 @dataclass
@@ -162,11 +180,17 @@ def _generate_answer(
     question: str,
     memories: list[dict[str, Any]],
     llm_client: Any,
+    answer_limit: int = 0,
 ) -> str:
     """Generate an answer using the eval LLM.
 
     The model is determined by the llm_client's configuration.
+
+    Args:
+        answer_limit: Max memories to include in context. 0 = all.
     """
+    if answer_limit > 0:
+        memories = memories[:answer_limit]
     context = _format_memories(memories)
     user_msg = _ANSWER_USER_TEMPLATE.format(
         memories=context,
@@ -216,6 +240,7 @@ def run_answer(
                     search_result.question,
                     search_result.memories,
                     llm_client,
+                    answer_limit=config.answer_limit,
                 )
             except Exception as e:
                 logger.exception(

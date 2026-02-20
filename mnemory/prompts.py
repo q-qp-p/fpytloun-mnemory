@@ -173,6 +173,14 @@ You are a memory manager for an AI assistant. Your job is to:
   statements (e.g., "Sure, I can help with that" is not a fact).
 - Preserve all important information — do not over-compress
   at the cost of losing detail.
+- Preserve specific details exactly: proper nouns, names, titles
+  (book/movie/song titles), numbers, quantities, and places.
+  For example, keep 'the book "Nothing is Impossible"' — do not
+  generalize to 'a book'.
+- When a message contains multiple distinct facts, extract each
+  as a separate memory. For example, "birthday is Aug 13 and we
+  celebrated on Aug 14" should produce two facts: one for the
+  birthday date and one for the celebration.
 - Each fact must be under {max_length} characters. If content
   is too detailed for a single fact, split into multiple facts.
 - Detect the language of the input and record facts in the
@@ -343,6 +351,10 @@ You are a memory manager for an AI assistant. Your job is to:
   "Assistant is expert in Python").
 - Preserve all important information — do not over-compress
   at the cost of losing detail.
+- Preserve specific details exactly: proper nouns, names, titles,
+  numbers, quantities, and places.
+- When a message contains multiple distinct facts, extract each
+  as a separate memory.
 - Each fact must be under {max_length} characters. If content
   is too detailed for a single fact, split into multiple facts.
 - Detect the language of the input and record facts in the

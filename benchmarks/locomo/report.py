@@ -149,6 +149,8 @@ def format_report(
     lines.append(
         f"Search method:  {config.search_method} (limit={config.search_limit})"
     )
+    if config.answer_limit > 0:
+        lines.append(f"Answer limit:   {config.answer_limit}")
     lines.append(f"Infer:          {config.infer}")
     lines.append(f"Categories:     {config.categories}")
     lines.append("")

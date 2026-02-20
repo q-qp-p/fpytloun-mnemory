@@ -137,6 +137,7 @@ class BenchmarkRunner:
             "infer": self.config.infer,
             "search_method": self.config.search_method,
             "search_limit": self.config.search_limit,
+            "answer_limit": self.config.answer_limit,
             "eval_model": self.config.eval_model,
             "judge_model": self.config.judge_model,
             "llm_model": self.config.llm_model,
@@ -197,6 +198,8 @@ class BenchmarkRunner:
         print(f"Infer: {self.config.infer}")
         print(f"Workers: {self.config.effective_workers}")
         print(f"Search: {self.config.search_method} (limit={self.config.search_limit})")
+        if self.config.answer_limit > 0:
+            print(f"Answer context: top-{self.config.answer_limit} memories")
         if self.config.max_questions > 0:
             print(f"Max questions per category: {self.config.max_questions}")
         if self.config.max_turns > 0:
@@ -360,6 +363,7 @@ def run_report(config: BenchmarkConfig) -> None:
             saved = json.load(f)
         run_config.search_method = saved.get("search_method", "search_memories")
         run_config.search_limit = saved.get("search_limit", 10)
+        run_config.answer_limit = saved.get("answer_limit", 0)
         run_config.infer = saved.get("infer", True)
         run_config.categories = saved.get("categories", [1, 2, 3, 4])
 
