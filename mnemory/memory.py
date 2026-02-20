@@ -279,17 +279,6 @@ class MemoryService:
             default_tz = session_timezone or self._config.memory.default_timezone
             normalized_event_date = _parse_event_date(event_date, default_tz)
 
-        max_len = self._config.memory.max_memory_length
-        if len(content) > max_len:
-            return {
-                "error": True,
-                "message": (
-                    f"Content too long: {len(content)} chars (max {max_len}). "
-                    "Store only key conclusions and findings. Use save_artifact "
-                    "for detailed content."
-                ),
-            }
-
         if infer:
             result = self._add_with_inference(
                 content,
@@ -323,6 +312,59 @@ class MemoryService:
 
         return result
 
+    def remember(
+        self,
+        content: str,
+        *,
+        user_id: str,
+        agent_id: str | None = None,
+        role: str = "user",
+        session_timezone: str | None = None,
+    ) -> dict:
+        """Process conversation content for memory extraction.
+
+        Unlike add_memory, this method:
+        - Accepts longer input (conversation turns) without MAX_MEMORY_LENGTH
+          check on input
+        - Auto-classifies everything (no explicit metadata)
+        - Uses REMEMBER_ARTIFACT_THRESHOLD for auto-artifact decisions
+        - Designed for fire-and-forget background processing from plugins
+
+        The extraction pipeline produces concise facts that respect
+        MAX_MEMORY_LENGTH. Returns the same format as add_memory.
+        """
+        # Validate inputs
+        if role not in ("user", "assistant"):
+            raise ValueError("role must be 'user' or 'assistant'")
+        user_id = _validate_id(user_id, "user_id")
+        if agent_id:
+            agent_id = _validate_id(agent_id, "agent_id")
+        if role == "assistant" and not agent_id:
+            raise ValueError("agent_id is required when role='assistant'")
+
+        # Determine artifact threshold (0 = disabled)
+        artifact_threshold = self._config.memory.remember_artifact_threshold
+
+        result = self._add_with_inference(
+            content,
+            user_id=user_id,
+            agent_id=agent_id,
+            memory_type=None,
+            categories=None,
+            importance=None,
+            pinned=None,
+            role=role,
+            ttl_days=None,
+            event_date=None,
+            artifact_threshold=artifact_threshold if artifact_threshold > 0 else 0,
+        )
+
+        # Invalidate caches
+        self._core_cache.invalidate_prefix(user_id)
+        self._category_cache.invalidate(user_id)
+
+        return result
+
     def _add_with_inference(
         self,
         content: str,
@@ -336,6 +378,7 @@ class MemoryService:
         role: str,
         ttl_days: int | None,
         event_date: str | None = None,
+        artifact_threshold: int | None = None,
     ) -> dict:
         """Add memory with LLM-driven extraction, classification, and dedup.
 
@@ -345,6 +388,13 @@ class MemoryService:
         3. Build unified prompt (extraction + classification + dedup)
         4. Single LLM call
         5. Execute actions (ADD/UPDATE/DELETE)
+        6. Auto-artifact if LLM recommends it and content exceeds threshold
+
+        Args:
+            artifact_threshold: Minimum content length for auto-artifact
+                creation. Defaults to MAX_MEMORY_LENGTH. Pass a different
+                value for remember() which uses REMEMBER_ARTIFACT_THRESHOLD.
+                Pass 0 to disable auto-artifact entirely.
         """
         # 1. Embed the raw content for similarity search
         content_vector = self.vector.embedding.embed(content)
@@ -398,7 +448,7 @@ class MemoryService:
             return {"error": True, "message": "Memory extraction failed"}
 
         # 5. Parse response and execute actions
-        actions = parse_extraction_response(response_text, id_mapping)
+        actions, store_artifact = parse_extraction_response(response_text, id_mapping)
 
         if not actions:
             return {"results": []}
@@ -438,7 +488,22 @@ class MemoryService:
                     "Failed to execute %s action for memory", action["action"]
                 )
 
-        return {"results": results}
+        # 6. Auto-artifact: save original content when LLM recommends it
+        effective_threshold = (
+            artifact_threshold if artifact_threshold is not None else max_len
+        )
+        response: dict[str, Any] = {"results": results}
+        artifact_info = self._maybe_create_auto_artifact(
+            store_artifact=store_artifact,
+            content=content,
+            user_id=user_id,
+            results=results,
+            threshold=effective_threshold,
+        )
+        if artifact_info:
+            response["artifact"] = artifact_info
+
+        return response
 
     def _validate_fact_lengths(
         self,
@@ -477,7 +542,7 @@ class MemoryService:
                 response_text = self._llm.generate(
                     messages, json_schema=schema, max_tokens=2000
                 )
-                shortened = parse_extraction_response(response_text, {})
+                shortened, _ = parse_extraction_response(response_text, {})
             except Exception:
                 logger.exception("LLM shorten/split call failed")
                 return {
@@ -724,6 +789,92 @@ class MemoryService:
 
         return None
 
+    def _maybe_create_auto_artifact(
+        self,
+        *,
+        store_artifact: bool,
+        content: str,
+        user_id: str,
+        results: list[dict[str, Any]],
+        threshold: int,
+    ) -> dict[str, Any] | None:
+        """Create an auto-artifact if the LLM recommends it and content is long enough.
+
+        Saves the original content as an artifact and links it to all
+        ADD/UPDATE memories from the extraction results.
+
+        Args:
+            store_artifact: Whether the LLM recommended storing an artifact.
+                If the LLM didn't return the field, callers should default
+                to True when content exceeds the threshold (safe fallback).
+            content: The original content to save as artifact.
+            user_id: Owner of the memories.
+            results: List of result dicts from _execute_action, each with
+                "id", "memory", and "event" keys.
+            threshold: Minimum content length to create an artifact.
+
+        Returns:
+            Artifact info dict if created, None otherwise.
+        """
+        if not store_artifact:
+            return None
+        if len(content) <= threshold:
+            return None
+        if not results:
+            return None
+
+        # Only link to memories that were ADD'd or UPDATE'd
+        linkable = [r for r in results if r.get("event") in ("ADD", "UPDATE")]
+        if not linkable:
+            return None
+
+        try:
+            meta = self.artifact.save(
+                user_id=user_id,
+                content=content,
+                filename="content.md",
+                content_type="text/markdown",
+            )
+            artifact_dict = meta.to_dict()
+
+            # Link artifact to all ADD/UPDATE memories
+            linked_count = 0
+            for result in linkable:
+                memory_id = result["id"]
+                try:
+                    mem = self.vector.get_by_id(memory_id)
+                    current_artifacts = (
+                        (mem.get("metadata") or {}).get("artifacts", []) if mem else []
+                    )
+                    current_artifacts.append(artifact_dict)
+                    self.vector.update_metadata(
+                        memory_id, {"artifacts": current_artifacts}
+                    )
+                    linked_count += 1
+                except Exception:
+                    logger.warning("Failed to link artifact to memory %s", memory_id)
+
+            logger.info(
+                "Auto-artifact created: %s (%d bytes, linked to %d memories)",
+                meta.artifact_id,
+                meta.size,
+                linked_count,
+            )
+
+            return {
+                "id": meta.artifact_id,
+                "filename": meta.filename,
+                "size": meta.size,
+                "linked_memories": linked_count,
+            }
+
+        except Exception:
+            logger.warning(
+                "Auto-artifact creation failed, memories stored without artifact",
+                exc_info=True,
+            )
+            return None
+
     def _add_direct(
         self,
         content: str,
@@ -815,10 +966,53 @@ class MemoryService:
         ttl_meta = build_expiry_metadata(ttl_days, memory_type, self._config.memory)
         metadata.update(ttl_meta)
 
+        # Auto-artifact for oversized content (infer=False path)
+        max_len = self._config.memory.max_memory_length
+        store_content = content
+        artifact_info: dict[str, Any] | None = None
+
+        if len(content) > max_len:
+            # Save full content as artifact, truncate memory text
+            try:
+                art_meta = self.artifact.save(
+                    user_id=user_id,
+                    content=content,
+                    filename="content.md",
+                    content_type="text/markdown",
+                )
+                metadata["artifacts"] = [art_meta.to_dict()]
+                artifact_info = {
+                    "id": art_meta.artifact_id,
+                    "filename": art_meta.filename,
+                    "size": art_meta.size,
+                    "linked_memories": 1,
+                }
+                # Truncate content for the searchable memory
+                store_content = content[:max_len]
+                logger.info(
+                    "Auto-artifact (infer=False): %s (%d bytes), "
+                    "memory truncated to %d chars",
+                    art_meta.artifact_id,
+                    art_meta.size,
+                    max_len,
+                )
+            except Exception:
+                logger.exception(
+                    "Auto-artifact creation failed for infer=False content"
+                )
+                return {
+                    "error": True,
+                    "message": (
+                        f"Content too long ({len(content)} chars, max {max_len}) "
+                        "and artifact creation failed. Use save_artifact "
+                        "for detailed content."
+                    ),
+                }
+
         # Embed and store
-        vector = self.vector.embedding.embed(content)
+        vector = self.vector.embedding.embed(store_content)
         memory_id = self.vector.insert(
-            text=content,
+            text=store_content,
             vector=vector,
             user_id=user_id,
             agent_id=agent_id,
@@ -826,7 +1020,13 @@ class MemoryService:
             role=role,
         )
 
-        return {"results": [{"id": memory_id, "memory": content, "event": "ADD"}]}
+        response: dict[str, Any] = {
+            "results": [{"id": memory_id, "memory": store_content, "event": "ADD"}]
+        }
+        if artifact_info:
+            response["artifact"] = artifact_info
+
+        return response
 
     # ── Search Helpers ────────────────────────────────────────────────
 

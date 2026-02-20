@@ -283,6 +283,14 @@ class MemoryConfig:
     # Empty string = use server's local timezone.
     default_timezone: str = field(default_factory=lambda: _env("DEFAULT_TIMEZONE", ""))
 
+    # Auto-artifact threshold for remember() endpoint.
+    # When the LLM recommends storing an artifact AND content exceeds this
+    # length (chars), the original content is saved as an artifact.
+    # Set to 0 to disable auto-artifact in remember() entirely.
+    remember_artifact_threshold: int = field(
+        default_factory=lambda: _env_int("REMEMBER_ARTIFACT_THRESHOLD", 4000)
+    )
+
 
 @dataclass
 class Config:

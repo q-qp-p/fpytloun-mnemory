@@ -150,15 +150,17 @@ class TestParseExtractionResponse:
                         "importance": "normal",
                         "pinned": True,
                     }
-                ]
+                ],
+                "store_artifact": False,
             }
         )
-        results = parse_extraction_response(response, {})
+        results, store_artifact = parse_extraction_response(response, {})
         assert len(results) == 1
         assert results[0]["action"] == "ADD"
         assert results[0]["text"] == "Name is John"
         assert results[0]["target_id"] is None
         assert results[0]["pinned"] is True
+        assert store_artifact is False
 
     def test_update_action_maps_id(self):
         response = json.dumps(
@@ -174,11 +176,12 @@ class TestParseExtractionResponse:
                         "importance": "normal",
                         "pinned": False,
                     }
-                ]
+                ],
+                "store_artifact": False,
             }
         )
         id_mapping = {"0": "real-uuid-123"}
-        results = parse_extraction_response(response, id_mapping)
+        results, _ = parse_extraction_response(response, id_mapping)
         assert len(results) == 1
         assert results[0]["action"] == "UPDATE"
         assert results[0]["target_id"] == "real-uuid-123"
@@ -198,11 +201,12 @@ class TestParseExtractionResponse:
                         "importance": "normal",
                         "pinned": False,
                     }
-                ]
+                ],
+                "store_artifact": False,
             }
         )
         id_mapping = {"0": "uuid-a", "1": "uuid-b"}
-        results = parse_extraction_response(response, id_mapping)
+        results, _ = parse_extraction_response(response, id_mapping)
         assert len(results) == 1
         assert results[0]["action"] == "DELETE"
         assert results[0]["target_id"] == "uuid-b"
@@ -221,10 +225,11 @@ class TestParseExtractionResponse:
                         "importance": "normal",
                         "pinned": False,
                     }
-                ]
+                ],
+                "store_artifact": False,
             }
         )
-        results = parse_extraction_response(response, {})
+        results, _ = parse_extraction_response(response, {})
         assert len(results) == 0
 
     def test_empty_text_filtered_out(self):
@@ -241,10 +246,11 @@ class TestParseExtractionResponse:
                         "importance": "normal",
                         "pinned": False,
                     }
-                ]
+                ],
+                "store_artifact": False,
             }
         )
-        results = parse_extraction_response(response, {})
+        results, _ = parse_extraction_response(response, {})
         assert len(results) == 0
 
     def test_unknown_target_id_skipped(self):
@@ -261,20 +267,22 @@ class TestParseExtractionResponse:
                         "importance": "normal",
                         "pinned": False,
                     }
-                ]
+                ],
+                "store_artifact": False,
             }
         )
         id_mapping = {"0": "uuid-a"}
-        results = parse_extraction_response(response, id_mapping)
+        results, _ = parse_extraction_response(response, id_mapping)
         assert len(results) == 0  # Skipped because "99" not in mapping
 
     def test_invalid_json_returns_empty(self):
-        results = parse_extraction_response("not json", {})
+        results, store_artifact = parse_extraction_response("not json", {})
         assert results == []
+        assert store_artifact is False
 
     def test_empty_memories_list(self):
-        response = json.dumps({"memories": []})
-        results = parse_extraction_response(response, {})
+        response = json.dumps({"memories": [], "store_artifact": False})
+        results, _ = parse_extraction_response(response, {})
         assert results == []
 
     def test_invalid_action_skipped(self):
@@ -291,10 +299,11 @@ class TestParseExtractionResponse:
                         "importance": "normal",
                         "pinned": False,
                     }
-                ]
+                ],
+                "store_artifact": False,
             }
         )
-        results = parse_extraction_response(response, {})
+        results, _ = parse_extraction_response(response, {})
         assert len(results) == 0
 
     def test_multiple_actions(self):
@@ -321,11 +330,12 @@ class TestParseExtractionResponse:
                         "importance": "high",
                         "pinned": True,
                     },
-                ]
+                ],
+                "store_artifact": False,
             }
         )
         id_mapping = {"0": "uuid-existing"}
-        results = parse_extraction_response(response, id_mapping)
+        results, _ = parse_extraction_response(response, id_mapping)
         assert len(results) == 2
         assert results[0]["action"] == "ADD"
         assert results[1]["action"] == "UPDATE"
@@ -345,14 +355,59 @@ class TestParseExtractionResponse:
                         "importance": "super_important",
                         "pinned": False,
                     }
-                ]
+                ],
+                "store_artifact": False,
             }
         )
-        results = parse_extraction_response(response, {})
+        results, _ = parse_extraction_response(response, {})
         assert len(results) == 1
         assert results[0]["memory_type"] == "fact"  # Default
         assert results[0]["categories"] == []  # Default
         assert results[0]["importance"] == "normal"  # Default
+
+    def test_store_artifact_true(self):
+        response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Design uses FastAPI",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+                "store_artifact": True,
+            }
+        )
+        results, store_artifact = parse_extraction_response(response, {})
+        assert len(results) == 1
+        assert store_artifact is True
+
+    def test_store_artifact_missing_defaults_false(self):
+        """When store_artifact is missing from response, default to False."""
+        response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Simple fact",
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": "fact",
+                        "categories": [],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ]
+            }
+        )
+        results, store_artifact = parse_extraction_response(response, {})
+        assert len(results) == 1
+        assert store_artifact is False
 
 
 # ── build_classification_prompt ──────────────────────────────────────

@@ -319,6 +319,12 @@ def add_memory(
     Content must be concise (max 1000 chars). For detailed content, store
     a summary here and attach the full content with save_artifact.
 
+    When infer=True and content exceeds the max length, the server
+    automatically extracts concise facts AND preserves the original as
+    an artifact if the content has reference value (e.g., documents,
+    code, specs). When infer=False and content exceeds the max length,
+    the content is auto-saved as an artifact with a truncated memory.
+
     All metadata fields are OPTIONAL — if omitted, the server auto-classifies
     them using an LLM. You can provide any combination of fields; only the
     missing ones will be auto-classified.
@@ -1044,6 +1050,10 @@ def save_artifact(
     analysis, logs, notes, code, data. The fast memory holds the searchable
     summary; the artifact holds the full details.
 
+    Note: When using add_memory with long content, artifacts may be created
+    automatically. Use this tool for explicit artifact attachment to an
+    existing memory. Multiple memories can reference the same artifact.
+
     For text content, pass the content directly. For binary content (images,
     PDFs), pass base64-encoded content and set the appropriate content_type.
 
@@ -1093,7 +1103,9 @@ def get_artifact(
     total_size and has_more to indicate if there's more content.
 
     Args:
-        memory_id: ID of the parent fast memory.
+        memory_id: ID of any memory that references this artifact.
+                   Multiple memories may reference the same artifact —
+                   any of them can be used here.
         artifact_id: ID of the artifact to retrieve.
         user_id: User identifier. Optional if pre-configured via API key mapping.
         offset: Character offset for text, byte offset for binary (default 0).

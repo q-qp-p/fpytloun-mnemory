@@ -551,13 +551,22 @@ class TestBatchAdd:
         assert kwargs["metadata"]["importance"] == "high"
         assert kwargs["metadata"]["pinned"] is True
 
-    def test_content_too_long_returns_error(self):
-        """Content exceeding max length should return an error dict."""
+    def test_content_too_long_creates_auto_artifact(self):
+        """Content exceeding max length should auto-create artifact (infer=False)."""
         service = _make_service()
+        service.vector.insert.return_value = "mem-1"
 
         result = service.add_memory(content="x" * 1001, user_id="filip", infer=False)
-        assert result.get("error") is True
-        assert "too long" in result["message"].lower()
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        assert result["results"][0]["event"] == "ADD"
+        # Memory text should be truncated to max_memory_length (1000)
+        assert len(result["results"][0]["memory"]) == 1000
+        # Artifact should be created
+        assert "artifact" in result
+        assert result["artifact"]["linked_memories"] == 1
+        # Artifact store should have been called
+        service.artifact.save.assert_called_once()
 
 
 # ── Classification in infer=False path ─────────────────────────────────

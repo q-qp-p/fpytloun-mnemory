@@ -32,7 +32,7 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
     "strict": True,
     "schema": {
         "type": "object",
-        "required": ["memories"],
+        "required": ["memories", "store_artifact"],
         "additionalProperties": False,
         "properties": {
             "memories": {
@@ -89,6 +89,14 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
                     },
                 },
             },
+            "store_artifact": {
+                "type": "boolean",
+                "description": (
+                    "Whether the original content should be preserved "
+                    "as an artifact (detailed document attached to the "
+                    "extracted memories for later retrieval)."
+                ),
+            },
         },
     },
 }
@@ -104,7 +112,8 @@ Preserve ALL important information — do not lose detail.
 Each fact must be under {max_length} characters.
 Keep the same JSON schema as the original.
 
-Return a JSON object with a "memories" array using the same format:
+Return a JSON object with a "memories" array and a "store_artifact"
+boolean (set to false). Each memory entry uses the same format:
 text, action, target_id, old_memory, memory_type, categories, importance, pinned.
 
 Return ONLY the JSON object. No explanation, no markdown."""
@@ -284,11 +293,33 @@ updated memory.
 
 {existing_section}
 
+## Artifact Decision
+
+Decide whether the original input content should be preserved as an
+artifact (a detailed document attached to the extracted memories for
+later retrieval).
+
+Set `store_artifact` to **true** when:
+- The content is a structured document (design doc, spec, report, analysis)
+- The content contains code, configuration, or technical reference material
+- The content has detailed information that would lose significant value
+  if only the extracted key facts are kept
+- The content is something the user might want to retrieve in full later
+
+Set `store_artifact` to **false** when:
+- The extracted memories fully capture the content's value
+- The content is casual conversation or simple statements
+- The content is a greeting, question, or short exchange
+- The content is ephemeral or not worth preserving in detail
+
+When in doubt, prefer **false** — artifacts should be reserved for content
+with genuine reference value beyond the extracted facts.
+
 ## Output Format
 
-Return a JSON object with a "memories" array. Each entry
-must have ALL fields: text, action, target_id, old_memory,
-memory_type, categories, importance, pinned.
+Return a JSON object with a "memories" array and a "store_artifact"
+boolean. Each memory entry must have ALL fields: text, action,
+target_id, old_memory, memory_type, categories, importance, pinned.
 
 Return ONLY the JSON object. No explanation, no markdown."""
 
@@ -394,11 +425,33 @@ updated memory.
 
 {existing_section}
 
+## Artifact Decision
+
+Decide whether the original input content should be preserved as an
+artifact (a detailed document attached to the extracted memories for
+later retrieval).
+
+Set `store_artifact` to **true** when:
+- The content is a structured document (design doc, spec, report, analysis)
+- The content contains code, configuration, or technical reference material
+- The content has detailed information that would lose significant value
+  if only the extracted key facts are kept
+- The content is something the user might want to retrieve in full later
+
+Set `store_artifact` to **false** when:
+- The extracted memories fully capture the content's value
+- The content is casual conversation or simple statements
+- The content is a greeting, question, or short exchange
+- The content is ephemeral or not worth preserving in detail
+
+When in doubt, prefer **false** — artifacts should be reserved for content
+with genuine reference value beyond the extracted facts.
+
 ## Output Format
 
-Return a JSON object with a "memories" array. Each entry
-must have ALL fields: text, action, target_id, old_memory,
-memory_type, categories, importance, pinned.
+Return a JSON object with a "memories" array and a "store_artifact"
+boolean. Each memory entry must have ALL fields: text, action,
+target_id, old_memory, memory_type, categories, importance, pinned.
 
 Return ONLY the JSON object. No explanation, no markdown."""
 
@@ -534,7 +587,7 @@ def build_extraction_prompt(
 def parse_extraction_response(
     response_text: str,
     id_mapping: dict[str, str],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     """Parse and validate the LLM's extraction response.
 
     Maps integer IDs back to real UUIDs and validates each memory entry.
@@ -544,17 +597,21 @@ def parse_extraction_response(
         id_mapping: Mapping from integer IDs ("0", "1") to real UUIDs.
 
     Returns:
-        List of validated memory action dicts, each with:
-        - text: str
-        - action: "ADD" | "UPDATE" | "DELETE"
-        - target_id: str | None (real UUID for UPDATE/DELETE)
-        - old_memory: str | None
-        - memory_type: str
-        - categories: list[str]
-        - importance: str
-        - pinned: bool
-
-        NONE actions are filtered out. Invalid entries are skipped with warnings.
+        Tuple of (actions, store_artifact):
+        - actions: List of validated memory action dicts, each with:
+          - text: str
+          - action: "ADD" | "UPDATE" | "DELETE"
+          - target_id: str | None (real UUID for UPDATE/DELETE)
+          - old_memory: str | None
+          - memory_type: str
+          - categories: list[str]
+          - importance: str
+          - pinned: bool
+          NONE actions are filtered out. Invalid entries are skipped
+          with warnings.
+        - store_artifact: bool — whether the LLM recommends preserving
+          the original content as an artifact. Defaults to False if
+          the field is missing from the response.
     """
     from mnemory.llm import parse_json_response
 
@@ -562,12 +619,14 @@ def parse_extraction_response(
         data = parse_json_response(response_text)
     except ValueError:
         logger.warning("Failed to parse extraction response, returning empty list")
-        return []
+        return [], False
+
+    store_artifact = bool(data.get("store_artifact", False))
 
     raw_memories = data.get("memories", [])
     if not isinstance(raw_memories, list):
         logger.warning("'memories' is not a list in extraction response")
-        return []
+        return [], store_artifact
 
     results = []
     for entry in raw_memories:
@@ -626,7 +685,7 @@ def parse_extraction_response(
             }
         )
 
-    return results
+    return results, store_artifact
 
 
 # ── Classification-only prompt (for infer=False path) ────────────────
