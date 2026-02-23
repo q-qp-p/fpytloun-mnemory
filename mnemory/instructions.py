@@ -357,6 +357,29 @@ user_id and agent_id may be pre-configured at the connection level
 - Use delete_memory to remove incorrect or obsolete memories.
 """
 
+# ── Managed-Mode Preamble ─────────────────────────────────────────────
+# Used when plugins handle recall/remember automatically. Tells the LLM
+# not to duplicate the automatic behavior while still allowing explicit
+# user-requested operations.
+
+_MANAGED_BEHAVIOR = """\
+You have access to mnemory — a persistent memory system that remembers
+information across conversations.
+
+Memory recall and storage are handled automatically by the system.
+
+- Do NOT call initialize_memory or get_core_memories — already done for you
+- Do NOT call add_memory proactively — the system stores memories for you
+- You CAN use add_memory if the user explicitly asks to remember something
+- You CAN use search_memories or find_memories for explicit lookups
+  during conversation
+- You CAN use update_memory or delete_memory if the user asks to modify
+  or forget something
+
+When you find relevant memories in search results, use them naturally to
+give better, more personalized answers. Do not just acknowledge them.
+"""
+
 # Valid instruction modes
 VALID_MODES = ("passive", "proactive", "personality")
 
@@ -386,6 +409,23 @@ def build_instructions(mode: str = "proactive") -> str:
     }[mode]
 
     return preamble + _BASE_INSTRUCTIONS
+
+
+def build_managed_instructions(base_mode: str = "proactive") -> str:
+    """Build instructions for managed mode (plugin-driven recall/remember).
+
+    Uses managed behavioral preamble + technical base reference.
+    The base_mode parameter selects which technical reference to include
+    (proactive or personality).
+
+    Args:
+        base_mode: Base mode for technical reference. One of "proactive"
+            or "personality". Defaults to "proactive".
+
+    Returns:
+        Complete managed-mode instructions string.
+    """
+    return _MANAGED_BEHAVIOR + _BASE_INSTRUCTIONS
 
 
 # Backward compatibility: default instructions for proactive mode

@@ -30,6 +30,7 @@ dependencies = [
     "qdrant-client>=1.14.0",
     "uvicorn>=0.30.0",
     "starlette>=0.38.0",
+    "fastapi>=0.100.0",
 ]
 
 [project.optional-dependencies]

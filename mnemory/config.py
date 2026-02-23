@@ -291,6 +291,30 @@ class MemoryConfig:
         default_factory=lambda: _env_int("REMEMBER_ARTIFACT_THRESHOLD", 4000)
     )
 
+    # Input length cap (chars) for infer=True and remember().
+    # ~100k tokens for gpt-5-mini, leaving 50% headroom for output/reasoning.
+    max_input_length: int = field(
+        default_factory=lambda: _env_int("MAX_INPUT_LENGTH", 400000)
+    )
+
+    # Session settings
+    memory_session_ttl: int = field(
+        default_factory=lambda: _env_int("MEMORY_SESSION_TTL", 3600)
+    )
+    memory_session_sweep_interval: int = field(
+        default_factory=lambda: _env_int("MEMORY_SESSION_SWEEP_INTERVAL", 300)
+    )
+
+    # Recall settings
+    recall_max_results: int = field(
+        default_factory=lambda: _env_int("RECALL_MAX_RESULTS", 10)
+    )
+
+    # Remember settings — rate limit per user per minute (0 = no limit)
+    remember_rate_limit: int = field(
+        default_factory=lambda: _env_int("REMEMBER_RATE_LIMIT", 10)
+    )
+
 
 @dataclass
 class Config:

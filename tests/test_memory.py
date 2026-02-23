@@ -39,6 +39,8 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.find_memories_queries = 5
     # Auto-artifact threshold for remember()
     mock_config.memory.remember_artifact_threshold = 4000
+    # Input length cap
+    mock_config.memory.max_input_length = 400000
 
 
 def _make_service(auto_classify=False, track_access=False):

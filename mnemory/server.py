@@ -1398,11 +1398,14 @@ async def lifespan(app):
 
 def create_app() -> Starlette:
     """Create the ASGI application."""
+    from mnemory.api import create_api_app
+
     middleware = [Middleware(APIKeyMiddleware)]
 
     return Starlette(
         routes=[
             Route("/health", health_check),
+            Mount("/api", app=create_api_app()),
             Mount("/", app=mcp.streamable_http_app()),
         ],
         middleware=middleware,

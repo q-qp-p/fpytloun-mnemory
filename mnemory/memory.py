@@ -280,6 +280,18 @@ class MemoryService:
             normalized_event_date = _parse_event_date(event_date, default_tz)
 
         if infer:
+            # For infer=True: cap input at model context budget, not memory length.
+            # The LLM extracts concise facts; max_memory_length applies to output.
+            max_input = self._config.memory.max_input_length
+            if len(content) > max_input:
+                return {
+                    "error": True,
+                    "message": (
+                        f"Input too long: {len(content)} chars "
+                        f"(max {max_input}). Shorten the input or split "
+                        "into multiple calls."
+                    ),
+                }
             result = self._add_with_inference(
                 content,
                 user_id=user_id,
@@ -341,6 +353,11 @@ class MemoryService:
             agent_id = _validate_id(agent_id, "agent_id")
         if role == "assistant" and not agent_id:
             raise ValueError("agent_id is required when role='assistant'")
+
+        # Cap at model context budget (keep most recent content)
+        max_input = self._config.memory.max_input_length
+        if len(content) > max_input:
+            content = content[-max_input:]
 
         # Determine artifact threshold (0 = disabled)
         artifact_threshold = self._config.memory.remember_artifact_threshold
