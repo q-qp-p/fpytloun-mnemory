@@ -84,8 +84,10 @@ class ArtifactInfo(BaseModel):
 class AddMemoryResponse(BaseModel):
     """Response from adding memory/memories."""
 
-    results: list[MemoryActionResult]
+    results: list[MemoryActionResult] = Field(default_factory=list)
     artifact: ArtifactInfo | None = None
+    error: bool = False
+    message: str | None = None
 
 
 class SearchMemoriesRequest(BaseModel):

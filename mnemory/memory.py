@@ -373,7 +373,7 @@ class MemoryService:
             role=role,
             ttl_days=None,
             event_date=None,
-            artifact_threshold=artifact_threshold if artifact_threshold > 0 else 0,
+            artifact_threshold=artifact_threshold,
         )
 
         # Invalidate caches

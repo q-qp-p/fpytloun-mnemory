@@ -51,6 +51,30 @@ def _get_session_store():
     return _session_store
 
 
+def _search_with_scope(
+    service: object,
+    query: str,
+    ctx: SessionContext,
+) -> list[dict]:
+    """Search memories using dual-scope when agent_id is set.
+
+    Mirrors the MCP search_memories behavior: when a session has an
+    agent_id, use dual-scope to return both agent-specific and shared
+    user memories.
+    """
+    if ctx.agent_id:
+        return service.search_memories_dual_scope(
+            query=query,
+            user_id=ctx.user_id,
+            session_agent_id=ctx.agent_id,
+        )
+    return service.search_memories(
+        query=query,
+        user_id=ctx.user_id,
+        agent_id=None,
+    )
+
+
 def _extract_query(req: RecallRequest) -> str:
     """Extract search query from request — explicit query or last user message."""
     if req.query:
@@ -164,21 +188,13 @@ def recall(
                 )
                 # Fallback to simple search
                 try:
-                    search_results = service.search_memories(
-                        query=query,
-                        user_id=ctx.user_id,
-                        agent_id=ctx.agent_id,
-                    )
+                    search_results = _search_with_scope(service, query, ctx)
                 except Exception:
                     logger.warning("search_memories also failed", exc_info=True)
         else:
             # Subsequent call: use search_memories (fast, no LLM)
             try:
-                search_results = service.search_memories(
-                    query=query,
-                    user_id=ctx.user_id,
-                    agent_id=ctx.agent_id,
-                )
+                search_results = _search_with_scope(service, query, ctx)
             except Exception:
                 logger.warning("search_memories failed", exc_info=True)
 

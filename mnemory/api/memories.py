@@ -113,16 +113,30 @@ def search_memories(
     """Semantic search across memories."""
     service = _get_service()
     try:
-        results = service.search_memories(
-            query=req.query,
-            user_id=ctx.user_id,
-            agent_id=ctx.agent_id,
-            memory_type=req.memory_type,
-            categories=req.categories,
-            role=req.role,
-            limit=req.limit,
-            include_decayed=req.include_decayed,
-        )
+        # When session has agent_id, use dual-scope to return both
+        # agent-specific and shared user memories (mirrors MCP behavior).
+        if ctx.agent_id:
+            results = service.search_memories_dual_scope(
+                query=req.query,
+                user_id=ctx.user_id,
+                session_agent_id=ctx.agent_id,
+                memory_type=req.memory_type,
+                categories=req.categories,
+                role=req.role,
+                limit=req.limit,
+                include_decayed=req.include_decayed,
+            )
+        else:
+            results = service.search_memories(
+                query=req.query,
+                user_id=ctx.user_id,
+                agent_id=None,
+                memory_type=req.memory_type,
+                categories=req.categories,
+                role=req.role,
+                limit=req.limit,
+                include_decayed=req.include_decayed,
+            )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -209,15 +223,28 @@ def list_memories(
     service = _get_service()
     cat_list = [c.strip() for c in categories.split(",")] if categories else None
     try:
-        result = service.list_memories(
-            user_id=ctx.user_id,
-            agent_id=ctx.agent_id,
-            memory_type=memory_type,
-            categories=cat_list,
-            role=role,
-            limit=limit,
-            include_decayed=include_decayed,
-        )
+        # When session has agent_id, use dual-scope to return both
+        # agent-specific and shared user memories (mirrors MCP behavior).
+        if ctx.agent_id:
+            result = service.list_memories_dual_scope(
+                user_id=ctx.user_id,
+                session_agent_id=ctx.agent_id,
+                memory_type=memory_type,
+                categories=cat_list,
+                role=role,
+                limit=limit,
+                include_decayed=include_decayed,
+            )
+        else:
+            result = service.list_memories(
+                user_id=ctx.user_id,
+                agent_id=None,
+                memory_type=memory_type,
+                categories=cat_list,
+                role=role,
+                limit=limit,
+                include_decayed=include_decayed,
+            )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return result
@@ -232,6 +259,8 @@ def update_memory(
     """Update an existing memory's content or metadata."""
     service = _get_service()
     try:
+        # Verify ownership: must be own agent's memory or shared
+        service.verify_memory_access(memory_id, session_agent_id=ctx.agent_id)
         result = service.update_memory(
             memory_id=memory_id,
             user_id=ctx.user_id,
@@ -260,6 +289,8 @@ def delete_memory(
     """Delete a memory and its artifacts."""
     service = _get_service()
     try:
+        # Verify ownership: must be own agent's memory or shared
+        service.verify_memory_access(memory_id, session_agent_id=ctx.agent_id)
         result = service.delete_memory(
             memory_id=memory_id,
             user_id=ctx.user_id,

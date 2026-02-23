@@ -41,6 +41,10 @@ class Filter:
             description="Show memory status messages in chat",
         )
 
+    # Max tracked sessions before evicting oldest entries.
+    # Prevents unbounded memory growth in long-running instances.
+    _MAX_SESSIONS = 1000
+
     def __init__(self):
         self.valves = self.Valves()
         # Track which chats have been initialized (chat_id -> session_id)
@@ -128,6 +132,11 @@ class Filter:
 
         if result and result.get("session_id"):
             self._sessions[chat_id] = result["session_id"]
+            # Evict oldest entries if over limit to prevent unbounded growth
+            if len(self._sessions) > self._MAX_SESSIONS:
+                excess = len(self._sessions) - self._MAX_SESSIONS
+                for key in list(self._sessions)[:excess]:
+                    del self._sessions[key]
 
         # Build injection text
         parts = []
