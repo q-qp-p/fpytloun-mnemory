@@ -17,6 +17,8 @@ from mnemory.api.schemas import (
     AddMemoryResponse,
     CoreMemoriesResponse,
     FindMemoriesRequest,
+    ListMemoriesResponse,
+    RecentMemoriesResponse,
     SaveArtifactRequest,
     SearchMemoriesRequest,
     SearchMemoriesResponse,
@@ -186,11 +188,11 @@ def get_core_memories(
     return CoreMemoriesResponse(text=text)
 
 
-@router.get("/recent")
+@router.get("/recent", response_model=RecentMemoriesResponse)
 def get_recent_memories(
     days: int = Query(7, description="Days back to look"),
     scope: str = Query("all", description="Scope: all, user, agent"),
-    limit: int = Query(25, description="Max results per scope"),
+    limit: int = Query(25, ge=1, le=100, description="Max results per scope"),
     include_decayed: bool = Query(False, description="Include expired memories"),
     ctx: SessionContext = Depends(get_session_context),
 ):
@@ -207,15 +209,15 @@ def get_recent_memories(
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    return result
+    return RecentMemoriesResponse(text=result)
 
 
-@router.get("")
+@router.get("", response_model=ListMemoriesResponse)
 def list_memories(
     memory_type: str | None = Query(None, description="Filter by type"),
     categories: str | None = Query(None, description="Comma-separated categories"),
     role: str | None = Query(None, description="Filter by role"),
-    limit: int = Query(50, description="Max results"),
+    limit: int = Query(50, ge=1, le=500, description="Max results"),
     include_decayed: bool = Query(False, description="Include expired memories"),
     ctx: SessionContext = Depends(get_session_context),
 ):
@@ -226,7 +228,7 @@ def list_memories(
         # When session has agent_id, use dual-scope to return both
         # agent-specific and shared user memories (mirrors MCP behavior).
         if ctx.agent_id:
-            result = service.list_memories_dual_scope(
+            results = service.list_memories_dual_scope(
                 user_id=ctx.user_id,
                 session_agent_id=ctx.agent_id,
                 memory_type=memory_type,
@@ -236,7 +238,7 @@ def list_memories(
                 include_decayed=include_decayed,
             )
         else:
-            result = service.list_memories(
+            results = service.list_memories(
                 user_id=ctx.user_id,
                 agent_id=None,
                 memory_type=memory_type,
@@ -247,7 +249,8 @@ def list_memories(
             )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    return result
+    items = [format_memory_item(r) for r in results]
+    return ListMemoriesResponse(results=items)
 
 
 @router.put("/{memory_id}")

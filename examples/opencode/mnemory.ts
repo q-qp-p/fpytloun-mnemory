@@ -4,6 +4,7 @@ export default function mnemoryPlugin(ctx: PluginContext) {
   const baseUrl = process.env.MNEMORY_URL || "http://localhost:8050";
   const apiKey = process.env.MNEMORY_API_KEY || "";
   const agentId = process.env.MNEMORY_AGENT_ID || "opencode";
+  const userId = process.env.MNEMORY_USER_ID || "";
 
   let sessionId: string | null = null;
 
@@ -14,6 +15,9 @@ export default function mnemoryPlugin(ctx: PluginContext) {
     };
     if (apiKey) {
       headers["Authorization"] = `Bearer ${apiKey}`;
+    }
+    if (userId) {
+      headers["X-User-Id"] = userId;
     }
 
     try {

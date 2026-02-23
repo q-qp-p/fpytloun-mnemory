@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from mnemory.api.remember import _check_rate_limit, _format_messages, _rate_limits
+from mnemory.api.schemas import MessageParam
 from mnemory.instructions import build_instructions, build_managed_instructions
 
 
@@ -50,8 +51,8 @@ class TestFormatMessages:
     def test_format_user_assistant(self):
         """Standard user + assistant exchange."""
         messages = [
-            {"role": "user", "content": "I just moved to Berlin"},
-            {"role": "assistant", "content": "That's exciting!"},
+            MessageParam(role="user", content="I just moved to Berlin"),
+            MessageParam(role="assistant", content="That's exciting!"),
         ]
         text = _format_messages(messages)
         assert "User: I just moved to Berlin" in text
@@ -64,28 +65,28 @@ class TestFormatMessages:
     def test_format_skips_empty_content(self):
         """Messages with empty content should be skipped."""
         messages = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": ""},
+            MessageParam(role="user", content="Hello"),
+            MessageParam(role="assistant", content=""),
         ]
         text = _format_messages(messages)
         assert "User: Hello" in text
         assert "Assistant:" not in text
 
-    def test_format_skips_non_string_content(self):
-        """Messages with non-string content should be skipped."""
+    def test_format_skips_none_content(self):
+        """Messages with None content should be skipped."""
         messages = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": 123},
+            MessageParam(role="user", content="Hello"),
+            MessageParam(role="tool", content=None),
         ]
         text = _format_messages(messages)
         assert "User: Hello" in text
-        assert "Assistant:" not in text
+        assert "Tool:" not in text
 
     def test_format_system_message(self):
         """System messages should be formatted with 'System' label."""
         messages = [
-            {"role": "system", "content": "You are helpful"},
-            {"role": "user", "content": "Hi"},
+            MessageParam(role="system", content="You are helpful"),
+            MessageParam(role="user", content="Hi"),
         ]
         text = _format_messages(messages)
         assert "System: You are helpful" in text

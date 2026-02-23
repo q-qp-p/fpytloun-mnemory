@@ -81,9 +81,8 @@ def _extract_query(req: RecallRequest) -> str:
         return req.query
     if req.messages:
         for msg in reversed(req.messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                return content if isinstance(content, str) else ""
+            if msg.role == "user":
+                return msg.content or ""
     return ""
 
 

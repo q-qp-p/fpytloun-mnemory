@@ -18,6 +18,11 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger("mnemory")
 
+# Max known memory IDs per session. Prevents unbounded growth for
+# long-lived sessions with many recall calls. When exceeded, oldest
+# entries are discarded (harmless — may cause minor duplication).
+_MAX_KNOWN_IDS = 10000
+
 
 @dataclass
 class MemorySession:
@@ -117,6 +122,10 @@ class SessionStore:
 
         These IDs will be filtered out on subsequent recall calls
         to avoid returning memories the client already has.
+
+        If the known set exceeds the max cap, it is trimmed by
+        discarding arbitrary entries. This is harmless — worst case,
+        a previously-seen memory is returned again.
         """
         if not memory_ids:
             return
@@ -124,6 +133,13 @@ class SessionStore:
             session = self._sessions.get(session_id)
             if session and not session.is_expired:
                 session.known_memory_ids.update(memory_ids)
+                # Cap the set size to prevent unbounded growth
+                if len(session.known_memory_ids) > _MAX_KNOWN_IDS:
+                    excess = len(session.known_memory_ids) - _MAX_KNOWN_IDS
+                    # Discard arbitrary entries (set has no ordering)
+                    it = iter(session.known_memory_ids)
+                    to_remove = [next(it) for _ in range(excess)]
+                    session.known_memory_ids.difference_update(to_remove)
 
     def get_known_ids(self, session_id: str) -> set[str]:
         """Get the set of known memory IDs for a session."""

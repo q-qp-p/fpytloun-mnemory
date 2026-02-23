@@ -16,7 +16,7 @@ import time
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from mnemory.api.deps import SessionContext, get_session_context
-from mnemory.api.schemas import RememberRequest, RememberResponse
+from mnemory.api.schemas import MessageParam, RememberRequest, RememberResponse
 
 logger = logging.getLogger("mnemory")
 
@@ -74,7 +74,7 @@ def _check_rate_limit(user_id: str) -> bool:
         return True
 
 
-def _format_messages(messages: list[dict]) -> str:
+def _format_messages(messages: list[MessageParam]) -> str:
     """Format OpenAI-style messages into text for extraction.
 
     Example output:
@@ -83,11 +83,10 @@ def _format_messages(messages: list[dict]) -> str:
     """
     parts = []
     for msg in messages:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        if not content or not isinstance(content, str):
+        content = msg.content
+        if not content:
             continue
-        label = role.capitalize()
+        label = msg.role.capitalize()
         parts.append(f"{label}: {content}")
     return "\n".join(parts)
 

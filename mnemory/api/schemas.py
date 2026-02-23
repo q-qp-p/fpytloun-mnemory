@@ -97,7 +97,7 @@ class SearchMemoriesRequest(BaseModel):
     memory_type: str | None = Field(None, description="Filter by memory type")
     categories: list[str] | None = Field(None, description="Filter by categories")
     role: str | None = Field(None, description="Filter by role: 'user' or 'assistant'")
-    limit: int = Field(10, description="Max results to return")
+    limit: int = Field(10, ge=1, le=100, description="Max results to return")
     include_decayed: bool = Field(False, description="Include expired/decayed memories")
 
 
@@ -108,7 +108,7 @@ class FindMemoriesRequest(BaseModel):
     memory_type: str | None = Field(None, description="Filter by memory type")
     categories: list[str] | None = Field(None, description="Filter by categories")
     role: str | None = Field(None, description="Filter by role")
-    limit: int = Field(10, description="Max results to return")
+    limit: int = Field(10, ge=1, le=100, description="Max results to return")
     include_decayed: bool = Field(False, description="Include expired/decayed memories")
 
 
@@ -126,6 +126,18 @@ class SearchMemoriesResponse(BaseModel):
     """Response from memory search."""
 
     results: list[MemoryItem]
+
+
+class ListMemoriesResponse(BaseModel):
+    """Response from listing memories."""
+
+    results: list[MemoryItem]
+
+
+class RecentMemoriesResponse(BaseModel):
+    """Response from get_recent_memories (formatted text)."""
+
+    text: str = Field(..., description="Formatted recent memories text")
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -152,7 +164,7 @@ class RecentMemoriesRequest(BaseModel):
 
     days: int = Field(7, description="How many days back to look")
     scope: str = Field("all", description="Scope: 'all', 'user', or 'agent'")
-    limit: int = Field(25, description="Max results per scope")
+    limit: int = Field(25, ge=1, le=100, description="Max results per scope")
     include_decayed: bool = Field(False, description="Include expired memories")
 
 
@@ -162,7 +174,7 @@ class ListMemoriesRequest(BaseModel):
     memory_type: str | None = Field(None, description="Filter by type")
     categories: list[str] | None = Field(None, description="Filter by categories")
     role: str | None = Field(None, description="Filter by role")
-    limit: int = Field(50, description="Max results")
+    limit: int = Field(50, ge=1, le=500, description="Max results")
     include_decayed: bool = Field(False, description="Include expired memories")
 
 
@@ -215,6 +227,21 @@ class ListCategoriesResponse(BaseModel):
 # ── Intelligence Layer ────────────────────────────────────────────────
 
 
+class MessageParam(BaseModel):
+    """A single message in OpenAI chat format.
+
+    Extra fields are silently ignored to stay forward-compatible with
+    extended message formats (e.g., tool_calls, name, function_call).
+    """
+
+    model_config = {"extra": "allow"}
+
+    role: str = Field(..., description="Message role: user, assistant, system, tool")
+    content: str | None = Field(
+        None, description="Message text content (may be null for tool messages)"
+    )
+
+
 class RecallRequest(BaseModel):
     """Request for the recall endpoint."""
 
@@ -222,7 +249,7 @@ class RecallRequest(BaseModel):
         None, description="Session ID from previous call. Null = first call."
     )
     query: str | None = Field(None, description="Free text search query")
-    messages: list[dict] | None = Field(
+    messages: list[MessageParam] | None = Field(
         None,
         description="OpenAI-format messages. Last user message used as query if query not provided.",
     )
@@ -267,7 +294,7 @@ class RememberRequest(BaseModel):
     session_id: str | None = Field(
         None, description="Session ID to update known memory IDs"
     )
-    messages: list[dict] = Field(
+    messages: list[MessageParam] = Field(
         ..., description="OpenAI-format messages (typically last 2: user + assistant)"
     )
 
