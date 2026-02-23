@@ -1391,8 +1391,16 @@ async def lifespan(app):
     )
     # Eagerly initialize the service so startup failures are caught early
     _get_service()
+
+    # Start session cleanup task for REST API
+    from mnemory.api import _session_store
+
+    _session_store.start_cleanup_task()
+
     async with mcp.session_manager.run():
         yield
+
+    await _session_store.stop_cleanup_task()
     logger.info("mnemory shutting down")
 
 
