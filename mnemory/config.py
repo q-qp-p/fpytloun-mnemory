@@ -272,8 +272,8 @@ class MemoryConfig:
         default_factory=lambda: _env_float("SEARCH_KEYWORD_WEIGHT", 0.2)
     )
 
-    # find_memories: number of search queries the LLM generates from the
-    # user's question. More queries = better recall but more cost.
+    # find_memories: maximum number of search queries the LLM generates from
+    # the user's message. The LLM may return fewer (or zero) based on input.
     find_memories_queries: int = field(
         default_factory=lambda: _env_int("FIND_MEMORIES_QUERIES", 5)
     )

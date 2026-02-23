@@ -30,6 +30,22 @@ class Filter:
             default="open-webui",
             description="Agent ID sent to mnemory",
         )
+        recall_mode: str = Field(
+            default="first_only",
+            description=(
+                "When to recall memories: "
+                "'first_only' = first message only (fast, recommended), "
+                "'always' = every message (searches on each turn)"
+            ),
+        )
+        recall_search_mode: str = Field(
+            default="find",
+            description=(
+                "Search mode for first recall: "
+                "'find' = AI-powered multi-query search (thorough, slower), "
+                "'search' = single vector search (fast, no LLM)"
+            ),
+        )
 
     class UserValves(BaseModel):
         enabled: bool = Field(
@@ -93,6 +109,10 @@ class Filter:
         session_id = self._sessions.get(chat_id)
         is_first = session_id is None
 
+        # In first_only mode, skip recall on subsequent messages entirely
+        if not is_first and self.valves.recall_mode == "first_only":
+            return body
+
         # Extract query from last user message
         query = ""
         for msg in reversed(body.get("messages", [])):
@@ -127,6 +147,7 @@ class Filter:
         if is_first:
             payload["include_instructions"] = True
             payload["managed"] = True
+            payload["search_mode"] = self.valves.recall_search_mode
 
         result = await self._post("/api/recall", payload, __user__)
 
@@ -163,21 +184,42 @@ class Filter:
                 },
             )
 
+        # Show detailed status with stats
         if __event_emitter__ and show_status:
-            count = len(result.get("search_results", [])) if result else 0
+            desc = self._build_status(result, is_first)
             await __event_emitter__(
                 {
                     "type": "status",
-                    "data": {
-                        "description": (
-                            f"Loaded {count} memories" if count else "Memory ready"
-                        ),
-                        "done": True,
-                    },
+                    "data": {"description": desc, "done": True},
                 }
             )
 
         return body
+
+    @staticmethod
+    def _build_status(result: dict | None, is_first: bool) -> str:
+        """Build a detailed status message from recall stats."""
+        if not result:
+            return "Memory unavailable"
+
+        stats = result.get("stats", {})
+        ms = stats.get("latency_ms", 0)
+        core = stats.get("core_count", 0)
+        new = stats.get("new_count", 0)
+
+        if is_first:
+            if core and new:
+                return f"Recalled {core} core + {new} relevant memories ({ms}ms)"
+            if core:
+                return f"Recalled {core} core memories ({ms}ms)"
+            if new:
+                return f"Found {new} relevant memories ({ms}ms)"
+            return f"Memory ready ({ms}ms)"
+
+        # Subsequent call
+        if new:
+            return f"Found {new} new memories ({ms}ms)"
+        return f"No new memories ({ms}ms)"
 
     async def outlet(
         self,

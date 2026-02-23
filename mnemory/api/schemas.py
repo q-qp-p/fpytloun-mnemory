@@ -262,6 +262,14 @@ class RecallRequest(BaseModel):
     instruction_mode: str | None = Field(
         None, description="Override instruction mode (passive/proactive/personality)"
     )
+    search_mode: str | None = Field(
+        None,
+        description=(
+            "Search mode for first call: 'find' (AI-powered, up to N queries, "
+            "default) or 'search' (fast single vector search, no LLM). "
+            "Subsequent calls always use 'search' regardless of this setting."
+        ),
+    )
     recent_days: int = Field(7, description="Days of recent context for core memories")
     ttl: int | None = Field(
         None, description="Session TTL in seconds (only used on first call)"

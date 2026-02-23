@@ -167,8 +167,18 @@ You are a memory manager for an AI assistant. Your job is to:
     use "User" as the subject (e.g., "User prefers dark mode").
 - Write facts in third person, always including the subject
   explicitly.
-- If the content is a conversation or transcript, extract facts
-  about all participants — not just one speaker.
+- If the content is a conversation between a user and an AI assistant:
+  - Extract facts about the USER — what they stated, revealed, or
+    expressed interest in. Include topics the user was exploring or
+    thinking about.
+  - Do NOT extract the assistant's own reasoning, analysis,
+    recommendations, or observations as separate memories. The
+    assistant's responses are context, not facts to remember.
+  - You may extract from assistant messages only when they paraphrase
+    or confirm a user fact (e.g., assistant says "you mentioned you
+    live in Prague" → extract "User lives in Prague").
+- If the content is a multi-person conversation or transcript (not a
+  user/assistant exchange), extract facts about all participants.
 - Do not extract generic responses, pleasantries, or procedural
   statements (e.g., "Sure, I can help with that" is not a fact).
 - Preserve all important information — do not over-compress
@@ -858,10 +868,15 @@ def _validate_importance(value: Any) -> str:
 # ── find_memories prompts ────────────────────────────────────────────
 
 _QUERY_GENERATION_SYSTEM_PROMPT = """\
-You are a memory search assistant. Given a user's question, generate \
+You are a memory search assistant. Given a user's message, generate UP TO \
 {num_queries} diverse search queries to find relevant memories in a \
 personal memory database.
 {today_line}
+If the message is a procedural instruction (e.g., "format that as a table", \
+"show me the code"), an acknowledgment (e.g., "ok", "thanks", "got it"), \
+or otherwise does not benefit from personal memory context, return an \
+empty queries list: {{"queries": []}}
+
 Think like a human searching their memory — follow associations:
 - Direct matches for the question topic
 - Related concepts and associations (e.g., dogs → pets, house, garden, \
@@ -873,7 +888,8 @@ lifestyle, partner)
 include date-specific queries
 
 Each query should target a different angle or aspect. Keep queries short \
-(2-5 words each). Do not repeat the same angle.
+(2-5 words each). Do not repeat the same angle. Use fewer queries for \
+simple lookups, more for complex multi-faceted questions.
 
 Return ONLY a JSON object: {{"queries": ["query1", "query2", ...]}}"""
 

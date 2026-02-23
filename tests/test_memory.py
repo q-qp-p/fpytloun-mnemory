@@ -2776,6 +2776,40 @@ class TestFindMemories:
         ids = [r["id"] for r in result["results"]]
         assert ids.count("dup-mem") <= 1
 
+    def test_empty_queries_returns_empty_results(self):
+        """LLM returning empty queries list should return empty results,
+        not raise an error. This happens when the input doesn't need
+        memory search (e.g., procedural instructions)."""
+        import json
+
+        service = _make_service()
+        service._llm.generate.return_value = json.dumps({"queries": []})
+
+        result = service.find_memories(
+            "ok format that as a table",
+            user_id="filip",
+        )
+
+        assert result["results"] == []
+        assert result["queries"] == []
+        assert result["stats"]["searched"] == 0
+        # Should NOT call embed or search
+        service.vector.embedding.embed_batch.assert_not_called()
+        service.vector.search.assert_not_called()
+
+    def test_invalid_queries_format_raises(self):
+        """LLM returning non-list queries should raise ValueError."""
+        import json
+
+        service = _make_service()
+        service._llm.generate.return_value = json.dumps({"queries": "not a list"})
+
+        with pytest.raises(ValueError, match="Failed to generate"):
+            service.find_memories(
+                "test question",
+                user_id="filip",
+            )
+
     def test_query_generation_failure_raises(self):
         """LLM failure on query generation should raise ValueError."""
         service = _make_service()

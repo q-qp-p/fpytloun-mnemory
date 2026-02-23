@@ -131,6 +131,29 @@ class TestBuildExtractionPrompt:
 
         assert re.search(r"\d{4}-\d{2}-\d{2}", system)
 
+    def test_conversation_extraction_rules_in_user_prompt(self):
+        """User prompt should guide extraction to focus on user facts
+        in user/assistant conversations and filter assistant noise."""
+        messages, _, _ = build_extraction_prompt("test", role="user")
+        system = messages[0]["content"]
+        # Should instruct to extract user facts from conversations
+        assert "user and an AI assistant" in system
+        # Should warn against extracting assistant reasoning
+        assert "assistant's own reasoning" in system.lower() or (
+            "assistant" in system and "not facts to remember" in system.lower()
+        )
+        # Should allow extracting from assistant when confirming user facts
+        assert "paraphrase" in system
+        # Should preserve multi-person transcript extraction
+        assert "multi-person" in system
+
+    def test_conversation_rules_not_in_agent_prompt(self):
+        """Agent prompt should NOT contain user/assistant conversation rules."""
+        messages, _, _ = build_extraction_prompt("test", role="assistant")
+        system = messages[0]["content"]
+        # Agent prompt focuses on assistant identity, not conversation filtering
+        assert "not facts to remember" not in system.lower()
+
 
 # ── parse_extraction_response ────────────────────────────────────────
 
@@ -490,6 +513,21 @@ class TestBuildQueryGenerationPrompt:
         messages, _ = build_query_generation_prompt("test")
         system = messages[0]["content"]
         assert "date-specific queries" in system
+
+    def test_up_to_wording_in_prompt(self):
+        """Prompt should say 'UP TO' to allow fewer or zero queries."""
+        messages, _ = build_query_generation_prompt("test", num_queries=5)
+        system = messages[0]["content"]
+        assert "UP TO" in system
+
+    def test_skip_guidance_in_prompt(self):
+        """Prompt should instruct LLM to return empty queries for
+        procedural instructions and acknowledgments."""
+        messages, _ = build_query_generation_prompt("test")
+        system = messages[0]["content"]
+        assert "empty queries list" in system
+        assert "procedural instruction" in system
+        assert "acknowledgment" in system
 
 
 # ── build_rerank_prompt ──────────────────────────────────────────────

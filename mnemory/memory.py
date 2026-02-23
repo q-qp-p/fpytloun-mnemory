@@ -1335,10 +1335,28 @@ class MemoryService:
         try:
             data = parse_json_response(raw_response)
             queries = data.get("queries", [])
-            if not isinstance(queries, list) or not queries:
-                raise ValueError("LLM returned no search queries")
+            if not isinstance(queries, list):
+                raise ValueError("LLM returned invalid queries format")
         except (ValueError, KeyError) as e:
             raise ValueError(f"Failed to generate search queries: {e}") from e
+
+        # LLM may return 0 queries when the input doesn't need memory search
+        if not queries:
+            logger.info(
+                "find_memories: LLM returned 0 queries for: %s",
+                question[:100],
+            )
+            return {
+                "results": [],
+                "queries": [],
+                "stats": {
+                    "searched": 0,
+                    "merged": 0,
+                    "reranked": False,
+                    "dropped": 0,
+                    "returned": 0,
+                },
+            }
 
         logger.info(
             "find_memories: generated %d queries for question: %s",
