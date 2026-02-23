@@ -62,6 +62,10 @@ class Filter:
                 "Prevents context bloat from weak matches on follow-up messages."
             ),
         )
+        show_status: bool = Field(
+            default=True,
+            description="Show memory status messages in chat (can be overridden per-user)",
+        )
         request_timeout: int = Field(
             default=30,
             description="HTTP request timeout in seconds for mnemory API calls",
@@ -144,9 +148,9 @@ class Filter:
         if not query and not is_first:
             return body  # No query on subsequent turn — skip
 
-        # Show status
-        show_status = True
-        if user_valves and hasattr(user_valves, "show_status"):
+        # Show status (admin valve AND user valve must both be true)
+        show_status = self.valves.show_status
+        if show_status and user_valves and hasattr(user_valves, "show_status"):
             show_status = user_valves.show_status
         if __event_emitter__ and show_status:
             await __event_emitter__(

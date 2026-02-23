@@ -30,6 +30,7 @@ Click the gear icon on the filter to set:
 | `recall_search_mode` | `search` | Search mode: `search` (fast, no LLM) or `find` (AI-powered, thorough) |
 | `recall_find_first` | `true` | When search mode is `search`, use `find` for the first message |
 | `recall_score_threshold` | `0.5` | Minimum relevance score (0.0-1.0) for recalled memories. Prevents context bloat from weak matches. |
+| `show_status` | `true` | Show memory status messages in chat (can be overridden per-user) |
 | `request_timeout` | `30` | HTTP request timeout in seconds for mnemory API calls |
 
 ### 3. Multi-User Setup (Recommended)
