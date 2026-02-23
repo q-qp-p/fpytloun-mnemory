@@ -54,6 +54,10 @@ class Filter:
                 "Ignored when recall_search_mode is 'find'."
             ),
         )
+        request_timeout: int = Field(
+            default=30,
+            description="HTTP request timeout in seconds for mnemory API calls",
+        )
 
     class UserValves(BaseModel):
         enabled: bool = Field(
@@ -90,7 +94,7 @@ class Filter:
                     f"{self.valves.mnemory_url}{path}",
                     headers=headers,
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=10),
+                    timeout=aiohttp.ClientTimeout(total=self.valves.request_timeout),
                 ) as resp:
                     if resp.status == 200:
                         return await resp.json()
