@@ -22,7 +22,15 @@ mnemory/
 ├── embeddings.py          # OpenAI-compatible embedding client with batch support
 ├── prompts.py             # Unified extraction+classification+dedup prompt templates, query generation and rerank prompts for find_memories
 ├── ttl.py                 # TTL (Time-To-Live) utility functions for memory expiration
-├── instructions.py        # Configurable MCP server instructions (passive/proactive/personality modes)
+├── instructions.py        # Configurable MCP server instructions (passive/proactive/personality/managed modes)
+├── session.py             # Server-side memory session tracking (MemorySession + SessionStore)
+├── api/
+│   ├── __init__.py        # FastAPI app factory, session store instance
+│   ├── deps.py            # Auth + identity FastAPI dependency (reads contextvars)
+│   ├── schemas.py         # Pydantic request/response models for all endpoints
+│   ├── memories.py        # Memory CRUD + artifact + category REST endpoints
+│   ├── recall.py          # POST /api/recall — combined initialize + search
+│   └── remember.py        # POST /api/remember — fire-and-forget memory storage
 └── storage/
     ├── vector.py          # Direct Qdrant vector store (insert, search, update, delete)
     └── artifact.py        # Artifact store abstraction (S3 and filesystem backends)
@@ -33,12 +41,14 @@ mnemory/
 | Layer | File | Responsibility |
 |---|---|---|
 | **Transport** | `server.py` | MCP tool definitions, HTTP routing, auth, serialization |
+| **REST API** | `api/` | FastAPI sub-app with OpenAPI spec, CRUD + intelligence endpoints |
 | **Business Logic** | `memory.py` | Validation, reranking, core memory assembly, artifact lifecycle |
 | **Categories** | `categories.py` | Category validation, prefix matching, counting |
 | **TTL** | `ttl.py` | Expiration calculation, decay detection, reinforcement metadata |
 | **Vector Storage** | `storage/vector.py` | Direct Qdrant client for all vector operations |
 | **Artifact Storage** | `storage/artifact.py` | S3/MinIO and filesystem backends for binary artifacts |
 | **Instructions** | `instructions.py` | Configurable MCP server instructions (passive/proactive/personality modes) |
+| **Sessions** | `session.py` | Server-side memory session tracking for recall/remember |
 | **Configuration** | `config.py` | Environment variable parsing into dataclass configs |
 
 ### Key design decisions

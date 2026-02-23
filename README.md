@@ -20,8 +20,10 @@ Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://mo
 - [Configuration](#configuration)
 - [Memory Model](#memory-model)
 - [MCP Tools](#mcp-tools)
+- [REST API](#rest-api)
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
+- [Plugins](#plugins)
 - [Development](#development)
 
 ## Quick Start
@@ -315,6 +317,11 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 | `SEARCH_KEYWORD_WEIGHT` | `0.2` | Weight for keyword overlap boost in search results. Set to 0.0 to disable |
 | `DEFAULT_TIMEZONE` | | Default IANA timezone for naive `event_date` values (e.g., `Europe/Prague`). Empty = server local timezone. Can be overridden per session via `X-Timezone` header |
 | `FIND_MEMORIES_QUERIES` | `5` | Number of search queries the LLM generates for `find_memories` |
+| `MAX_INPUT_LENGTH` | `400000` | Max chars for input to `add_memory(infer=True)` and `remember()`. ~100k tokens |
+| `MEMORY_SESSION_TTL` | `3600` | Default session idle TTL in seconds (1 hour) |
+| `MEMORY_SESSION_SWEEP_INTERVAL` | `300` | Interval in seconds between session cleanup sweeps (5 minutes) |
+| `RECALL_MAX_RESULTS` | `10` | Max search results returned by recall endpoint |
+| `REMEMBER_RATE_LIMIT` | `10` | Max remember requests per minute per user. 0 = no limit |
 
 ## Memory Model
 
@@ -465,6 +472,75 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 | `list_artifacts` | List artifacts on a memory |
 | `delete_artifact` | Remove an artifact |
 
+## REST API
+
+mnemory exposes a full REST API alongside the MCP server. The FastAPI sub-app is mounted at `/api/` with auto-generated OpenAPI spec at `/api/openapi.json` and Swagger UI at `/api/docs`.
+
+Both MCP and REST share the same `MemoryService` backend and authentication middleware.
+
+### Memory CRUD
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/memories` | POST | Add a memory |
+| `/api/memories/batch` | POST | Batch add memories |
+| `/api/memories/search` | POST | Semantic search |
+| `/api/memories/find` | POST | AI-powered multi-query search |
+| `/api/memories/core` | GET | Core memories (pinned + recent) |
+| `/api/memories/recent` | GET | Recent memories |
+| `/api/memories` | GET | List memories |
+| `/api/memories/{id}` | PUT | Update memory |
+| `/api/memories/{id}` | DELETE | Delete memory |
+| `/api/memories/{id}/artifacts` | POST | Save artifact |
+| `/api/memories/{id}/artifacts` | GET | List artifacts |
+| `/api/memories/{id}/artifacts/{aid}` | GET | Get artifact |
+| `/api/memories/{id}/artifacts/{aid}` | DELETE | Delete artifact |
+| `/api/categories` | GET | List categories |
+
+### Intelligence Layer
+
+Two high-level endpoints designed for plugin-driven automatic memory management:
+
+**POST /api/recall** — Combined initialize + search. Call on each user message.
+
+```json
+{
+  "session_id": null,
+  "query": "Should I buy a dog?",
+  "include_instructions": true,
+  "managed": true
+}
+```
+
+- First call (no `session_id`): creates session, returns instructions + core memories + `find_memories` results
+- Subsequent calls: returns only NEW relevant memories via fast `search_memories` (no LLM), filtering out already-returned IDs
+- Graceful degradation: `find_memories` fails → `search_memories` → core memories only → empty response
+
+**POST /api/remember** — Fire-and-forget memory storage. Call after each exchange.
+
+```json
+{
+  "session_id": "sess_abc123",
+  "messages": [
+    {"role": "user", "content": "I just moved to Berlin"},
+    {"role": "assistant", "content": "That's exciting!"}
+  ]
+}
+```
+
+- Returns `{"accepted": true}` immediately, processes in background
+- Reuses the same extraction pipeline as `add_memory(infer=True)` — no extra LLM calls
+- Stored memory IDs are added to the session to prevent echo on next recall
+- Rate limited per user (configurable via `REMEMBER_RATE_LIMIT`)
+
+### Memory Sessions
+
+The recall/remember endpoints use server-side sessions (`MemorySession`) to track which memories the client already has. This prevents context bloat by only returning new memories on subsequent calls.
+
+- Sessions are created on first recall and expire after idle timeout (default 1 hour)
+- Losing a session is harmless — next recall creates a new one
+- Periodic background sweep cleans up expired sessions
+
 ## How It Works
 
 ### Storing a Memory
@@ -520,31 +596,39 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│                  MCP Clients                      │
-│  Open WebUI, Claude Code, Opencode, Cursor, ...  │
-└──────────────────────┬───────────────────────────┘
-                       │ Streamable HTTP (/mcp)
-                       ▼
-┌──────────────────────────────────────────────────┐
-│                    mnemory                        │
-│                                                   │
-│  16 MCP Tools:                                    │
-│  initialize_memory, add_memory, add_memories,    │
-│  search_memories, find_memories,                 │
-│  get_core_memories, get_recent_memories,         │
-│  list_memories, update_memory, delete_memory,    │
-│  delete_all_memories, list_categories,           │
-│  save_artifact, get_artifact, list_artifacts,    │
-│  delete_artifact                                  │
-│                                                   │
-│  ┌─────────────────┐  ┌───────────────────────┐  │
-│  │  Fast Memory     │  │  Slow Memory          │  │
-│  │  (Qdrant)        │  │  (S3/MinIO or FS)     │  │
-│  │  Searchable      │  │  Detailed artifacts   │  │
-│  │  facts/summaries │  │  retrieved on demand   │  │
-│  └────────┬─────────┘  └───────────┬───────────┘  │
-└───────────┼────────────────────────┼──────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                      Client Layer                                │
+│                                                                  │
+│  Open WebUI Filter    Open WebUI OpenAPI Tool    OpenCode Plugin │
+│  (auto recall/remember)  (LLM-driven ops)       (auto recall)   │
+│  Claude Code / Opencode / Cursor (MCP)                          │
+└──────────┬──────────────────┬──────────────────────┬────────────┘
+           │ REST              │ REST (OpenAPI)        │ MCP
+           ▼                  ▼                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    mnemory                                       │
+│                                                                  │
+│  FastAPI (/api/)                  MCP (/mcp)                    │
+│  ├─ POST /api/recall              16 MCP tools                  │
+│  ├─ POST /api/remember                                          │
+│  ├─ POST /api/memories            OpenAPI spec at /api/docs     │
+│  ├─ POST /api/memories/search                                   │
+│  ├─ POST /api/memories/find                                     │
+│  ├─ GET  /api/memories/core                                     │
+│  ├─ ... (full CRUD)                                             │
+│  └─ GET  /api/categories                                        │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  Shared: MemoryService, VectorStore, LLMClient           │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌─────────────────┐  ┌───────────────────────┐                 │
+│  │  Fast Memory     │  │  Slow Memory          │                 │
+│  │  (Qdrant)        │  │  (S3/MinIO or FS)     │                 │
+│  │  Searchable      │  │  Detailed artifacts   │                 │
+│  │  facts/summaries │  │  retrieved on demand   │                 │
+│  └────────┬─────────┘  └───────────┬───────────┘                 │
+└───────────┼────────────────────────┼────────────────────────────┘
             │                        │
             ▼                        ▼
      ┌────────────┐          ┌──────────────┐
@@ -559,6 +643,26 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
      │(LLM+embed) │
      └────────────┘
 ```
+
+## Plugins
+
+Native plugins that automatically recall memories on each user message and store memories after each exchange — no LLM tool-calling required.
+
+### Open WebUI Filter
+
+A filter function that calls `/api/recall` on inlet (before LLM) and `/api/remember` on outlet (after LLM). Injects memories into the system prompt automatically.
+
+See [`examples/openwebui/`](examples/openwebui/) for the filter and setup instructions.
+
+### OpenCode Plugin
+
+A TypeScript plugin that hooks into session lifecycle for automatic recall/remember.
+
+See [`examples/opencode/`](examples/opencode/) for the plugin and setup instructions.
+
+### Hybrid Approach
+
+Plugins handle automatic recall/remember. The LLM still has access to tools (via OpenAPI or MCP) for explicit operations like searching mid-conversation or deleting a memory the user asks to forget.
 
 ## Development
 
