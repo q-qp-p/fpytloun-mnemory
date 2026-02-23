@@ -54,6 +54,14 @@ class Filter:
                 "Ignored when recall_search_mode is 'find'."
             ),
         )
+        recall_score_threshold: float = Field(
+            default=0.5,
+            description=(
+                "Minimum relevance score (0.0-1.0) for recalled memories. "
+                "Higher = fewer but more relevant memories injected. "
+                "Prevents context bloat from weak matches on follow-up messages."
+            ),
+        )
         request_timeout: int = Field(
             default=30,
             description="HTTP request timeout in seconds for mnemory API calls",
@@ -162,6 +170,7 @@ class Filter:
             "session_id": session_id,
             "query": query,
             "search_mode": search_mode,
+            "score_threshold": self.valves.recall_score_threshold,
         }
         if is_first:
             payload["include_instructions"] = True
@@ -191,7 +200,7 @@ class Filter:
                     if m.get("memory")
                 )
                 if memories_text:
-                    parts.append(f"## Relevant Context\n{memories_text}")
+                    parts.append(f"## Recalled Memories\n{memories_text}")
 
         if parts:
             body["messages"].insert(

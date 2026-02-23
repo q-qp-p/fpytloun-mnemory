@@ -508,12 +508,14 @@ Two high-level endpoints designed for plugin-driven automatic memory management:
   "session_id": null,
   "query": "Should I buy a dog?",
   "include_instructions": true,
-  "managed": true
+  "managed": true,
+  "score_threshold": 0.5
 }
 ```
 
 - First call (no `session_id`): creates session, returns instructions + core memories + `find_memories` results
 - Subsequent calls: returns only NEW relevant memories via fast `search_memories` (no LLM), filtering out already-returned IDs
+- `score_threshold`: optional per-request minimum score (0.0-1.0) for search results, applied on top of server's `SEARCH_SCORE_THRESHOLD`. Prevents context bloat from weak matches on follow-up messages.
 - Graceful degradation: `find_memories` fails → `search_memories` → core memories only → empty response
 
 **POST /api/remember** — Fire-and-forget memory storage. Call after each exchange.

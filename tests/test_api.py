@@ -15,10 +15,11 @@ class TestManagedInstructions:
     def test_build_managed_instructions(self):
         """Managed instructions should include managed behavior + base reference."""
         text = build_managed_instructions()
-        assert "handled automatically by the system" in text
+        assert "handled AUTOMATICALLY by the system" in text
         assert "Do NOT call initialize_memory" in text
         assert "Do NOT call add_memory proactively" in text
-        assert "You CAN use add_memory if the user explicitly asks" in text
+        assert "OVERRIDE any conflicting guidance" in text
+        assert "already injected" in text
         # Should include base technical reference
         assert "TOOL REFERENCE" in text
 
@@ -30,8 +31,8 @@ class TestManagedInstructions:
         assert "TOOL REFERENCE" in managed
         assert "TOOL REFERENCE" in proactive
         # But different preambles
-        assert "handled automatically" in managed
-        assert "handled automatically" not in proactive
+        assert "handled AUTOMATICALLY" in managed
+        assert "handled AUTOMATICALLY" not in proactive
 
     def test_build_instructions_modes(self):
         """All instruction modes should build without error."""
@@ -43,6 +44,121 @@ class TestManagedInstructions:
         """Invalid mode should raise ValueError."""
         with pytest.raises(ValueError, match="Invalid INSTRUCTION_MODE"):
             build_instructions("invalid")
+
+
+class TestRecallScoreThreshold:
+    """Test score threshold filtering in recall endpoint."""
+
+    def test_score_threshold_filters_low_scores(self):
+        """Recall should filter out results below score_threshold."""
+        from unittest.mock import MagicMock, patch
+
+        from mnemory.api.deps import SessionContext
+        from mnemory.api.recall import recall
+        from mnemory.api.schemas import RecallRequest
+        from mnemory.session import SessionStore
+
+        # Mock service that returns results with varying scores
+        mock_service = MagicMock()
+        mock_service.search_memories.return_value = [
+            {"id": "high", "memory": "high score", "score": 0.8, "metadata": {}},
+            {"id": "mid", "memory": "mid score", "score": 0.5, "metadata": {}},
+            {"id": "low", "memory": "low score", "score": 0.3, "metadata": {}},
+        ]
+
+        session_store = SessionStore()
+        session = session_store.create(user_id="test", agent_id=None)
+
+        ctx = SessionContext(user_id="test", agent_id=None, timezone=None)
+        req = RecallRequest(
+            session_id=session.session_id,
+            query="test query",
+            search_mode="search",
+            score_threshold=0.5,
+        )
+
+        with (
+            patch("mnemory.api.recall._get_service", return_value=mock_service),
+            patch("mnemory.api.recall._get_session_store", return_value=session_store),
+        ):
+            response = recall(req, ctx)
+
+        # Only high and mid should pass the 0.5 threshold
+        assert len(response.search_results) == 2
+        result_ids = {r.id for r in response.search_results}
+        assert "high" in result_ids
+        assert "mid" in result_ids
+        assert "low" not in result_ids
+
+    def test_no_score_threshold_returns_all(self):
+        """Without score_threshold, all results should be returned."""
+        from unittest.mock import MagicMock, patch
+
+        from mnemory.api.deps import SessionContext
+        from mnemory.api.recall import recall
+        from mnemory.api.schemas import RecallRequest
+        from mnemory.session import SessionStore
+
+        mock_service = MagicMock()
+        mock_service.search_memories.return_value = [
+            {"id": "high", "memory": "high score", "score": 0.8, "metadata": {}},
+            {"id": "low", "memory": "low score", "score": 0.3, "metadata": {}},
+        ]
+
+        session_store = SessionStore()
+        session = session_store.create(user_id="test", agent_id=None)
+
+        ctx = SessionContext(user_id="test", agent_id=None, timezone=None)
+        req = RecallRequest(
+            session_id=session.session_id,
+            query="test query",
+            search_mode="search",
+            # No score_threshold
+        )
+
+        with (
+            patch("mnemory.api.recall._get_service", return_value=mock_service),
+            patch("mnemory.api.recall._get_session_store", return_value=session_store),
+        ):
+            response = recall(req, ctx)
+
+        # Both should be returned
+        assert len(response.search_results) == 2
+
+    def test_score_threshold_filters_all(self):
+        """If all results are below threshold, no results should be returned."""
+        from unittest.mock import MagicMock, patch
+
+        from mnemory.api.deps import SessionContext
+        from mnemory.api.recall import recall
+        from mnemory.api.schemas import RecallRequest
+        from mnemory.session import SessionStore
+
+        mock_service = MagicMock()
+        mock_service.search_memories.return_value = [
+            {"id": "a", "memory": "weak match", "score": 0.35, "metadata": {}},
+            {"id": "b", "memory": "weak match 2", "score": 0.31, "metadata": {}},
+        ]
+
+        session_store = SessionStore()
+        session = session_store.create(user_id="test", agent_id=None)
+
+        ctx = SessionContext(user_id="test", agent_id=None, timezone=None)
+        req = RecallRequest(
+            session_id=session.session_id,
+            query="ok format as table",
+            search_mode="search",
+            score_threshold=0.5,
+        )
+
+        with (
+            patch("mnemory.api.recall._get_service", return_value=mock_service),
+            patch("mnemory.api.recall._get_session_store", return_value=session_store),
+        ):
+            response = recall(req, ctx)
+
+        assert len(response.search_results) == 0
+        assert response.stats.new_count == 0
 
 
 class TestFormatMessages:

@@ -29,6 +29,8 @@ Click the gear icon on the filter to set:
 | `recall_mode` | `always` | When to recall: `always` (every message) or `first_only` (first message only) |
 | `recall_search_mode` | `search` | Search mode: `search` (fast, no LLM) or `find` (AI-powered, thorough) |
 | `recall_find_first` | `true` | When search mode is `search`, use `find` for the first message |
+| `recall_score_threshold` | `0.5` | Minimum relevance score (0.0-1.0) for recalled memories. Prevents context bloat from weak matches. |
+| `request_timeout` | `30` | HTTP request timeout in seconds for mnemory API calls |
 
 ### 3. Multi-User Setup (Recommended)
 
@@ -92,6 +94,15 @@ Three valves control recall behavior. The defaults (`always` + `search` + `find_
 ### `recall_find_first` — Thorough first message
 
 When `recall_search_mode=search` and `recall_find_first=true` (default), the first message in a session uses `find` mode for thorough initial context loading. Subsequent messages use fast `search`. Ignored when `recall_search_mode=find`.
+
+### `recall_score_threshold` — Relevance filtering
+
+Controls the minimum relevance score (0.0-1.0) for memories injected into context. Default `0.5` filters out weak matches that would bloat context without adding value — especially on follow-up messages like "ok", "format as table", etc.
+
+- **Lower** (e.g., 0.3): More memories injected, may include tangentially related ones
+- **Higher** (e.g., 0.7): Fewer but highly relevant memories only
+
+This threshold is applied on top of the server's `SEARCH_SCORE_THRESHOLD` (default 0.30), which filters at the vector search level.
 
 ### Behavior matrix
 

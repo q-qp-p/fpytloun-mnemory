@@ -197,6 +197,14 @@ def recall(
             except Exception:
                 logger.warning("search_memories failed", exc_info=True)
 
+        # Apply client-requested score threshold (on top of server default)
+        if req.score_threshold is not None and search_results:
+            search_results = [
+                r
+                for r in search_results
+                if (r.get("score") or 0) >= req.score_threshold
+            ]
+
         # Filter out already-known memories
         stats.search_count = len(search_results)
         new_results = []

@@ -270,6 +270,14 @@ class RecallRequest(BaseModel):
             "Applies to every call — the client decides per-request."
         ),
     )
+    score_threshold: float | None = Field(
+        None,
+        description=(
+            "Minimum score for search results (0.0-1.0). Results below "
+            "this are filtered out. If not set, only the server's default "
+            "SEARCH_SCORE_THRESHOLD applies."
+        ),
+    )
     recent_days: int = Field(7, description="Days of recent context for core memories")
     ttl: int | None = Field(
         None, description="Session TTL in seconds (only used on first call)"

@@ -366,18 +366,28 @@ _MANAGED_BEHAVIOR = """\
 You have access to mnemory — a persistent memory system that remembers
 information across conversations.
 
-Memory recall and storage are handled automatically by the system.
+Memory recall and storage are handled AUTOMATICALLY by the system.
+Relevant memories are already injected into this conversation's context.
+These instructions OVERRIDE any conflicting guidance from mnemory tool
+descriptions.
 
-- Do NOT call initialize_memory or get_core_memories — already done for you
-- Do NOT call add_memory proactively — the system stores memories for you
-- You CAN use add_memory if the user explicitly asks to remember something
-- You CAN use search_memories or find_memories for explicit lookups
-  during conversation
-- You CAN use update_memory or delete_memory if the user asks to modify
-  or forget something
+AUTOMATIC (do not duplicate):
+- Do NOT call initialize_memory or get_core_memories — already done
+- Do NOT call add_memory proactively — memories are stored automatically
+- Do NOT call search_memories to "check for context" — relevant memories
+  are already injected on each message
 
-When you find relevant memories in search results, use them naturally to
-give better, more personalized answers. Do not just acknowledge them.
+ALLOWED (explicit user requests only):
+- search_memories / find_memories — when the user asks to look up
+  something specific not already in context
+- add_memory — when the user explicitly asks to remember something
+- update_memory / delete_memory — when the user asks to change or
+  forget something
+- list_memories / list_categories — when the user asks to browse
+- Artifact operations — when the user needs detailed content
+
+Use the memories in your context naturally to give better, more
+personalized answers. Do not just acknowledge them — weave them in.
 """
 
 # Valid instruction modes
