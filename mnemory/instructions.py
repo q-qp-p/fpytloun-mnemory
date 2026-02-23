@@ -411,16 +411,11 @@ def build_instructions(mode: str = "proactive") -> str:
     return preamble + _BASE_INSTRUCTIONS
 
 
-def build_managed_instructions(base_mode: str = "proactive") -> str:
+def build_managed_instructions() -> str:
     """Build instructions for managed mode (plugin-driven recall/remember).
 
     Uses managed behavioral preamble + technical base reference.
-    The base_mode parameter selects which technical reference to include
-    (proactive or personality).
-
-    Args:
-        base_mode: Base mode for technical reference. One of "proactive"
-            or "personality". Defaults to "proactive".
+    Designed for plugin-driven setups where recall/remember are automatic.
 
     Returns:
         Complete managed-mode instructions string.

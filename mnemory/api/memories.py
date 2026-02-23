@@ -17,11 +17,11 @@ from mnemory.api.schemas import (
     AddMemoryResponse,
     CoreMemoriesResponse,
     FindMemoriesRequest,
-    MemoryItem,
     SaveArtifactRequest,
     SearchMemoriesRequest,
     SearchMemoriesResponse,
     UpdateMemoryRequest,
+    format_memory_item,
 )
 
 logger = logging.getLogger("mnemory")
@@ -34,19 +34,6 @@ def _get_service():
     from mnemory.server import _get_service
 
     return _get_service()
-
-
-def _format_search_result(item: dict) -> MemoryItem:
-    """Convert a MemoryService search result dict to a MemoryItem."""
-    metadata = item.get("metadata") or {}
-    has_artifacts = bool(metadata.get("artifacts"))
-    return MemoryItem(
-        id=item["id"],
-        memory=item.get("memory", item.get("text", "")),
-        score=item.get("score"),
-        metadata=metadata if metadata else None,
-        has_artifacts=has_artifacts,
-    )
 
 
 # ── Memory CRUD ───────────────────────────────────────────────────────
@@ -139,7 +126,7 @@ def search_memories(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    items = [_format_search_result(r) for r in results]
+    items = [format_memory_item(r) for r in results]
     return SearchMemoriesResponse(results=items)
 
 
@@ -166,7 +153,7 @@ def find_memories(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    items = [_format_search_result(r) for r in result.get("results", [])]
+    items = [format_memory_item(r) for r in result.get("results", [])]
     return SearchMemoriesResponse(results=items)
 
 
@@ -387,8 +374,10 @@ def delete_artifact(
 
 # ── Categories ────────────────────────────────────────────────────────
 
+categories_router = APIRouter()
 
-@router.get("/categories", tags=["categories"])
+
+@categories_router.get("", tags=["categories"])
 def list_categories(
     ctx: SessionContext = Depends(get_session_context),
 ):

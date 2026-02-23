@@ -42,7 +42,8 @@ def _get_session_store():
 def _check_rate_limit(user_id: str) -> bool:
     """Check if user is within rate limit. Returns True if allowed.
 
-    Uses a sliding window of 60 seconds. Cleans up old entries.
+    Uses a sliding window of 60 seconds. Cleans up old entries
+    and removes empty user keys to prevent unbounded growth.
     """
     from mnemory.server import _get_config
 
@@ -62,6 +63,14 @@ def _check_rate_limit(user_id: str) -> bool:
             return False
         timestamps.append(now)
         _rate_limits[user_id] = timestamps
+
+        # Periodic cleanup: remove empty user entries to prevent memory leak.
+        # Only run when the dict grows large enough to matter.
+        if len(_rate_limits) > 100:
+            empty_keys = [k for k, v in _rate_limits.items() if not v]
+            for k in empty_keys:
+                del _rate_limits[k]
+
         return True
 
 

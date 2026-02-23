@@ -42,11 +42,13 @@ def create_api_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
 
+    from mnemory.api.memories import categories_router
     from mnemory.api.memories import router as memories_router
     from mnemory.api.recall import router as recall_router
     from mnemory.api.remember import router as remember_router
 
     app.include_router(memories_router, prefix="/memories", tags=["memories"])
+    app.include_router(categories_router, prefix="/categories", tags=["categories"])
     app.include_router(recall_router, tags=["intelligence"])
     app.include_router(remember_router, tags=["intelligence"])
 

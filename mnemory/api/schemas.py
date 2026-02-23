@@ -284,3 +284,23 @@ class ErrorResponse(BaseModel):
 
     error: bool = True
     message: str
+
+
+# ── Helpers ───────────────────────────────────────────────────────────
+
+
+def format_memory_item(item: dict) -> MemoryItem:
+    """Convert a MemoryService search result dict to a MemoryItem.
+
+    Used by both CRUD and intelligence endpoints to normalize
+    search/find results into the API response format.
+    """
+    metadata = item.get("metadata") or {}
+    has_artifacts = bool(metadata.get("artifacts"))
+    return MemoryItem(
+        id=item["id"],
+        memory=item.get("memory", item.get("text", "")),
+        score=item.get("score"),
+        metadata=metadata if metadata else None,
+        has_artifacts=has_artifacts,
+    )

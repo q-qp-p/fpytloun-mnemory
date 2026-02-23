@@ -6,7 +6,6 @@ version: 0.1.0
 """
 
 import asyncio
-import json
 from typing import Callable, Optional
 
 import aiohttp

@@ -28,10 +28,10 @@ from fastapi import APIRouter, Depends
 
 from mnemory.api.deps import SessionContext, get_session_context
 from mnemory.api.schemas import (
-    MemoryItem,
     RecallRequest,
     RecallResponse,
     RecallStats,
+    format_memory_item,
 )
 
 logger = logging.getLogger("mnemory")
@@ -49,19 +49,6 @@ def _get_session_store():
     from mnemory.api import _session_store
 
     return _session_store
-
-
-def _format_memory_item(item: dict) -> MemoryItem:
-    """Convert a search result dict to a MemoryItem."""
-    metadata = item.get("metadata") or {}
-    has_artifacts = bool(metadata.get("artifacts"))
-    return MemoryItem(
-        id=item["id"],
-        memory=item.get("memory", item.get("text", "")),
-        score=item.get("score"),
-        metadata=metadata if metadata else None,
-        has_artifacts=has_artifacts,
-    )
 
 
 def _extract_query(req: RecallRequest) -> str:
@@ -212,7 +199,7 @@ def recall(
         if new_ids:
             session_store.add_known_ids(session.session_id, new_ids)
 
-        response.search_results = [_format_memory_item(r) for r in new_results]
+        response.search_results = [format_memory_item(r) for r in new_results]
 
     elapsed_ms = int((time.monotonic() - start_time) * 1000)
     stats.latency_ms = elapsed_ms
