@@ -26,8 +26,9 @@ Click the gear icon on the filter to set:
 | `mnemory_url` | `http://localhost:8050` | mnemory server URL |
 | `api_key` | (empty) | API key for authentication |
 | `agent_id` | `open-webui` | Agent ID sent to mnemory |
-| `recall_mode` | `first_only` | When to recall: `first_only` (first message only) or `always` (every message) |
-| `recall_search_mode` | `find` | Search mode for first recall: `find` (AI-powered, thorough) or `search` (fast, no LLM) |
+| `recall_mode` | `always` | When to recall: `always` (every message) or `first_only` (first message only) |
+| `recall_search_mode` | `search` | Search mode: `search` (fast, no LLM) or `find` (AI-powered, thorough) |
+| `recall_find_first` | `true` | When search mode is `search`, use `find` for the first message |
 
 ### 3. Multi-User Setup (Recommended)
 
@@ -70,29 +71,38 @@ Each user can configure:
 | `enabled` | `true` | Enable/disable memory for this user |
 | `show_status` | `true` | Show "Recalling memories..." status in chat |
 
-## Recall Modes
+## Recall Configuration
 
-The `recall_mode` valve controls when the filter calls `/api/recall`:
+Three valves control recall behavior. The defaults (`always` + `search` + `find_first=true`) give the best balance of speed and quality.
 
-| Mode | Behavior | Latency |
-|---|---|---|
-| `first_only` (default) | Recall on first message only. Core memories + relevant context loaded once. Subsequent messages add zero latency. | ~200-500ms on first message, 0ms after |
-| `always` | Recall on every message. First message uses AI-powered search (thorough). Subsequent messages use fast vector search for new context. | ~200-500ms first, ~50-200ms after |
+### `recall_mode` — When to recall
 
-**Recommendation:** Use `first_only` (default) for most setups. The first message loads all core memories and relevant context. If the user switches topics mid-conversation, the LLM can use MCP/OpenAPI tools to search explicitly.
+| Mode | Behavior |
+|---|---|
+| `always` (default) | Recall on every message. New relevant memories are injected as context. |
+| `first_only` | Recall on first message only. Subsequent messages add zero latency. |
 
-Use `always` if your conversations frequently shift to unrelated topics and you want automatic context updates on every turn.
-
-### Search Modes
-
-The `recall_search_mode` valve controls how the first recall searches for relevant memories:
+### `recall_search_mode` — How to search
 
 | Mode | Behavior | Latency |
 |---|---|---|
-| `find` (default) | AI-powered: LLM generates up to 5 targeted queries, searches each, reranks by relevance. Can return 0 queries for irrelevant input (e.g., "ok", "format as table") — skipping search entirely. | ~200-500ms (or ~100ms when skipped) |
-| `search` | Fast: single vector similarity search, no LLM calls. Good enough for most use cases. | ~50-200ms |
+| `search` (default) | Fast: single vector similarity search, no LLM calls. | ~50-200ms |
+| `find` | AI-powered: LLM generates up to 5 targeted queries, searches each, reranks by relevance. Can return 0 queries for irrelevant input (e.g., "ok", "format as table") — skipping search entirely. | ~200-500ms (or ~100ms when skipped) |
 
-Subsequent calls (in `always` mode) always use fast `search` regardless of this setting.
+### `recall_find_first` — Thorough first message
+
+When `recall_search_mode=search` and `recall_find_first=true` (default), the first message in a session uses `find` mode for thorough initial context loading. Subsequent messages use fast `search`. Ignored when `recall_search_mode=find`.
+
+### Behavior matrix
+
+| `recall_mode` | `recall_search_mode` | `recall_find_first` | First message | Subsequent |
+|---|---|---|---|---|
+| `always` | `search` | `true` | find + core | search |
+| `always` | `search` | `false` | search + core | search |
+| `always` | `find` | — | find + core | find |
+| `first_only` | `search` | `true` | find + core | (skipped) |
+| `first_only` | `search` | `false` | search + core | (skipped) |
+| `first_only` | `find` | — | find + core | (skipped) |
 
 ## Troubleshooting
 

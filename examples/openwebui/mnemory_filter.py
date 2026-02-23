@@ -31,19 +31,27 @@ class Filter:
             description="Agent ID sent to mnemory",
         )
         recall_mode: str = Field(
-            default="first_only",
+            default="always",
             description=(
                 "When to recall memories: "
-                "'first_only' = first message only (fast, recommended), "
-                "'always' = every message (searches on each turn)"
+                "'always' = every message (recommended), "
+                "'first_only' = first message only (no subsequent recalls)"
             ),
         )
         recall_search_mode: str = Field(
-            default="find",
+            default="search",
             description=(
-                "Search mode for first recall: "
+                "Search mode for recall: "
                 "'find' = AI-powered multi-query search (thorough, slower), "
                 "'search' = single vector search (fast, no LLM)"
+            ),
+        )
+        recall_find_first: bool = Field(
+            default=True,
+            description=(
+                "When recall_search_mode is 'search', use 'find' for the "
+                "first message in a session (thorough initial context). "
+                "Ignored when recall_search_mode is 'find'."
             ),
         )
 
@@ -139,15 +147,21 @@ class Filter:
                 }
             )
 
+        # Determine search mode for this call
+        if is_first and self.valves.recall_find_first:
+            search_mode = "find"
+        else:
+            search_mode = self.valves.recall_search_mode
+
         # Call recall endpoint
         payload: dict = {
             "session_id": session_id,
             "query": query,
+            "search_mode": search_mode,
         }
         if is_first:
             payload["include_instructions"] = True
             payload["managed"] = True
-            payload["search_mode"] = self.valves.recall_search_mode
 
         result = await self._post("/api/recall", payload, __user__)
 

@@ -265,9 +265,9 @@ class RecallRequest(BaseModel):
     search_mode: str | None = Field(
         None,
         description=(
-            "Search mode for first call: 'find' (AI-powered, up to N queries, "
-            "default) or 'search' (fast single vector search, no LLM). "
-            "Subsequent calls always use 'search' regardless of this setting."
+            "Search mode: 'find' (AI-powered, up to N queries, default) "
+            "or 'search' (fast single vector search, no LLM). "
+            "Applies to every call — the client decides per-request."
         ),
     )
     recent_days: int = Field(7, description="Days of recent context for core memories")

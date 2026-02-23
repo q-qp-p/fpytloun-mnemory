@@ -165,8 +165,8 @@ def recall(
         search_results: list[dict] = []
         known_ids = session_store.get_known_ids(session.session_id)
 
-        if is_first_call and (req.search_mode or "find") == "find":
-            # First call with find mode: AI-powered multi-query search
+        if (req.search_mode or "find") == "find":
+            # Find mode: AI-powered multi-query search
             try:
                 from mnemory.server import _get_config
 
@@ -191,7 +191,7 @@ def recall(
                 except Exception:
                     logger.warning("search_memories also failed", exc_info=True)
         else:
-            # Subsequent call or search mode: fast vector search, no LLM
+            # Search mode: fast vector search, no LLM
             try:
                 search_results = _search_with_scope(service, query, ctx)
             except Exception:
