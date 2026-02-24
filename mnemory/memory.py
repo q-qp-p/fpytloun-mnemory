@@ -37,8 +37,8 @@ from mnemory.prompts import (
 from mnemory.sanitize import (
     CORE_MEMORIES_PREAMBLE,
     detect_injection_patterns,
-    escape_memory_headers,
     log_injection_warning,
+    wrap_memory_item,
 )
 from mnemory.storage.artifact import ArtifactStore
 from mnemory.storage.vector import VectorStore
@@ -277,6 +277,26 @@ class MemoryService:
             agent_id = _validate_id(agent_id, "agent_id")
         if role == "assistant" and not agent_id:
             raise ValueError("agent_id is required when role='assistant'")
+
+        # Agent identity memories must go through LLM extraction to prevent
+        # direct injection of arbitrary instructions as agent personality.
+        if role == "assistant" and not infer:
+            raise ValueError(
+                "infer=False is not allowed for role='assistant'. "
+                "Agent identity memories must go through fact extraction "
+                "to prevent prompt injection. Use infer=True (default)."
+            )
+
+        # Log when infer=False is used — it bypasses extraction, dedup,
+        # and most security processing. Legitimate but worth monitoring.
+        if not infer:
+            logger.info(
+                "infer=False used for add_memory: user_id=%s agent_id=%s "
+                "content_length=%d",
+                user_id,
+                agent_id or "",
+                len(content),
+            )
 
         # Detect potential prompt injection patterns (log only, never block)
         patterns = detect_injection_patterns(content)
@@ -929,6 +949,18 @@ class MemoryService:
         classification LLM call if AUTO_CLASSIFY is enabled and metadata
         fields are missing.
         """
+        # Validate input length (same cap as infer=True path)
+        max_input = self._config.memory.max_input_length
+        if len(content) > max_input:
+            return {
+                "error": True,
+                "message": (
+                    f"Input too long: {len(content)} chars "
+                    f"(max {max_input}). Shorten the input or split "
+                    "into multiple calls."
+                ),
+            }
+
         # Determine which fields need auto-classification
         missing: set[str] = set()
         if memory_type is None:
@@ -1560,7 +1592,7 @@ class MemoryService:
         if ts and "T" in ts:
             ts = ts.split("T")[0] + " " + ts.split("T")[1][:5]
 
-        text = escape_memory_headers(memory.get("memory", ""))
+        text = wrap_memory_item(memory.get("memory", ""))
         meta = memory.get("metadata") or {}
         mtype = meta.get("memory_type", "")
         cats = meta.get("categories", [])
@@ -1634,7 +1666,7 @@ class MemoryService:
                     meta = m.get("metadata") or {}
                     mt = meta.get("memory_type", "fact")
                     mr = meta.get("role", "user")
-                    text = escape_memory_headers(m.get("memory", ""))
+                    text = wrap_memory_item(m.get("memory", ""))
                     if mr == "assistant":
                         # Memory about the agent itself
                         if mt in ("preference", "fact"):
@@ -1664,7 +1696,7 @@ class MemoryService:
             other = []
             for m in user_pinned:
                 mt = (m.get("metadata") or {}).get("memory_type", "fact")
-                text = escape_memory_headers(m.get("memory", ""))
+                text = wrap_memory_item(m.get("memory", ""))
                 if mt == "fact":
                     facts.append(f"- {text}")
                 elif mt == "preference":

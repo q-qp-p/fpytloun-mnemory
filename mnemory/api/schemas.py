@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from mnemory.sanitize import escape_memory_headers
+
 # ── Memory CRUD ───────────────────────────────────────────────────────
 
 
@@ -15,7 +17,9 @@ class AddMemoryRequest(BaseModel):
     """Request to add a single memory."""
 
     content: str = Field(
-        ..., description="Memory content (max 1000 chars for infer=False)"
+        ...,
+        max_length=400_000,
+        description="Memory content (max 1000 chars for infer=False)",
     )
     memory_type: str | None = Field(
         None, description="Memory type: preference, fact, episodic, procedural, context"
@@ -47,7 +51,7 @@ class AddMemoryRequest(BaseModel):
 class BatchMemoryItem(BaseModel):
     """Single item in a batch add request."""
 
-    content: str
+    content: str = Field(..., max_length=400_000)
     memory_type: str | None = None
     categories: list[str] | None = None
     importance: str | None = None
@@ -93,7 +97,9 @@ class AddMemoryResponse(BaseModel):
 class SearchMemoriesRequest(BaseModel):
     """Request for semantic memory search."""
 
-    query: str = Field(..., description="Search query (natural language)")
+    query: str = Field(
+        ..., max_length=10_000, description="Search query (natural language)"
+    )
     memory_type: str | None = Field(None, description="Filter by memory type")
     categories: list[str] | None = Field(None, description="Filter by categories")
     role: str | None = Field(None, description="Filter by role: 'user' or 'assistant'")
@@ -104,7 +110,9 @@ class SearchMemoriesRequest(BaseModel):
 class FindMemoriesRequest(BaseModel):
     """Request for AI-powered multi-query search."""
 
-    question: str = Field(..., description="Natural language question")
+    question: str = Field(
+        ..., max_length=10_000, description="Natural language question"
+    )
     memory_type: str | None = Field(None, description="Filter by memory type")
     categories: list[str] | None = Field(None, description="Filter by categories")
     role: str | None = Field(None, description="Filter by role")
@@ -112,6 +120,7 @@ class FindMemoriesRequest(BaseModel):
     include_decayed: bool = Field(False, description="Include expired/decayed memories")
     context: str | None = Field(
         None,
+        max_length=10_000,
         description=(
             "Optional context hint for query generation (e.g., current working "
             "directory, active project). Used to generate additional relevant "
@@ -151,7 +160,7 @@ class RecentMemoriesResponse(BaseModel):
 class UpdateMemoryRequest(BaseModel):
     """Request to update an existing memory."""
 
-    content: str | None = Field(None, description="New content text")
+    content: str | None = Field(None, max_length=1_000, description="New content text")
     memory_type: str | None = Field(None, description="New memory type")
     categories: list[str] | None = Field(
         None, description="New categories (replaces existing)"
@@ -192,7 +201,9 @@ class ListMemoriesRequest(BaseModel):
 class SaveArtifactRequest(BaseModel):
     """Request to save an artifact attached to a memory."""
 
-    content: str = Field(..., description="Text or base64-encoded binary content")
+    content: str = Field(
+        ..., max_length=200_000, description="Text or base64-encoded binary content"
+    )
     filename: str = Field("note.md", description="Artifact filename")
     content_type: str = Field("text/markdown", description="MIME type")
 
@@ -251,7 +262,9 @@ class MessageParam(BaseModel):
 
     role: str = Field(..., description="Message role: user, assistant, system, tool")
     content: str | None = Field(
-        None, description="Message text content (may be null for tool messages)"
+        None,
+        max_length=100_000,
+        description="Message text content (may be null for tool messages)",
     )
 
     @field_validator("role")
@@ -273,7 +286,9 @@ class RecallRequest(BaseModel):
     session_id: str | None = Field(
         None, description="Session ID from previous call. Null = first call."
     )
-    query: str | None = Field(None, description="Free text search query")
+    query: str | None = Field(
+        None, max_length=10_000, description="Free text search query"
+    )
     messages: list[MessageParam] | None = Field(
         None,
         description="OpenAI-format messages. Last user message used as query if query not provided.",
@@ -309,6 +324,7 @@ class RecallRequest(BaseModel):
     )
     context: str | None = Field(
         None,
+        max_length=10_000,
         description=(
             "Optional context hint for query generation (e.g., current working "
             "directory, active project). Used to generate additional relevant "
@@ -372,12 +388,16 @@ def format_memory_item(item: dict) -> MemoryItem:
 
     Used by both CRUD and intelligence endpoints to normalize
     search/find results into the API response format.
+
+    Memory text is escaped to prevent markdown header forgery
+    when results are injected into LLM context by plugins.
     """
     metadata = item.get("metadata") or {}
     has_artifacts = bool(metadata.get("artifacts"))
+    raw_text = item.get("memory", item.get("text", ""))
     return MemoryItem(
         id=item["id"],
-        memory=item.get("memory", item.get("text", "")),
+        memory=escape_memory_headers(raw_text),
         score=item.get("score"),
         metadata=metadata if metadata else None,
         has_artifacts=has_artifacts,

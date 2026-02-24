@@ -38,6 +38,7 @@ from mnemory.config import load_config
 from mnemory.instructions import VALID_MODES, build_instructions
 from mnemory.memory import MemoryService
 from mnemory.metrics import get_collector
+from mnemory.sanitize import escape_memory_headers
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -274,7 +275,10 @@ def initialize_memory(
             recent_days=recent_days,
         )
     except ValueError as e:
-        core_memories_error = str(e)
+        # Sanitize error message to prevent user-influenced content
+        # from being injected into the LLM context via error text
+        err_msg = str(e)[:200].replace("\n", " ")
+        core_memories_error = err_msg
     except Exception:
         logger.exception("Error getting core memories in initialize_memory")
         core_memories_error = "Internal error loading core memories"
@@ -362,6 +366,8 @@ def add_memory(
                existing memories. If false, content is stored as-is with only
                an embedding — much faster but skips dedup. Use infer=false
                when your content is already a clean, concise fact.
+               Note: infer=False is NOT allowed for role="assistant" —
+               agent identity memories must go through fact extraction.
         role: Who this memory is about. "user" (default) for facts about the
               user — their preferences, personal info, context. "assistant"
               for facts about the agent itself — identity, personality,
@@ -1248,7 +1254,11 @@ def delete_artifact(
 
 
 def _format_memories(memories: list[dict]) -> str:
-    """Format memory results for LLM consumption."""
+    """Format memory results for LLM consumption.
+
+    Memory text is escaped to prevent markdown header forgery
+    when results are included in LLM context.
+    """
     if not memories:
         return json.dumps({"results": [], "count": 0})
 
@@ -1256,7 +1266,7 @@ def _format_memories(memories: list[dict]) -> str:
     for mem in memories:
         entry: dict = {
             "id": mem.get("id"),
-            "memory": mem.get("memory", ""),
+            "memory": escape_memory_headers(mem.get("memory", "")),
             "created_at": mem.get("created_at"),
         }
         # Include score if present (from search)
