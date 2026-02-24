@@ -709,6 +709,10 @@ scrape_configs:
       - targets: ['mnemory:9090']  # MGMT_PORT
 ```
 
+### Grafana Dashboard
+
+A pre-built Grafana dashboard is available in [`examples/grafana/`](examples/grafana/). Import `dashboard.json` into Grafana for an overview of memories, operations, and breakdowns by type/category/role with user and agent filtering.
+
 ## Plugins
 
 Native plugins that automatically recall memories on each user message and store memories after each exchange — no LLM tool-calling required.
