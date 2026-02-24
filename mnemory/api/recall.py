@@ -96,6 +96,12 @@ def recall(
     First call creates a session and returns core memories + search results.
     Subsequent calls return only NEW relevant memories not yet seen.
     """
+    from mnemory.metrics import get_collector
+
+    collector = get_collector()
+    if collector:
+        collector.record_operation("recall", ctx.user_id, ctx.agent_id)
+
     start_time = time.monotonic()
     service = _get_service()
     session_store = _get_session_store()

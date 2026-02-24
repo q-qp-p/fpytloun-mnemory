@@ -38,6 +38,15 @@ def _get_service():
     return _get_service()
 
 
+def _record(operation: str, ctx: SessionContext) -> None:
+    """Record a metrics operation if metrics are enabled."""
+    from mnemory.metrics import get_collector
+
+    collector = get_collector()
+    if collector:
+        collector.record_operation(operation, ctx.user_id, ctx.agent_id)
+
+
 # ── Memory CRUD ───────────────────────────────────────────────────────
 
 
@@ -47,6 +56,7 @@ def add_memory(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Add a single memory with optional LLM-based fact extraction."""
+    _record("add_memory", ctx)
     service = _get_service()
     try:
         result = service.add_memory(
@@ -80,6 +90,7 @@ def add_memories_batch(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Batch-add multiple memories."""
+    _record("add_memories", ctx)
     service = _get_service()
     results = []
     for item in req.memories:
@@ -113,6 +124,7 @@ def search_memories(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Semantic search across memories."""
+    _record("search_memories", ctx)
     service = _get_service()
     try:
         # When session has agent_id, use dual-scope to return both
@@ -152,6 +164,7 @@ def find_memories(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """AI-powered multi-query search with LLM reranking."""
+    _record("find_memories", ctx)
     service = _get_service()
     try:
         result = service.find_memories(
@@ -180,6 +193,7 @@ def get_core_memories(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Load pinned + recent context memories."""
+    _record("get_core_memories", ctx)
     service = _get_service()
     text = service.get_core_memories(
         user_id=ctx.user_id,
@@ -198,6 +212,7 @@ def get_recent_memories(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Get recent memories from the last N days."""
+    _record("get_recent_memories", ctx)
     service = _get_service()
     try:
         result = service.get_recent_memories(
@@ -223,6 +238,7 @@ def list_memories(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """List all or filtered memories."""
+    _record("list_memories", ctx)
     service = _get_service()
     cat_list = [c.strip() for c in categories.split(",")] if categories else None
     try:
@@ -261,6 +277,7 @@ def update_memory(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Update an existing memory's content or metadata."""
+    _record("update_memory", ctx)
     service = _get_service()
     try:
         # Verify ownership: must be own agent's memory or shared
@@ -291,6 +308,7 @@ def delete_memory(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Delete a memory and its artifacts."""
+    _record("delete_memory", ctx)
     service = _get_service()
     try:
         # Verify ownership: must be own agent's memory or shared
@@ -319,6 +337,7 @@ def save_artifact(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Attach an artifact to a memory."""
+    _record("save_artifact", ctx)
     service = _get_service()
     try:
         result = service.save_artifact(
@@ -344,6 +363,7 @@ def list_artifacts(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """List artifacts attached to a memory."""
+    _record("list_artifacts", ctx)
     service = _get_service()
     try:
         result = service.list_artifacts(
@@ -364,6 +384,7 @@ def get_artifact(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Retrieve artifact content with pagination."""
+    _record("get_artifact", ctx)
     service = _get_service()
     try:
         result = service.get_artifact(
@@ -390,6 +411,7 @@ def delete_artifact(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Delete an artifact from a memory."""
+    _record("delete_artifact", ctx)
     service = _get_service()
     try:
         result = service.delete_artifact(
@@ -417,6 +439,7 @@ def list_categories(
     ctx: SessionContext = Depends(get_session_context),
 ):
     """List all available memory categories with descriptions and counts."""
+    _record("list_categories", ctx)
     service = _get_service()
     result = service.list_categories(user_id=ctx.user_id)
     return result

@@ -31,6 +31,7 @@ dependencies = [
     "uvicorn>=0.30.0",
     "starlette>=0.38.0",
     "fastapi>=0.100.0",
+    "prometheus_client>=0.20.0",
 ]
 
 [project.optional-dependencies]

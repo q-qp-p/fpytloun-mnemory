@@ -1,0 +1,347 @@
+"""Prometheus metrics collection for mnemory.
+
+Exposes two types of metrics:
+- **Counters** (in-memory, reset on restart): operation counts per user/agent
+- **Gauges** (from Qdrant, cached): memory counts by type/category/status
+
+The MetricsCollector is a module-level singleton, initialized lazily.
+When metrics are disabled (ENABLE_METRICS=false), get_collector() returns None
+and all instrumentation calls are no-ops.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from collections import defaultdict
+from typing import Any
+
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    generate_latest,
+)
+
+logger = logging.getLogger(__name__)
+
+# ── Module-level singleton ────────────────────────────────────────────
+
+_collector: MetricsCollector | None = None
+_collector_initialized = False
+
+
+def get_collector() -> MetricsCollector | None:
+    """Get the metrics collector singleton.
+
+    Returns None if metrics are disabled. Safe to call before init
+    (returns None).
+    """
+    return _collector
+
+
+def init_collector(
+    vector_store: Any,
+    session_store: Any,
+    config: Any,
+) -> MetricsCollector | None:
+    """Initialize the metrics collector singleton.
+
+    Called once during server startup. Returns None if metrics are
+    disabled in config.
+
+    Args:
+        vector_store: VectorStore instance for Qdrant aggregation.
+        session_store: SessionStore instance for active session count.
+        config: Config instance for metadata and cache TTL.
+    """
+    global _collector, _collector_initialized
+
+    if _collector_initialized:
+        return _collector
+
+    _collector_initialized = True
+
+    if not config.server.enable_metrics:
+        logger.info("Prometheus metrics disabled (ENABLE_METRICS=false)")
+        return None
+
+    _collector = MetricsCollector(
+        vector_store=vector_store,
+        session_store=session_store,
+        config=config,
+    )
+    logger.info(
+        "Prometheus metrics enabled (cache_ttl=%ds)",
+        config.server.metrics_cache_ttl,
+    )
+    return _collector
+
+
+# ── MetricsCollector ──────────────────────────────────────────────────
+
+
+class MetricsCollector:
+    """Collects and exposes Prometheus metrics for mnemory.
+
+    Uses a custom CollectorRegistry to avoid polluting the global
+    default registry. Gauges from Qdrant are cached with a configurable
+    TTL to avoid expensive scroll operations on every scrape.
+    """
+
+    def __init__(
+        self,
+        vector_store: Any,
+        session_store: Any,
+        config: Any,
+    ):
+        self._vector_store = vector_store
+        self._session_store = session_store
+        self._config = config
+        self._cache_ttl = config.server.metrics_cache_ttl
+
+        # Cache state
+        self._cache_lock = threading.Lock()
+        self._cache_timestamp: float = 0.0
+
+        # Custom registry (not the global default)
+        self._registry = CollectorRegistry()
+
+        # ── Info gauge (static metadata) ──────────────────────────
+        self._info = Gauge(
+            "mnemory_info",
+            "mnemory server metadata (always 1)",
+            ["version", "vector_backend", "artifact_backend"],
+            registry=self._registry,
+        )
+        from mnemory import __version__
+
+        self._info.labels(
+            version=__version__,
+            vector_backend="qdrant" if config.vector.is_remote else "qdrant-local",
+            artifact_backend=config.artifact.backend,
+        ).set(1)
+
+        # ── Operation counter (in-memory) ─────────────────────────
+        self._operations = Counter(
+            "mnemory_operations_total",
+            "Total number of MCP/REST operations",
+            ["operation", "user_id", "agent_id"],
+            registry=self._registry,
+        )
+
+        # ── Active sessions gauge (live) ──────────────────────────
+        self._active_sessions = Gauge(
+            "mnemory_active_sessions",
+            "Number of active memory sessions",
+            registry=self._registry,
+        )
+
+        # ── Memory gauges (from Qdrant, cached) ───────────────────
+        self._memories_total = Gauge(
+            "mnemory_memories_total",
+            "Total memories by dimensions",
+            ["user_id", "agent_id", "memory_type", "role"],
+            registry=self._registry,
+        )
+        self._memories_decayed = Gauge(
+            "mnemory_memories_decayed_total",
+            "Total decayed (expired) memories",
+            ["user_id", "agent_id"],
+            registry=self._registry,
+        )
+        self._memories_pinned = Gauge(
+            "mnemory_memories_pinned_total",
+            "Total pinned memories",
+            ["user_id", "agent_id"],
+            registry=self._registry,
+        )
+        self._memories_by_category = Gauge(
+            "mnemory_memories_by_category_total",
+            "Total memories by category",
+            ["user_id", "category"],
+            registry=self._registry,
+        )
+        self._memories_with_artifacts = Gauge(
+            "mnemory_memories_with_artifacts_total",
+            "Total memories that have artifacts attached",
+            ["user_id", "agent_id"],
+            registry=self._registry,
+        )
+
+    # ── Public API ────────────────────────────────────────────────
+
+    def record_operation(
+        self,
+        operation: str,
+        user_id: str,
+        agent_id: str | None = None,
+    ) -> None:
+        """Increment the operation counter.
+
+        Args:
+            operation: Operation name (e.g., "add_memory", "search_memories").
+            user_id: User who performed the operation.
+            agent_id: Agent scope (None → empty string label).
+        """
+        self._operations.labels(
+            operation=operation,
+            user_id=user_id,
+            agent_id=agent_id or "",
+        ).inc()
+
+    def collect_gauges(self) -> None:
+        """Refresh gauge values from Qdrant (with caching).
+
+        Scrolls all points in the collection (without vectors),
+        aggregates by dimensions, and updates gauge values. Results
+        are cached for ``metrics_cache_ttl`` seconds.
+
+        Also updates the active sessions gauge (always fresh).
+        """
+        # Active sessions — always fresh (cheap)
+        self._active_sessions.set(self._session_store.active_count)
+
+        # Check cache
+        now = time.monotonic()
+        with self._cache_lock:
+            if now - self._cache_timestamp < self._cache_ttl:
+                return  # Cache is fresh
+            # Mark as refreshing (prevents concurrent refreshes)
+            self._cache_timestamp = now
+
+        try:
+            self._refresh_gauges_from_qdrant()
+        except Exception:
+            logger.warning("Failed to refresh metrics from Qdrant", exc_info=True)
+            # Reset cache timestamp so next scrape retries
+            with self._cache_lock:
+                self._cache_timestamp = 0.0
+
+    def generate_metrics(self) -> bytes:
+        """Generate Prometheus text exposition format output."""
+        return generate_latest(self._registry)
+
+    @property
+    def content_type(self) -> str:
+        """Prometheus content type header value."""
+        return CONTENT_TYPE_LATEST
+
+    # ── Internal ──────────────────────────────────────────────────
+
+    def _refresh_gauges_from_qdrant(self) -> None:
+        """Scroll all Qdrant points and aggregate into gauge values.
+
+        Clears existing gauge label sets before updating to avoid
+        stale labels from deleted users/agents/types.
+        """
+        client = self._vector_store._client
+        collection = self._vector_store.collection_name
+
+        # Aggregation accumulators
+        # (user_id, agent_id, memory_type, role) -> count
+        total: dict[tuple[str, str, str, str], int] = defaultdict(int)
+        # (user_id, agent_id) -> count
+        decayed: dict[tuple[str, str], int] = defaultdict(int)
+        pinned: dict[tuple[str, str], int] = defaultdict(int)
+        with_artifacts: dict[tuple[str, str], int] = defaultdict(int)
+        # (user_id, category) -> count
+        by_category: dict[tuple[str, str], int] = defaultdict(int)
+
+        # Scroll all points (no vectors, payloads only)
+        offset = None
+        batch_size = 256
+
+        while True:
+            points, next_offset = client.scroll(
+                collection_name=collection,
+                scroll_filter=None,
+                limit=batch_size,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            for point in points:
+                payload = point.payload or {}
+                user_id = payload.get("user_id", "unknown")
+                agent_id = payload.get("agent_id", "") or ""
+                memory_type = payload.get("memory_type", "unknown")
+                role = payload.get("role", "user")
+
+                # Total by dimensions
+                total[(user_id, agent_id, memory_type, role)] += 1
+
+                # Decayed
+                if payload.get("decayed_at"):
+                    decayed[(user_id, agent_id)] += 1
+
+                # Pinned
+                if payload.get("pinned"):
+                    pinned[(user_id, agent_id)] += 1
+
+                # Has artifacts
+                artifacts = payload.get("artifacts")
+                if artifacts and len(artifacts) > 0:
+                    with_artifacts[(user_id, agent_id)] += 1
+
+                # Categories
+                categories = payload.get("categories") or []
+                for cat in categories:
+                    by_category[(user_id, cat)] += 1
+
+            if next_offset is None:
+                break
+            offset = next_offset
+
+        # Clear existing gauge label sets to remove stale entries
+        self._memories_total._metrics.clear()
+        self._memories_decayed._metrics.clear()
+        self._memories_pinned._metrics.clear()
+        self._memories_by_category._metrics.clear()
+        self._memories_with_artifacts._metrics.clear()
+
+        # Set new values
+        for (uid, aid, mtype, role), count in total.items():
+            self._memories_total.labels(
+                user_id=uid,
+                agent_id=aid,
+                memory_type=mtype,
+                role=role,
+            ).set(count)
+
+        for (uid, aid), count in decayed.items():
+            self._memories_decayed.labels(
+                user_id=uid,
+                agent_id=aid,
+            ).set(count)
+
+        for (uid, aid), count in pinned.items():
+            self._memories_pinned.labels(
+                user_id=uid,
+                agent_id=aid,
+            ).set(count)
+
+        for (uid, cat), count in by_category.items():
+            self._memories_by_category.labels(
+                user_id=uid,
+                category=cat,
+            ).set(count)
+
+        for (uid, aid), count in with_artifacts.items():
+            self._memories_with_artifacts.labels(
+                user_id=uid,
+                agent_id=aid,
+            ).set(count)
+
+        logger.debug(
+            "Metrics refreshed: %d label sets across %d points",
+            len(total)
+            + len(decayed)
+            + len(pinned)
+            + len(by_category)
+            + len(with_artifacts),
+            sum(total.values()),
+        )

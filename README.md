@@ -252,6 +252,10 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `MCP_API_KEYS` | | JSON dict mapping API keys to user IDs (see below) |
 | `INSTRUCTION_MODE` | `proactive` | LLM behavioral instructions: `passive`, `proactive`, or `personality` (see below) |
 | `ENABLE_DELETE_ALL` | `false` | Enable the `delete_all_memories` tool (destructive, disabled by default) |
+| `ENABLE_METRICS` | `true` | Enable the `/metrics` Prometheus endpoint |
+| `METRICS_CACHE_TTL` | `60` | Cache TTL in seconds for Qdrant gauge aggregation on `/metrics` |
+| `MGMT_PORT` | | Management port for `/health` and `/metrics` (see below) |
+| `MGMT_HOST` | (falls back to `MCP_HOST`) | Bind host for the management port |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 #### Instruction Modes (`INSTRUCTION_MODE`)
@@ -292,6 +296,24 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 **Timezone** is set via the `X-Timezone` HTTP header per client connection. This overrides the `DEFAULT_TIMEZONE` env var for the session, affecting how naive `event_date` values are interpreted. Use an IANA timezone name (e.g., `Europe/Prague`, `America/New_York`).
 
 `MCP_API_KEY` (single key) is kept for backward compatibility — it authenticates but does not bind to a user. If both `MCP_API_KEYS` and `MCP_API_KEY` are set, `MCP_API_KEYS` is checked first, then `MCP_API_KEY` as fallback.
+
+#### Management Port (`MGMT_PORT`)
+
+By default, `/health` and `/metrics` are served on the main port (`MCP_PORT`) and go through standard API key authentication. Set `MGMT_PORT` to run these endpoints on a separate port **without authentication** — useful for Kubernetes probes and Prometheus scraping:
+
+```bash
+MGMT_PORT=9090          # /health and /metrics on port 9090, no auth
+MGMT_HOST=127.0.0.1     # Optional: bind management to localhost only
+```
+
+When `MGMT_PORT` is set and differs from `MCP_PORT`:
+- `/health` and `/metrics` are served on `MGMT_PORT` without auth
+- The main port (`MCP_PORT`) does NOT serve `/health` or `/metrics`
+- All MCP and REST API endpoints remain on the main port with auth
+
+When `MGMT_PORT` is not set (default):
+- `/health` and `/metrics` are on the main port with standard auth
+- Kubernetes probes and Prometheus must send a valid API key
 
 ### Memory Behavior
 
@@ -645,6 +667,46 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
      │ or OpenAI  │
      │(LLM+embed) │
      └────────────┘
+```
+
+## Monitoring
+
+mnemory exposes a `/metrics` endpoint in [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/), enabled by default (`ENABLE_METRICS=true`).
+
+### Endpoint Access
+
+By default, `/metrics` and `/health` are served on the main port with standard API key authentication. For production, set `MGMT_PORT` to serve them on a separate port without auth (see [Management Port](#management-port-mgmt_port)).
+
+### Available Metrics
+
+#### Counters (in-memory, reset on restart)
+
+| Metric | Labels | Description |
+|---|---|---|
+| `mnemory_operations_total` | `operation`, `user_id`, `agent_id` | Total MCP/REST operations. Operations: `add_memory`, `add_memories`, `search_memories`, `find_memories`, `update_memory`, `delete_memory`, `delete_all`, `get_core_memories`, `get_recent_memories`, `list_memories`, `save_artifact`, `get_artifact`, `list_artifacts`, `delete_artifact`, `list_categories`, `recall`, `remember`, `initialize_memory` |
+
+#### Gauges (from Qdrant, cached)
+
+Refreshed on each scrape with a configurable cache TTL (`METRICS_CACHE_TTL`, default 60s). Aggregated by scrolling all Qdrant points.
+
+| Metric | Labels | Description |
+|---|---|---|
+| `mnemory_memories_total` | `user_id`, `agent_id`, `memory_type`, `role` | Total memories by all key dimensions |
+| `mnemory_memories_decayed_total` | `user_id`, `agent_id` | Decayed (expired) memories |
+| `mnemory_memories_pinned_total` | `user_id`, `agent_id` | Pinned memories |
+| `mnemory_memories_by_category_total` | `user_id`, `category` | Memories per category |
+| `mnemory_memories_with_artifacts_total` | `user_id`, `agent_id` | Memories with artifacts attached |
+| `mnemory_active_sessions` | — | Active memory sessions (recall/remember) |
+| `mnemory_info` | `version`, `vector_backend`, `artifact_backend` | Server metadata (always 1) |
+
+### Prometheus Scrape Config
+
+```yaml
+scrape_configs:
+  - job_name: mnemory
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['mnemory:9090']  # MGMT_PORT
 ```
 
 ## Plugins

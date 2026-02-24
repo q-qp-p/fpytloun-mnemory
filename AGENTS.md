@@ -24,6 +24,7 @@ mnemory/
 ├── ttl.py                 # TTL (Time-To-Live) utility functions for memory expiration
 ├── instructions.py        # Configurable MCP server instructions (passive/proactive/personality/managed modes)
 ├── session.py             # Server-side memory session tracking (MemorySession + SessionStore)
+├── metrics.py             # Prometheus metrics collection, operation counters, Qdrant gauge aggregation
 ├── api/
 │   ├── __init__.py        # FastAPI app factory, session store instance
 │   ├── deps.py            # Auth + identity FastAPI dependency (reads contextvars)
@@ -49,6 +50,7 @@ mnemory/
 | **Artifact Storage** | `storage/artifact.py` | S3/MinIO and filesystem backends for binary artifacts |
 | **Instructions** | `instructions.py` | Configurable MCP server instructions (passive/proactive/personality modes) |
 | **Sessions** | `session.py` | Server-side memory session tracking for recall/remember |
+| **Metrics** | `metrics.py` | Prometheus metrics collection, operation counters, Qdrant gauge aggregation |
 | **Configuration** | `config.py` | Environment variable parsing into dataclass configs |
 
 ### Key design decisions

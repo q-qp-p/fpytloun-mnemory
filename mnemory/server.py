@@ -8,9 +8,10 @@ Exposes 16 tools over Streamable HTTP for memory management:
 - list_categories
 - save_artifact, get_artifact, list_artifacts, delete_artifact
 
-Includes a /health endpoint, optional API key authentication, and
+Includes /health and /metrics endpoints, optional API key authentication,
 session-level identity resolution (user_id from API key mapping,
-agent_id from X-Agent-Id header).
+agent_id from X-Agent-Id header), and an optional management port for
+unauthenticated health/metrics access.
 """
 
 from __future__ import annotations
@@ -29,13 +30,14 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from mnemory import __version__
 from mnemory.config import load_config
 from mnemory.instructions import VALID_MODES, build_instructions
 from mnemory.memory import MemoryService
+from mnemory.metrics import get_collector
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -263,6 +265,9 @@ def initialize_memory(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id_for_core(agent_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("initialize_memory", uid, aid)
         core_memories = _get_service().get_core_memories(
             user_id=uid,
             agent_id=aid,
@@ -382,6 +387,9 @@ def add_memory(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id(agent_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("add_memory", uid, aid)
         result = _get_service().add_memory(
             content,
             user_id=uid,
@@ -450,6 +458,10 @@ def add_memories(
         aid = _resolve_agent_id(agent_id)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
+
+    collector = get_collector()
+    if collector:
+        collector.record_operation("add_memories", uid, aid)
 
     if not memories:
         return json.dumps({"error": True, "message": "memories list is empty"})
@@ -565,6 +577,9 @@ def search_memories(
     try:
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
+        collector = get_collector()
+        if collector:
+            collector.record_operation("search_memories", uid, session_aid)
 
         # When session has agent_id, always use dual-scope to return
         # both agent-specific and shared user memories.
@@ -658,6 +673,9 @@ def find_memories(
     try:
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
+        collector = get_collector()
+        if collector:
+            collector.record_operation("find_memories", uid, session_aid)
 
         session_tz = _get_session_timezone()
 
@@ -743,6 +761,9 @@ def get_core_memories(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id_for_core(agent_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("get_core_memories", uid, aid)
         return _get_service().get_core_memories(
             user_id=uid,
             agent_id=aid,
@@ -792,6 +813,9 @@ def get_recent_memories(
         # agent memories, so the LLM doesn't have to pass it explicitly.
         if aid is None and scope in ("all", "agent"):
             aid = _session_agent_id.get()
+        collector = get_collector()
+        if collector:
+            collector.record_operation("get_recent_memories", uid, aid)
         return _get_service().get_recent_memories(
             user_id=uid,
             agent_id=aid,
@@ -848,6 +872,9 @@ def list_memories(
     try:
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
+        collector = get_collector()
+        if collector:
+            collector.record_operation("list_memories", uid, session_aid)
 
         # When session has agent_id, always use dual-scope to return
         # both agent-specific and shared user memories.
@@ -917,6 +944,11 @@ def update_memory(
     try:
         # Verify ownership: must be own agent's memory or shared
         session_aid = _get_session_agent_id()
+        collector = get_collector()
+        if collector:
+            collector.record_operation(
+                "update_memory", _session_user_id.get() or "", session_aid
+            )
         _get_service().verify_memory_access(memory_id, session_agent_id=session_aid)
 
         # Build kwargs, using sentinel for ttl_days to distinguish
@@ -964,6 +996,9 @@ def delete_memory(memory_id: str, user_id: str | None = None) -> str:
         uid = _resolve_user_id(user_id)
         # Verify ownership: must be own agent's memory or shared
         session_aid = _get_session_agent_id()
+        collector = get_collector()
+        if collector:
+            collector.record_operation("delete_memory", uid, session_aid)
         _get_service().verify_memory_access(memory_id, session_agent_id=session_aid)
         result = _get_service().delete_memory(memory_id, user_id=uid)
         return json.dumps(result)
@@ -994,6 +1029,9 @@ def delete_all_memories(user_id: str | None = None, agent_id: str | None = None)
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id(agent_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("delete_all", uid, aid)
         result = _get_service().delete_all_memories(user_id=uid, agent_id=aid)
         return json.dumps(result)
     except ValueError as e:
@@ -1022,6 +1060,9 @@ def list_categories(user_id: str | None = None) -> str:
     """
     try:
         uid = _resolve_user_id(user_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("list_categories", uid)
         result = _get_service().list_categories(user_id=uid)
         lines = []
         for cat in result["categories"]:
@@ -1075,6 +1116,9 @@ def save_artifact(
     """
     try:
         uid = _resolve_user_id(user_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("save_artifact", uid)
         result = _get_service().save_artifact(
             memory_id,
             user_id=uid,
@@ -1119,6 +1163,9 @@ def get_artifact(
     """
     try:
         uid = _resolve_user_id(user_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("get_artifact", uid)
         result = _get_service().get_artifact(
             memory_id,
             artifact_id,
@@ -1151,6 +1198,9 @@ def list_artifacts(memory_id: str, user_id: str | None = None) -> str:
     """
     try:
         uid = _resolve_user_id(user_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("list_artifacts", uid)
         artifacts = _get_service().list_artifacts(memory_id, user_id=uid)
         if not artifacts:
             return json.dumps({"artifacts": [], "message": "No artifacts found."})
@@ -1180,6 +1230,9 @@ def delete_artifact(
     """
     try:
         uid = _resolve_user_id(user_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("delete_artifact", uid)
         result = _get_service().delete_artifact(memory_id, artifact_id, user_id=uid)
         return json.dumps(result)
     except ValueError as e:
@@ -1262,10 +1315,6 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        # Skip auth for health checks
-        if request.url.path == "/health":
-            return await call_next(request)
-
         cfg = _get_config().server
         has_auth = bool(cfg.api_keys or cfg.api_key)
 
@@ -1366,6 +1415,25 @@ async def health_check(request: Request) -> JSONResponse:
     )
 
 
+async def metrics_endpoint(request: Request) -> Response:
+    """Prometheus metrics endpoint.
+
+    Collects gauge values from Qdrant (cached) and returns all metrics
+    in Prometheus text exposition format.
+    """
+    from mnemory.metrics import get_collector
+
+    collector = get_collector()
+    if collector is None:
+        return JSONResponse({"error": "Metrics disabled"}, status_code=404)
+
+    collector.collect_gauges()
+    return Response(
+        content=collector.generate_metrics(),
+        media_type=collector.content_type,
+    )
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app):
     """Application lifespan manager."""
@@ -1387,20 +1455,37 @@ async def lifespan(app):
         except Exception:
             pass  # Tool may not exist if already removed
 
+    # Eagerly initialize the service so startup failures are caught early
+    service = _get_service()
+
+    # Initialize metrics collector
+    from mnemory.api import _session_store
+    from mnemory.metrics import init_collector
+
+    init_collector(
+        vector_store=service.vector,
+        session_store=_session_store,
+        config=cfg,
+    )
+
+    mgmt_info = (
+        f"mgmt_port={cfg.server.mgmt_port}"
+        if cfg.server.has_mgmt_port
+        else "mgmt_port=disabled"
+    )
     logger.info(
-        "mnemory starting (vector=%s, artifact=%s, port=%d, auth=%s, auto_classify=%s)",
+        "mnemory starting (vector=%s, artifact=%s, port=%d, auth=%s, "
+        "auto_classify=%s, metrics=%s, %s)",
         "qdrant-remote" if cfg.vector.is_remote else "qdrant-local",
         cfg.artifact.backend,
         cfg.server.port,
         auth_mode,
         cfg.memory.auto_classify,
+        cfg.server.enable_metrics,
+        mgmt_info,
     )
-    # Eagerly initialize the service so startup failures are caught early
-    _get_service()
 
     # Start session cleanup task for REST API
-    from mnemory.api import _session_store
-
     _session_store.start_cleanup_task()
 
     async with mcp.session_manager.run():
@@ -1410,37 +1495,105 @@ async def lifespan(app):
     logger.info("mnemory shutting down")
 
 
+def _build_mgmt_routes() -> list[Route]:
+    """Build the list of management routes (/health, optionally /metrics)."""
+    routes: list[Route] = [Route("/health", health_check)]
+    cfg = _get_config()
+    if cfg.server.enable_metrics:
+        routes.append(Route("/metrics", metrics_endpoint))
+    return routes
+
+
 def create_app() -> Starlette:
-    """Create the ASGI application."""
+    """Create the main ASGI application.
+
+    When MGMT_PORT is not set (default), /health and /metrics are served
+    on the main port and go through standard API key authentication.
+    When MGMT_PORT is set, management routes are excluded from the main
+    app and served on the separate management port without auth.
+    """
     from mnemory.api import create_api_app
 
+    cfg = _get_config()
     middleware = [Middleware(APIKeyMiddleware)]
 
-    return Starlette(
-        routes=[
-            Route("/health", health_check),
+    routes: list[Route | Mount] = []
+
+    # Include management routes on main port only when no separate mgmt port
+    if not cfg.server.has_mgmt_port:
+        routes.extend(_build_mgmt_routes())
+
+    routes.extend(
+        [
             Mount("/api", app=create_api_app()),
             Mount("/", app=mcp.streamable_http_app()),
-        ],
+        ]
+    )
+
+    return Starlette(
+        routes=routes,
         middleware=middleware,
         lifespan=lifespan,
     )
+
+
+def create_mgmt_app() -> Starlette:
+    """Create the management ASGI application.
+
+    Lightweight app serving /health and /metrics without authentication.
+    Only used when MGMT_PORT is configured. Shares the same service and
+    session store singletons as the main app.
+    """
+    return Starlette(routes=_build_mgmt_routes())
 
 
 app = create_app()
 
 
 def main():
-    """Run the server with uvicorn."""
+    """Run the server with uvicorn.
+
+    When MGMT_PORT is configured, runs two servers in parallel:
+    the main MCP/API server and a lightweight management server.
+    """
+    import asyncio
+
     import uvicorn
 
     cfg = _get_config()
-    uvicorn.run(
-        "mnemory.server:app",
-        host=cfg.server.host,
-        port=cfg.server.port,
-        log_level=os.environ.get("LOG_LEVEL", "info").lower(),
-    )
+    log_level = os.environ.get("LOG_LEVEL", "info").lower()
+
+    if cfg.server.has_mgmt_port:
+        # Run main app + management app on separate ports
+        async def _serve_dual():
+            main_config = uvicorn.Config(
+                app,
+                host=cfg.server.host,
+                port=cfg.server.port,
+                log_level=log_level,
+            )
+            mgmt_config = uvicorn.Config(
+                create_mgmt_app(),
+                host=cfg.server.mgmt_host,
+                port=cfg.server.mgmt_port,
+                log_level=log_level,
+            )
+            main_server = uvicorn.Server(main_config)
+            mgmt_server = uvicorn.Server(mgmt_config)
+            await asyncio.gather(
+                main_server.serve(),
+                mgmt_server.serve(),
+            )
+
+        asyncio.run(_serve_dual())
+    else:
+        # Single server — management routes are on the main port (with auth)
+        uvicorn.run(
+            "mnemory.server:app",
+            host=cfg.server.host,
+            port=cfg.server.port,
+            log_level=log_level,
+        )
 
 
 if __name__ == "__main__":

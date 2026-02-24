@@ -191,6 +191,28 @@ class ServerConfig:
         default_factory=lambda: _env("INSTRUCTION_MODE", "proactive")
     )
 
+    # Management port for /health and /metrics endpoints.
+    # When set (non-zero) and different from MCP_PORT, a separate HTTP server
+    # runs on this port without authentication. When not set (0), /health and
+    # /metrics are served on the main port and go through standard API key auth.
+    mgmt_port: int = field(default_factory=lambda: _env_int("MGMT_PORT", 0))
+    mgmt_host: str = field(
+        default_factory=lambda: _env("MGMT_HOST") or _env("MCP_HOST", "0.0.0.0")
+    )
+
+    # Prometheus metrics endpoint
+    enable_metrics: bool = field(
+        default_factory=lambda: _env_bool("ENABLE_METRICS", True)
+    )
+    metrics_cache_ttl: int = field(
+        default_factory=lambda: _env_int("METRICS_CACHE_TTL", 60)
+    )
+
+    @property
+    def has_mgmt_port(self) -> bool:
+        """Whether a separate management port is configured."""
+        return self.mgmt_port > 0 and self.mgmt_port != self.port
+
 
 @dataclass
 class MemoryConfig:

@@ -151,6 +151,12 @@ def remember(
     Accepts OpenAI-format messages (typically last 2: user + assistant),
     formats them as text, and processes asynchronously. Returns immediately.
     """
+    from mnemory.metrics import get_collector
+
+    collector = get_collector()
+    if collector:
+        collector.record_operation("remember", ctx.user_id, ctx.agent_id)
+
     # Rate limit check
     if not _check_rate_limit(ctx.user_id):
         raise HTTPException(
