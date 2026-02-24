@@ -24,6 +24,7 @@ Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://mo
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
 - [Plugins](#plugins)
+- [Benchmark](#benchmark)
 - [Development](#development)
 
 ## Quick Start
@@ -665,6 +666,21 @@ See [`examples/opencode/`](examples/opencode/) for the plugin and setup instruct
 ### Hybrid Approach
 
 Plugins handle automatic recall/remember. The LLM still has access to tools (via OpenAPI or MCP) for explicit operations like searching mid-conversation or deleting a memory the user asks to forget.
+
+## Benchmark
+
+mnemory is evaluated on the [LoCoMo](https://github.com/snap-research/locomo) (Long Conversation Memory) benchmark — 10 multi-session dialogues with 1540 QA questions across 4 categories. All systems use gpt-4o-mini for answering and judging, following the [Memobase evaluation convention](https://github.com/memodb-io/memobase/blob/main/docs/experiments/locomo-benchmark/README.md).
+
+| System | single_hop | multi_hop | temporal | open_domain | Overall |
+|---|---|---|---|---|---|
+| **mnemory** | **63.1** | **53.1** | **74.8** | **78.2** | **73.2** |
+| Memobase | 70.9 | 52.1 | 85.0 | 77.2 | 75.8 |
+| Mem0-Graph | 65.7 | 47.2 | 58.1 | 75.7 | 68.4 |
+| Mem0 | 67.1 | 51.2 | 55.5 | 72.9 | 66.9 |
+| Zep | 61.7 | 41.4 | 49.3 | 76.6 | 66.0 |
+| LangMem | 62.2 | 47.9 | 23.4 | 71.1 | 58.1 |
+
+Configuration: `gpt-5-mini` for extraction/embeddings, `text-embedding-3-small` for vectors, `search_memories` with limit=30. See [`benchmarks/`](benchmarks/) for reproduction instructions.
 
 ## Development
 

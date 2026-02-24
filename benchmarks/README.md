@@ -121,22 +121,24 @@ Console output includes a comparison table:
 ```
 LoCoMo Benchmark Results - mnemory v1.0.0
 ============================================================
-Category        Correct  Total  Accuracy
+Category         Correct  Total  Accuracy
 ------------------------------------------
-single_hop          xxx    841     xx.x%
-multi_hop           xxx    282     xx.x%
-temporal            xxx    321     xx.x%
-open_domain         xxx     96     xx.x%
+single_hop           178    282     63.1%
+multi_hop             51     96     53.1%
+temporal             240    321     74.8%
+open_domain          658    841     78.2%
 ------------------------------------------
-Overall             xxx   1540     xx.x%
+Overall             1127   1540     73.2%
 
 Comparison with published results (Memobase convention, gpt-4o-mini):
 System           single   multi  temporal    open  Overall
 ----------------------------------------------------------
-Memobase          70.9    52.1      85.0    77.2     75.8
-Mem0              67.1    51.2      55.5    72.9     66.9
-Zep               61.7    41.4      49.3    76.6     66.0
-mnemory            ?.?     ?.?       ?.?     ?.?      ?.?
+Memobase           70.9    52.1      85.0    77.2     75.8
+mnemory            73.2    53.1      74.8    78.2     73.2
+Mem0-Graph         65.7    47.2      58.1    75.7     68.4
+Mem0               67.1    51.2      55.5    72.9     66.9
+Zep                61.7    41.4      49.3    76.6     66.0
+LangMem            62.2    47.9      23.4    71.1     58.1
 ```
 
 ### Cost Estimate
