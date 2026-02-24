@@ -1,0 +1,14 @@
+{
+  "mcp": {
+    "mnemory": {
+      "type": "remote",
+      "url": "http://localhost:8050/mcp",
+      "headers": {
+        "Authorization": "Bearer your-api-key",
+        "X-Agent-Id": "opencode"
+      }
+    }
+  },
+  "rules": [".opencode/rules/memory.md"],
+  "plugin": [".opencode/plugins/mnemory.ts"]
+}
