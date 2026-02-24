@@ -14,18 +14,20 @@ The LLM also has access to mnemory MCP tools for explicit operations (search, up
 
 ### 1. Environment Variables
 
+The plugin makes direct HTTP calls to the mnemory REST API. These environment variables **must be set** for the plugin to work — without them, API calls fail silently:
+
 ```bash
 export MNEMORY_URL=http://localhost:8050
-export MNEMORY_API_KEY=your-api-key
-export MNEMORY_AGENT_ID=opencode       # optional, defaults to "opencode"
-export MNEMORY_USER_ID=your-username    # optional if using API key mapping
-export MNEMORY_SCORE_THRESHOLD=0.5      # optional, min relevance score (0.0-1.0)
+export MNEMORY_API_KEY=your-api-key        # required if mnemory uses MCP_API_KEYS
+export MNEMORY_AGENT_ID=opencode           # optional, defaults to "opencode"
+export MNEMORY_USER_ID=your-username       # optional if using API key mapping
+export MNEMORY_SCORE_THRESHOLD=0.5         # optional, min relevance score (0.0-1.0)
 ```
 
 | Variable | Default | Description |
 |---|---|---|
 | `MNEMORY_URL` | `http://localhost:8050` | mnemory server URL |
-| `MNEMORY_API_KEY` | (empty) | API key for authentication |
+| `MNEMORY_API_KEY` | (empty) | API key for authentication. **Required** if mnemory has `MCP_API_KEYS` set. |
 | `MNEMORY_AGENT_ID` | `opencode` | Agent ID sent to mnemory |
 | `MNEMORY_USER_ID` | (empty) | User ID (optional if API key maps to a user) |
 | `MNEMORY_SCORE_THRESHOLD` | `0.5` | Minimum relevance score for recalled memories. Higher = fewer but more relevant. Prevents context bloat from weak matches. |
@@ -35,27 +37,34 @@ export MNEMORY_SCORE_THRESHOLD=0.5      # optional, min relevance score (0.0-1.0
 Copy `mnemory.ts` to your OpenCode plugins directory:
 
 ```bash
-# Project-level
-mkdir -p .opencode/plugins
-cp mnemory.ts .opencode/plugins/
-
-# Or global
+# Global (recommended — memory works across all projects)
 mkdir -p ~/.config/opencode/plugins
 cp mnemory.ts ~/.config/opencode/plugins/
+
+# Or project-level
+mkdir -p .opencode/plugins
+cp mnemory.ts .opencode/plugins/
 ```
+
+Local plugins are loaded automatically — no config entry needed.
 
 ### 3. Add the Rules File
 
 The rules file tells the LLM not to duplicate the plugin's automatic behavior:
 
 ```bash
+# Global
+mkdir -p ~/.config/opencode/rules
+cp memory.md ~/.config/opencode/rules/
+
+# Or project-level
 mkdir -p .opencode/rules
 cp memory.md .opencode/rules/
 ```
 
 ### 4. Configure OpenCode
 
-Add to your `opencode.json`:
+Add to your `~/.config/opencode/opencode.json` (global) or `opencode.json` (project):
 
 ```json
 {
@@ -69,10 +78,11 @@ Add to your `opencode.json`:
       }
     }
   },
-  "rules": [".opencode/rules/memory.md"],
-  "plugin": [".opencode/plugins/mnemory.ts"]
+  "instructions": ["~/.config/opencode/rules/memory.md"]
 }
 ```
+
+Adjust the `instructions` path to match where you placed `memory.md` (global or project-level).
 
 See `opencode.json` in this directory for a complete example.
 
@@ -95,7 +105,7 @@ The plugin registers an `experimental.session.compacting` hook that re-injects c
 
 ## Troubleshooting
 
-- **No memories appearing**: Check that `MNEMORY_URL` is reachable. Look for "Plugin initialized" in OpenCode logs.
+- **No memories appearing**: Check that `MNEMORY_URL` and `MNEMORY_API_KEY` are set. The plugin fails silently without them. Look for "Plugin initialized" in OpenCode logs (`--print-logs`).
 - **Memories lost after compaction**: Ensure the plugin is loaded (check logs). The compaction hook should re-inject core memories automatically.
-- **LLM still calls initialize_memory**: Ensure `memory.md` is in your rules directory and listed in `opencode.json`. The rules file overrides MCP tool descriptions.
+- **LLM still calls initialize_memory**: Ensure `memory.md` is in your rules directory and referenced in `opencode.json` under `"instructions"` with the correct path. The rules file overrides MCP tool descriptions.
 - **Duplicate memory storage**: The extraction pipeline deduplicates against existing memories. If you see duplicates, check that the mnemory server is reachable for the remember calls.

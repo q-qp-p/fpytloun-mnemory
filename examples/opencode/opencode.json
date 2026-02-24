@@ -9,6 +9,5 @@
       }
     }
   },
-  "rules": [".opencode/rules/memory.md"],
-  "plugin": [".opencode/plugins/mnemory.ts"]
+  "instructions": ["~/.config/opencode/rules/memory.md"]
 }
