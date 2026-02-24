@@ -165,6 +165,7 @@ def find_memories(
             limit=req.limit,
             include_decayed=req.include_decayed,
             session_timezone=ctx.timezone,
+            context=req.context,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

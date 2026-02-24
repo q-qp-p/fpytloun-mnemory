@@ -110,6 +110,14 @@ class FindMemoriesRequest(BaseModel):
     role: str | None = Field(None, description="Filter by role")
     limit: int = Field(10, ge=1, le=100, description="Max results to return")
     include_decayed: bool = Field(False, description="Include expired/decayed memories")
+    context: str | None = Field(
+        None,
+        description=(
+            "Optional context hint for query generation (e.g., current working "
+            "directory, active project). Used to generate additional relevant "
+            "queries — does not filter results exclusively to this context."
+        ),
+    )
 
 
 class MemoryItem(BaseModel):
@@ -281,6 +289,14 @@ class RecallRequest(BaseModel):
     recent_days: int = Field(7, description="Days of recent context for core memories")
     ttl: int | None = Field(
         None, description="Session TTL in seconds (only used on first call)"
+    )
+    context: str | None = Field(
+        None,
+        description=(
+            "Optional context hint for query generation (e.g., current working "
+            "directory, active project). Used to generate additional relevant "
+            "queries — does not filter results exclusively to this context."
+        ),
     )
 
 

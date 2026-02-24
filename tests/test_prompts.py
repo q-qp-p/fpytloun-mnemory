@@ -529,6 +529,48 @@ class TestBuildQueryGenerationPrompt:
         assert "procedural instruction" in system
         assert "acknowledgment" in system
 
+    def test_without_context_no_context_in_prompt(self):
+        messages, _ = build_query_generation_prompt("test")
+        system = messages[0]["content"]
+        assert "Additional context" not in system
+
+    def test_with_context_injected_into_prompt(self):
+        messages, _ = build_query_generation_prompt(
+            "test", context="Working directory: /home/user/src/myapp"
+        )
+        system = messages[0]["content"]
+        assert "Additional context: Working directory: /home/user/src/myapp" in system
+        assert "Do not limit queries exclusively to this context" in system
+
+    def test_without_project_categories_no_categories_in_prompt(self):
+        messages, _ = build_query_generation_prompt("test")
+        system = messages[0]["content"]
+        assert "Known project categories" not in system
+
+    def test_with_project_categories_injected_into_prompt(self):
+        messages, _ = build_query_generation_prompt(
+            "test",
+            project_categories=["project:mnemory", "project:myapp"],
+        )
+        system = messages[0]["content"]
+        assert "Known project categories: project:mnemory, project:myapp" in system
+        assert "prefer these exact category names" in system
+
+    def test_context_and_categories_together(self):
+        messages, _ = build_query_generation_prompt(
+            "test",
+            context="Working directory: /src/mnemory",
+            project_categories=["project:mnemory"],
+        )
+        system = messages[0]["content"]
+        assert "Additional context: Working directory: /src/mnemory" in system
+        assert "Known project categories: project:mnemory" in system
+
+    def test_empty_project_categories_not_injected(self):
+        messages, _ = build_query_generation_prompt("test", project_categories=[])
+        system = messages[0]["content"]
+        assert "Known project categories" not in system
+
 
 # ── build_rerank_prompt ──────────────────────────────────────────────
 

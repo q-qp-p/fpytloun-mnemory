@@ -37,11 +37,12 @@ interface RecallResult {
   search_results?: Array<{ memory?: string }>
 }
 
-export const MnemoryPlugin: Plugin = async ({ client }) => {
+export const MnemoryPlugin: Plugin = async ({ client, worktree, directory }) => {
   // ── Configuration ────────────────────────────────────────────────
   const baseUrl = process.env.MNEMORY_URL || "http://localhost:8050"
   const apiKey = process.env.MNEMORY_API_KEY || ""
   const agentId = process.env.MNEMORY_AGENT_ID || "opencode"
+  const workingDirectory = worktree || directory || ""
   const userId = process.env.MNEMORY_USER_ID || ""
   const scoreThreshold = parseFloat(
     process.env.MNEMORY_SCORE_THRESHOLD || "0.5",
@@ -120,6 +121,7 @@ export const MnemoryPlugin: Plugin = async ({ client }) => {
       include_instructions: true,
       managed: true,
       score_threshold: scoreThreshold,
+      ...(workingDirectory && { context: `Working directory: ${workingDirectory}` }),
     }).then((result: RecallResult | null) => {
       state.mnemorySessionId = result?.session_id ?? null
       state.recallResult = result

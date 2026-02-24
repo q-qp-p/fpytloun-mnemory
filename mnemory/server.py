@@ -615,6 +615,7 @@ def find_memories(
     limit: int = 10,
     agent_id: str | None = None,
     include_decayed: bool = False,
+    context: str | None = None,
 ) -> str:
     """Find memories relevant to a complex question using AI-powered search.
 
@@ -650,6 +651,9 @@ def find_memories(
                   X-Agent-Id header.
         include_decayed: If true, include expired/decayed memories in results.
                         Useful for browsing historical memories. Default false.
+        context: Optional context hint for query generation (e.g., current
+                 working directory, active project). Generates additional
+                 relevant queries without filtering exclusively to this context.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -668,6 +672,7 @@ def find_memories(
                 limit=limit,
                 include_decayed=include_decayed,
                 session_timezone=session_tz,
+                context=context,
             )
         else:
             aid = _resolve_agent_id(agent_id)
@@ -681,6 +686,7 @@ def find_memories(
                 limit=limit,
                 include_decayed=include_decayed,
                 session_timezone=session_tz,
+                context=context,
             )
         memories = result.get("results", [])
         queries = result.get("queries", [])

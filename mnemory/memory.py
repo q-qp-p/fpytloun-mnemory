@@ -1274,6 +1274,7 @@ class MemoryService:
         role: str | None = None,
         include_decayed: bool = False,
         session_timezone: str | None = None,
+        context: str | None = None,
     ) -> dict:
         """Find memories relevant to a complex question using AI-powered search.
 
@@ -1293,6 +1294,11 @@ class MemoryService:
             include_decayed: If True, include expired/decayed memories.
             session_timezone: IANA timezone from X-Timezone header. Used to
                 determine "today's date" for temporal query generation.
+            context: Optional context hint for query generation (e.g., current
+                working directory, active project). Injected into the query
+                generation prompt as background information — the LLM uses it
+                to generate additional relevant queries where appropriate, but
+                does not limit queries exclusively to this context.
 
         Returns:
             Dict with "results" (list of memory dicts sorted by relevance),
@@ -1305,6 +1311,9 @@ class MemoryService:
         user_id = _validate_id(user_id, "user_id")
         num_queries = self._config.memory.find_memories_queries
         threshold = self._config.memory.search_score_threshold
+
+        # Fetch project categories for context-aware query generation
+        project_cats = self._get_project_categories(user_id)
 
         # Compute today's date in the session timezone (for temporal queries)
         today: str | None = None
@@ -1330,6 +1339,8 @@ class MemoryService:
             question,
             num_queries=num_queries,
             today=today,
+            context=context,
+            project_categories=project_cats or None,
         )
         raw_response = self._llm.generate(messages, json_schema=schema)
         try:
@@ -2378,6 +2389,16 @@ class MemoryService:
 
         self._category_cache.set(user_id, categories)
         return categories
+
+    def _get_project_categories(self, user_id: str) -> list[str]:
+        """Get the list of project:* categories for this user.
+
+        Reuses the category cache from _get_available_categories.
+        Returns only categories with the "project:" prefix that exist
+        in the user's memories (i.e., have at least one memory tagged).
+        """
+        all_cats = self._get_available_categories(user_id)
+        return [c for c in all_cats if c.startswith("project:")]
 
     def _get_artifacts_meta(self, user_id: str, memory_id: str) -> list[dict]:
         """Get artifact metadata list from a memory's vector store entry."""

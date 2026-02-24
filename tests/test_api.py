@@ -234,6 +234,83 @@ class TestRateLimit:
         assert _check_rate_limit("user2") is True
 
 
+class TestRecallContextPassthrough:
+    """Test that /api/recall passes context to find_memories."""
+
+    def test_context_passed_to_find_memories(self):
+        """recall() should forward req.context to service.find_memories."""
+        from unittest.mock import MagicMock, patch
+
+        from mnemory.api.deps import SessionContext
+        from mnemory.api.recall import recall
+        from mnemory.api.schemas import RecallRequest
+        from mnemory.session import SessionStore
+
+        mock_service = MagicMock()
+        mock_service.find_memories.return_value = {
+            "results": [],
+            "queries": [],
+            "stats": {},
+        }
+
+        session_store = SessionStore()
+
+        ctx = SessionContext(user_id="test", agent_id=None, timezone=None)
+        req = RecallRequest(
+            query="What is my project?",
+            context="Working directory: /home/user/src/myapp",
+        )
+
+        with (
+            patch("mnemory.api.recall._get_service", return_value=mock_service),
+            patch("mnemory.api.recall._get_session_store", return_value=session_store),
+            patch(
+                "mnemory.server._get_config",
+                return_value=MagicMock(memory=MagicMock(recall_max_results=10)),
+            ),
+        ):
+            recall(req, ctx)
+
+        mock_service.find_memories.assert_called_once()
+        _, kwargs = mock_service.find_memories.call_args
+        assert kwargs["context"] == "Working directory: /home/user/src/myapp"
+
+    def test_no_context_passes_none(self):
+        """recall() without context should pass context=None to find_memories."""
+        from unittest.mock import MagicMock, patch
+
+        from mnemory.api.deps import SessionContext
+        from mnemory.api.recall import recall
+        from mnemory.api.schemas import RecallRequest
+        from mnemory.session import SessionStore
+
+        mock_service = MagicMock()
+        mock_service.find_memories.return_value = {
+            "results": [],
+            "queries": [],
+            "stats": {},
+        }
+
+        session_store = SessionStore()
+
+        ctx = SessionContext(user_id="test", agent_id=None, timezone=None)
+        req = RecallRequest(query="test question")
+
+        with (
+            patch("mnemory.api.recall._get_service", return_value=mock_service),
+            patch("mnemory.api.recall._get_session_store", return_value=session_store),
+            patch(
+                "mnemory.server._get_config",
+                return_value=MagicMock(memory=MagicMock(recall_max_results=10)),
+            ),
+        ):
+            recall(req, ctx)
+
+        mock_service.find_memories.assert_called_once()
+        _, kwargs = mock_service.find_memories.call_args
+        assert kwargs["context"] is None
+
+
 class TestInputLengthGuard:
     """Test input length validation in add_memory and remember."""
 

@@ -871,7 +871,7 @@ _QUERY_GENERATION_SYSTEM_PROMPT = """\
 You are a memory search assistant. Given a user's message, generate UP TO \
 {num_queries} diverse search queries to find relevant memories in a \
 personal memory database.
-{today_line}
+{today_line}{context_line}{categories_line}
 If the message is a procedural instruction (e.g., "format that as a table", \
 "show me the code"), an acknowledgment (e.g., "ok", "thanks", "got it"), \
 or otherwise does not benefit from personal memory context, return an \
@@ -915,6 +915,8 @@ def build_query_generation_prompt(
     *,
     num_queries: int = 5,
     today: str | None = None,
+    context: str | None = None,
+    project_categories: list[str] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Build a prompt to generate diverse search queries from a question.
 
@@ -924,6 +926,13 @@ def build_query_generation_prompt(
         today: Today's date as YYYY-MM-DD string. When provided, injected
             into the system prompt so the LLM can resolve temporal references
             (e.g., "last month", "recently") into date-specific queries.
+        context: Optional context hint (e.g., working directory, active
+            project). Injected as background information — the LLM uses it
+            to generate additional relevant queries where appropriate, but
+            does not limit queries exclusively to this context.
+        project_categories: List of known project:* category names for this
+            user (e.g., ["project:mnemory", "project:myapp"]). When provided,
+            the LLM uses these exact names for project-related queries.
 
     Returns:
         Tuple of (messages, json_schema) for the LLM call.
@@ -934,9 +943,28 @@ def build_query_generation_prompt(
         if today
         else ""
     )
+    context_line = (
+        f"\nAdditional context: {context}\n"
+        "Use this to inform your queries where relevant — for example, if a "
+        "working directory suggests a project, include some project-related "
+        "queries alongside the main topic queries. Do not limit queries "
+        "exclusively to this context.\n"
+        if context
+        else ""
+    )
+    categories_line = (
+        "\nKnown project categories: "
+        + ", ".join(project_categories)
+        + "\nWhen generating project-related queries, prefer these exact "
+        "category names.\n"
+        if project_categories
+        else ""
+    )
     system_prompt = _QUERY_GENERATION_SYSTEM_PROMPT.format(
         num_queries=num_queries,
         today_line=today_line,
+        context_line=context_line,
+        categories_line=categories_line,
     )
 
     messages = [

@@ -178,6 +178,7 @@ def recall(
                     agent_id=ctx.agent_id,
                     limit=max_results,
                     session_timezone=ctx.timezone,
+                    context=req.context,
                 )
                 search_results = result.get("results", [])
             except Exception:

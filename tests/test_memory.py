@@ -4087,3 +4087,175 @@ class TestArtifactCleanup:
         service.vector.delete.assert_called_once_with("mem-1")
         service.artifact.delete_by_id.assert_not_called()
         service.vector.artifact_has_references.assert_not_called()
+
+
+# ── find_memories context + project categories ────────────────────────
+
+
+class TestFindMemoriesContext:
+    """Test that find_memories passes context and project_categories to prompt."""
+
+    def _make_service_with_categories(self, project_cats: list[str]):
+        """Create a service whose _get_project_categories returns the given list."""
+        service = _make_service()
+        # Patch _get_project_categories to return controlled categories
+        service._get_project_categories = lambda user_id: project_cats
+        return service
+
+    def test_context_passed_to_query_generation(self):
+        """find_memories should pass context to build_query_generation_prompt."""
+        import json
+        from unittest.mock import patch
+
+        service = self._make_service_with_categories([])
+        service._llm.generate.return_value = json.dumps({"queries": ["test query"]})
+        service.vector.search.return_value = {"results": []}
+
+        with patch("mnemory.memory.build_query_generation_prompt") as mock_build:
+            mock_build.return_value = (
+                [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "q"},
+                ],
+                {"name": "query_generation", "schema": {"properties": {"queries": {}}}},
+            )
+            service._llm.generate.return_value = json.dumps({"queries": []})
+
+            service.find_memories(
+                "What is my project?",
+                user_id="filip",
+                context="Working directory: /home/user/src/myapp",
+            )
+
+        mock_build.assert_called_once()
+        _, kwargs = mock_build.call_args
+        assert kwargs["context"] == "Working directory: /home/user/src/myapp"
+
+    def test_project_categories_passed_to_query_generation(self):
+        """find_memories should pass project_categories to build_query_generation_prompt."""
+        import json
+        from unittest.mock import patch
+
+        service = self._make_service_with_categories(
+            ["project:mnemory", "project:myapp"]
+        )
+        service._llm.generate.return_value = json.dumps({"queries": []})
+
+        with patch("mnemory.memory.build_query_generation_prompt") as mock_build:
+            mock_build.return_value = (
+                [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "q"},
+                ],
+                {"name": "query_generation", "schema": {"properties": {"queries": {}}}},
+            )
+            service._llm.generate.return_value = json.dumps({"queries": []})
+
+            service.find_memories("test question", user_id="filip")
+
+        mock_build.assert_called_once()
+        _, kwargs = mock_build.call_args
+        assert kwargs["project_categories"] == ["project:mnemory", "project:myapp"]
+
+    def test_no_project_categories_passes_none(self):
+        """When no project categories exist, None is passed (not empty list)."""
+        import json
+        from unittest.mock import patch
+
+        service = self._make_service_with_categories([])
+        service._llm.generate.return_value = json.dumps({"queries": []})
+
+        with patch("mnemory.memory.build_query_generation_prompt") as mock_build:
+            mock_build.return_value = (
+                [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "q"},
+                ],
+                {"name": "query_generation", "schema": {"properties": {"queries": {}}}},
+            )
+            service._llm.generate.return_value = json.dumps({"queries": []})
+
+            service.find_memories("test question", user_id="filip")
+
+        mock_build.assert_called_once()
+        _, kwargs = mock_build.call_args
+        # Empty list → None (so the prompt doesn't inject an empty categories line)
+        assert kwargs["project_categories"] is None
+
+    def test_no_context_passes_none(self):
+        """When context is not provided, None is passed to prompt builder."""
+        import json
+        from unittest.mock import patch
+
+        service = self._make_service_with_categories([])
+        service._llm.generate.return_value = json.dumps({"queries": []})
+
+        with patch("mnemory.memory.build_query_generation_prompt") as mock_build:
+            mock_build.return_value = (
+                [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "q"},
+                ],
+                {"name": "query_generation", "schema": {"properties": {"queries": {}}}},
+            )
+            service._llm.generate.return_value = json.dumps({"queries": []})
+
+            service.find_memories("test question", user_id="filip")
+
+        mock_build.assert_called_once()
+        _, kwargs = mock_build.call_args
+        assert kwargs["context"] is None
+
+
+class TestGetProjectCategories:
+    """Test _get_project_categories helper."""
+
+    def test_filters_to_project_prefix_only(self):
+        """Only categories starting with 'project:' should be returned."""
+        service = _make_service()
+        # Patch _get_available_categories to return a mixed list
+        service._get_available_categories = lambda user_id: [
+            "personal",
+            "work",
+            "technical",
+            "project:mnemory",
+            "project:myapp",
+        ]
+        result = service._get_project_categories("filip")
+        assert result == ["project:mnemory", "project:myapp"]
+
+    def test_no_project_categories_returns_empty(self):
+        """When no project:* categories exist, returns empty list."""
+        service = _make_service()
+        service._get_available_categories = lambda user_id: ["personal", "work"]
+        result = service._get_project_categories("filip")
+        assert result == []
+
+    def test_reuses_available_categories_cache(self):
+        """_get_project_categories should call _get_available_categories (uses cache)."""
+        service = _make_service()
+        call_count = 0
+
+        def mock_get_available(user_id):
+            nonlocal call_count
+            call_count += 1
+            return ["project:mnemory"]
+
+        service._get_available_categories = mock_get_available
+
+        service._get_project_categories("filip")
+        service._get_project_categories("filip")
+
+        # Both calls go through _get_available_categories (cache is on that method)
+        assert call_count == 2
+
+    def test_only_project_prefix_not_bare_project(self):
+        """'project' without colon should NOT be included."""
+        service = _make_service()
+        service._get_available_categories = lambda user_id: [
+            "project",
+            "project:mnemory",
+        ]
+        result = service._get_project_categories("filip")
+        assert "project" not in result
+        assert "project:mnemory" in result
