@@ -8,6 +8,5 @@
         "X-Agent-Id": "opencode"
       }
     }
-  },
-  "instructions": ["~/.config/opencode/rules/memory.md"]
+  }
 }

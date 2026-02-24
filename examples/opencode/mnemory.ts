@@ -2,9 +2,13 @@
  * mnemory — Automatic memory recall and storage for OpenCode.
  *
  * This plugin hooks into OpenCode's session lifecycle to:
- * 1. Recall memories on session start (inject into context)
+ * 1. Recall memories and inject into the system prompt (no race conditions)
  * 2. Store memories after each exchange (fire-and-forget)
  * 3. Preserve memories across session compaction
+ *
+ * Memory injection uses `experimental.chat.system.transform` to add memories
+ * to the system prompt before each LLM call. This avoids the race condition
+ * of injecting noReply messages that can appear mid-conversation.
  *
  * The LLM also has access to mnemory MCP tools for explicit operations
  * (search, update, delete). The plugin handles the automatic parts.
@@ -22,6 +26,8 @@ import type { Plugin } from "@opencode-ai/plugin"
 interface SessionState {
   mnemorySessionId: string | null
   lastMessageCount: number
+  recallPromise: Promise<RecallResult | null> | null
+  recallResult: RecallResult | null
 }
 
 interface RecallResult {
@@ -80,21 +86,48 @@ export const MnemoryPlugin: Plugin = async ({ client }) => {
 
   // ── Helpers ──────────────────────────────────────────────────────
 
-  function trackSession(sessionId: string, state: SessionState): void {
-    sessions.set(sessionId, state)
-    // Evict oldest entries if over limit
-    if (sessions.size > MAX_SESSIONS) {
-      const excess = sessions.size - MAX_SESSIONS
-      let count = 0
-      for (const key of sessions.keys()) {
-        if (count >= excess) break
-        sessions.delete(key)
-        count++
+  function getOrCreateState(sessionId: string): SessionState {
+    let state = sessions.get(sessionId)
+    if (!state) {
+      state = {
+        mnemorySessionId: null,
+        lastMessageCount: 0,
+        recallPromise: null,
+        recallResult: null,
+      }
+      sessions.set(sessionId, state)
+      // Evict oldest entries if over limit
+      if (sessions.size > MAX_SESSIONS) {
+        const excess = sessions.size - MAX_SESSIONS
+        let count = 0
+        for (const key of sessions.keys()) {
+          if (count >= excess) break
+          sessions.delete(key)
+          count++
+        }
       }
     }
+    return state
   }
 
-  function buildInjectionText(result: RecallResult): string {
+  /**
+   * Start a recall API call and store the promise in session state.
+   * Does NOT await — the promise is resolved later in system.transform.
+   */
+  function startRecall(state: SessionState): void {
+    state.recallResult = null
+    state.recallPromise = callApi("/api/recall", {
+      include_instructions: true,
+      managed: true,
+      score_threshold: scoreThreshold,
+    }).then((result: RecallResult | null) => {
+      state.mnemorySessionId = result?.session_id ?? null
+      state.recallResult = result
+      return result
+    })
+  }
+
+  function buildSystemText(result: RecallResult): string {
     const parts: string[] = []
 
     if (result.instructions) {
@@ -117,54 +150,6 @@ export const MnemoryPlugin: Plugin = async ({ client }) => {
   }
 
   /**
-   * Recall memories from mnemory and inject into an OpenCode session.
-   * Used on session creation and after compaction.
-   */
-  async function recallAndInject(sessionId: string): Promise<void> {
-    const result: RecallResult | null = await callApi("/api/recall", {
-      include_instructions: true,
-      managed: true,
-      score_threshold: scoreThreshold,
-    })
-
-    const mnemorySessionId = result?.session_id ?? null
-
-    // Get current message count for remember tracking
-    let messageCount = 0
-    try {
-      const response = await client.session.messages({
-        path: { id: sessionId },
-      })
-      const allMessages = response?.data ?? response ?? []
-      if (Array.isArray(allMessages)) {
-        messageCount = allMessages.length
-      }
-    } catch {
-      // Non-critical — worst case we re-process some messages
-    }
-
-    trackSession(sessionId, { mnemorySessionId, lastMessageCount: messageCount })
-
-    if (!result) return
-
-    const injectionText = buildInjectionText(result)
-    if (!injectionText) return
-
-    // Inject memories as a context-only message (no AI reply)
-    try {
-      await client.session.prompt({
-        path: { id: sessionId },
-        body: {
-          noReply: true,
-          parts: [{ type: "text", text: injectionText }],
-        },
-      })
-    } catch {
-      // Session may have been deleted between event and injection
-    }
-  }
-
-  /**
    * Extract the last user + assistant message pair from session messages.
    * Returns null if no new complete exchange is found.
    */
@@ -172,7 +157,6 @@ export const MnemoryPlugin: Plugin = async ({ client }) => {
     messages: Array<{ info: { role: string }; parts: Array<{ type: string; text?: string }> }>,
     afterIndex: number,
   ): { user: string; assistant: string; newCount: number } | null {
-    // Find the last user and assistant messages after afterIndex
     const newMessages = messages.slice(afterIndex)
     if (newMessages.length < 2) return null
 
@@ -215,28 +199,70 @@ export const MnemoryPlugin: Plugin = async ({ client }) => {
   })
 
   return {
-    // Handle session lifecycle events
+    // ── System Prompt Injection ─────────────────────────────────
+    // Inject memories into the system prompt before each LLM call.
+    // On the first call, awaits the recall promise (adds ~1-2s).
+    // On subsequent calls, uses the cached result (instant).
+    // Also handles resumed sessions where session.created didn't fire.
+    "experimental.chat.system.transform": async (
+      input: { sessionID?: string },
+      output: { system: string[] },
+    ) => {
+      const sessionId = input.sessionID
+      if (!sessionId) return
+
+      const state = getOrCreateState(sessionId)
+
+      // If no recall has been started (e.g., resumed session), start one
+      if (!state.recallPromise && !state.recallResult) {
+        startRecall(state)
+      }
+
+      // Await the recall promise if not yet resolved
+      if (state.recallPromise && !state.recallResult) {
+        try {
+          await state.recallPromise
+        } catch {
+          // Graceful degradation
+        }
+        state.recallPromise = null
+      }
+
+      // Inject cached result into system prompt
+      if (state.recallResult) {
+        const text = buildSystemText(state.recallResult)
+        if (text) {
+          output.system.push(text)
+        }
+      }
+    },
+
+    // ── Session Lifecycle Events ────────────────────────────────
     event: async ({ event }: { event: { type: string; properties: any } }) => {
-      // ── Session Created: Recall + Inject ───────────────────────
+      // ── Session Created: Pre-fetch Recall ────────────────────
+      // Kick off recall early so it's ready by the time the first
+      // LLM call hits experimental.chat.system.transform.
       if (event.type === "session.created") {
         const sessionId: string = event.properties?.info?.id
         if (!sessionId) return
-        await recallAndInject(sessionId)
+
+        const state = getOrCreateState(sessionId)
+        startRecall(state)
       }
 
-      // ── Session Compacted: Fresh Recall + Inject ───────────────
-      // After compaction, old messages (including injected memories)
-      // are summarized and discarded. The mnemory session's known_ids
-      // are stale. Create a fresh mnemory session and re-inject.
+      // ── Session Compacted: Reset + Fresh Recall ──────────────
+      // After compaction, old context is summarized. Reset the
+      // cached recall result so the next system.transform call
+      // fetches fresh memories.
       if (event.type === "session.compacted") {
         const sessionId: string = event.properties?.sessionID
         if (!sessionId) return
-        await recallAndInject(sessionId)
+
+        const state = getOrCreateState(sessionId)
+        startRecall(state)
       }
 
-      // ── Session Idle: Remember ─────────────────────────────────
-      // Note: session.idle is deprecated but still emitted.
-      // Future versions may need to use session.status instead.
+      // ── Session Idle: Remember ───────────────────────────────
       if (event.type === "session.idle") {
         const sessionId: string = event.properties?.sessionID
         if (!sessionId) return
@@ -245,7 +271,6 @@ export const MnemoryPlugin: Plugin = async ({ client }) => {
         if (!state) return
 
         try {
-          // Get all messages in the session
           const response = await client.session.messages({
             path: { id: sessionId },
           })
@@ -283,18 +308,18 @@ export const MnemoryPlugin: Plugin = async ({ client }) => {
       }
     },
 
-    // ── Compaction: Preserve Memories ─────────────────────────────
-    // Re-inject core memories into the compaction context so the
-    // compaction summary preserves them. Without this, memories
-    // injected via noReply are lost after compaction.
+    // ── Compaction: Preserve Memories ───────────────────────────
+    // Inject core memories into the compaction context so the
+    // compaction summary preserves them.
     "experimental.session.compacting": async (
-      _input: any,
+      input: { sessionID: string },
       output: { context: string[]; prompt?: string },
     ) => {
-      const result: RecallResult | null = await callApi("/api/recall", {
+      // Use cached result if available, otherwise fetch fresh
+      const state = input.sessionID ? sessions.get(input.sessionID) : null
+      const result: RecallResult | null = state?.recallResult ?? await callApi("/api/recall", {
         include_instructions: true,
         managed: true,
-        score_mode: "search",
         score_threshold: scoreThreshold,
       })
 
