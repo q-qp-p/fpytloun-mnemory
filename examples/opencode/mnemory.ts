@@ -117,6 +117,54 @@ export const MnemoryPlugin: Plugin = async ({ client }) => {
   }
 
   /**
+   * Recall memories from mnemory and inject into an OpenCode session.
+   * Used on session creation and after compaction.
+   */
+  async function recallAndInject(sessionId: string): Promise<void> {
+    const result: RecallResult | null = await callApi("/api/recall", {
+      include_instructions: true,
+      managed: true,
+      score_threshold: scoreThreshold,
+    })
+
+    const mnemorySessionId = result?.session_id ?? null
+
+    // Get current message count for remember tracking
+    let messageCount = 0
+    try {
+      const response = await client.session.messages({
+        path: { id: sessionId },
+      })
+      const allMessages = response?.data ?? response ?? []
+      if (Array.isArray(allMessages)) {
+        messageCount = allMessages.length
+      }
+    } catch {
+      // Non-critical — worst case we re-process some messages
+    }
+
+    trackSession(sessionId, { mnemorySessionId, lastMessageCount: messageCount })
+
+    if (!result) return
+
+    const injectionText = buildInjectionText(result)
+    if (!injectionText) return
+
+    // Inject memories as a context-only message (no AI reply)
+    try {
+      await client.session.prompt({
+        path: { id: sessionId },
+        body: {
+          noReply: true,
+          parts: [{ type: "text", text: injectionText }],
+        },
+      })
+    } catch {
+      // Session may have been deleted between event and injection
+    }
+  }
+
+  /**
    * Extract the last user + assistant message pair from session messages.
    * Returns null if no new complete exchange is found.
    */
@@ -173,33 +221,17 @@ export const MnemoryPlugin: Plugin = async ({ client }) => {
       if (event.type === "session.created") {
         const sessionId: string = event.properties?.info?.id
         if (!sessionId) return
+        await recallAndInject(sessionId)
+      }
 
-        const result: RecallResult | null = await callApi("/api/recall", {
-          include_instructions: true,
-          managed: true,
-          score_threshold: scoreThreshold,
-        })
-
-        const mnemorySessionId = result?.session_id ?? null
-        trackSession(sessionId, { mnemorySessionId, lastMessageCount: 0 })
-
-        if (!result) return
-
-        const injectionText = buildInjectionText(result)
-        if (!injectionText) return
-
-        // Inject memories as a context-only message (no AI reply)
-        try {
-          await client.session.prompt({
-            path: { id: sessionId },
-            body: {
-              noReply: true,
-              parts: [{ type: "text", text: injectionText }],
-            },
-          })
-        } catch {
-          // Session may have been deleted between event and injection
-        }
+      // ── Session Compacted: Fresh Recall + Inject ───────────────
+      // After compaction, old messages (including injected memories)
+      // are summarized and discarded. The mnemory session's known_ids
+      // are stale. Create a fresh mnemory session and re-inject.
+      if (event.type === "session.compacted") {
+        const sessionId: string = event.properties?.sessionID
+        if (!sessionId) return
+        await recallAndInject(sessionId)
       }
 
       // ── Session Idle: Remember ─────────────────────────────────
