@@ -6,7 +6,7 @@ Cursor, etc.) consume as native tools.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ── Memory CRUD ───────────────────────────────────────────────────────
 
@@ -235,11 +235,16 @@ class ListCategoriesResponse(BaseModel):
 # ── Intelligence Layer ────────────────────────────────────────────────
 
 
+# Valid message roles for OpenAI chat format.
+_VALID_MESSAGE_ROLES = {"user", "assistant", "system", "tool"}
+
+
 class MessageParam(BaseModel):
     """A single message in OpenAI chat format.
 
     Extra fields are silently ignored to stay forward-compatible with
     extended message formats (e.g., tool_calls, name, function_call).
+    Role is validated against an allowlist to prevent role spoofing.
     """
 
     model_config = {"extra": "allow"}
@@ -248,6 +253,18 @@ class MessageParam(BaseModel):
     content: str | None = Field(
         None, description="Message text content (may be null for tool messages)"
     )
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        """Validate role against allowlist to prevent role spoofing."""
+        normalized = v.strip().lower()
+        if normalized not in _VALID_MESSAGE_ROLES:
+            raise ValueError(
+                f"Invalid message role '{v}'. "
+                f"Valid roles: {', '.join(sorted(_VALID_MESSAGE_ROLES))}"
+            )
+        return normalized
 
 
 class RecallRequest(BaseModel):

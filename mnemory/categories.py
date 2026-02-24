@@ -11,6 +11,8 @@ requiring configuration changes.
 
 from __future__ import annotations
 
+from mnemory.sanitize import validate_category_name
+
 # Predefined categories with descriptions.
 # These are always available and returned by list_categories even if empty.
 PREDEFINED_CATEGORIES: dict[str, str] = {
@@ -60,12 +62,15 @@ def validate_categories(categories: list[str]) -> list[str]:
 
         # Check for namespaced category (e.g., project:domecek/k8s-manifests)
         if ":" in cat:
-            prefix = cat.split(":", 1)[0]
+            prefix, name = cat.split(":", 1)
             if prefix not in PREDEFINED_CATEGORIES:
                 raise ValueError(
                     f"Unknown category prefix '{prefix}' in '{cat}'. "
                     f"Valid prefixes: {', '.join(sorted(PREDEFINED_CATEGORIES))}"
                 )
+            # Validate the name portion to prevent prompt injection
+            # via category names that get interpolated into LLM prompts
+            validate_category_name(name)
             validated.append(cat)
         elif cat in PREDEFINED_CATEGORIES:
             validated.append(cat)

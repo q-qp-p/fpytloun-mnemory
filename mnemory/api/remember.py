@@ -74,8 +74,17 @@ def _check_rate_limit(user_id: str) -> bool:
         return True
 
 
+# Valid message roles for the remember endpoint.
+# Only these roles are accepted; others are silently skipped.
+_VALID_MESSAGE_ROLES = {"user", "assistant", "system", "tool"}
+
+
 def _format_messages(messages: list[MessageParam]) -> str:
     """Format OpenAI-style messages into text for extraction.
+
+    Only messages with valid roles (user, assistant, system, tool) are
+    included. Messages with unknown roles are silently skipped to prevent
+    role spoofing in the extraction pipeline.
 
     Example output:
         User: I just moved to Berlin
@@ -86,7 +95,11 @@ def _format_messages(messages: list[MessageParam]) -> str:
         content = msg.content
         if not content:
             continue
-        label = msg.role.capitalize()
+        role = msg.role.strip().lower()
+        if role not in _VALID_MESSAGE_ROLES:
+            logger.debug("Skipping message with unknown role: %r", msg.role)
+            continue
+        label = role.capitalize()
         parts.append(f"{label}: {content}")
     return "\n".join(parts)
 

@@ -22,6 +22,7 @@ from mnemory.categories import (
     PREDEFINED_CATEGORIES,
     VALID_MEMORY_TYPES,
 )
+from mnemory.sanitize import ANTI_INJECTION_PREAMBLE, wrap_with_boundary
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,8 @@ Preserve ALL important information — do not lose detail.
 Each fact must be under {max_length} characters.
 Keep the same JSON schema as the original.
 
+{anti_injection}
+
 Return a JSON object with a "memories" array and a "store_artifact"
 boolean (set to false). Each memory entry uses the same format:
 text, action, target_id, old_memory, memory_type, categories, importance, pinned.
@@ -133,11 +136,14 @@ def build_shorten_prompt(
     Returns:
         Tuple of (messages, json_schema) for the LLM call.
     """
-    system_prompt = _SHORTEN_SYSTEM_PROMPT.format(max_length=max_memory_length)
+    system_prompt = _SHORTEN_SYSTEM_PROMPT.format(
+        max_length=max_memory_length,
+        anti_injection=ANTI_INJECTION_PREAMBLE,
+    )
 
-    user_content = json.dumps(
-        {"memories": [oversized_action]},
-        indent=2,
+    user_content = wrap_with_boundary(
+        json.dumps({"memories": [oversized_action]}, indent=2),
+        "content",
     )
 
     messages = [
@@ -155,6 +161,10 @@ You are a memory manager for an AI assistant. Your job is to:
 1. Extract distinct facts from the user's input
 2. Classify each fact
 3. Compare against existing memories and decide what to do
+
+## Security
+
+{anti_injection}
 
 ## Fact Extraction Rules
 
@@ -346,6 +356,10 @@ You are a memory manager for an AI assistant. Your job is to:
 1. Extract distinct facts about the assistant from its messages
 2. Classify each fact
 3. Compare against existing memories and decide what to do
+
+## Security
+
+{anti_injection}
 
 ## Fact Extraction Rules
 
@@ -554,7 +568,8 @@ def build_extraction_prompt(
 
         existing_json = json.dumps(mapped, indent=2)
         existing_section = (
-            f"**Existing memories** (compare against these):\n```\n{existing_json}\n```"
+            "**Existing memories** (compare against these):\n"
+            + wrap_with_boundary(existing_json, "existing_memories")
         )
     else:
         existing_section = (
@@ -586,17 +601,16 @@ def build_extraction_prompt(
         importance_levels=importance_levels,
         categories_section=categories_section,
         existing_section=existing_section,
+        anti_injection=ANTI_INJECTION_PREAMBLE,
     )
 
     if explicit_note:
         system_prompt += explicit_note
 
-    # Build user message — pass content as-is without role prefix.
-    # The chat message role already provides context about who submitted
-    # the content. Adding "user:" or "assistant:" inside the content is
-    # redundant and confuses subject identification when the content
-    # contains named speakers (e.g., "Caroline: I went to...").
-    user_content = content
+    # Build user message — wrap content in boundary tags to prevent
+    # prompt injection. The LLM is instructed to treat content within
+    # boundary tags as data only, never as instructions.
+    user_content = wrap_with_boundary(content, "user_input")
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -717,6 +731,8 @@ Classify this memory content. Return a JSON object with ONLY the following field
 
 {field_instructions}
 
+{anti_injection}
+
 Return ONLY valid JSON, no explanation.
 
 {categories_section}"""
@@ -808,11 +824,12 @@ def build_classification_prompt(
     system_prompt = _CLASSIFY_SYSTEM_PROMPT.format(
         field_instructions="\n".join(f"- {fi}" for fi in field_instructions),
         categories_section=categories_section,
+        anti_injection=ANTI_INJECTION_PREAMBLE,
     )
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": content},
+        {"role": "user", "content": wrap_with_boundary(content, "content")},
     ]
 
     json_schema = {
@@ -872,6 +889,8 @@ You are a memory search assistant. Given a user's message, generate UP TO \
 {num_queries} diverse search queries to find relevant memories in a \
 personal memory database.
 {today_line}{context_line}{categories_line}
+{anti_injection}
+
 If the message is a procedural instruction (e.g., "format that as a table", \
 "show me the code"), an acknowledgment (e.g., "ok", "thanks", "got it"), \
 or otherwise does not benefit from personal memory context, return an \
@@ -944,8 +963,9 @@ def build_query_generation_prompt(
         else ""
     )
     context_line = (
-        f"\nAdditional context: {context}\n"
-        "Use this to inform your queries where relevant — for example, if a "
+        "\nAdditional context:\n"
+        + wrap_with_boundary(context, "context")
+        + "\nUse this to inform your queries where relevant — for example, if a "
         "working directory suggests a project, include some project-related "
         "queries alongside the main topic queries. Do not limit queries "
         "exclusively to this context.\n"
@@ -965,11 +985,12 @@ def build_query_generation_prompt(
         today_line=today_line,
         context_line=context_line,
         categories_line=categories_line,
+        anti_injection=ANTI_INJECTION_PREAMBLE,
     )
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
+        {"role": "user", "content": wrap_with_boundary(question, "user_question")},
     ]
 
     return messages, QUERY_GENERATION_SCHEMA
@@ -980,6 +1001,10 @@ You are a memory relevance scorer. Given a user's question and a list of \
 candidate memories, score each memory for relevance on a scale from 0.0 \
 to 1.0.
 {today_line}
+## Security
+
+{anti_injection}
+
 ## Subject awareness
 
 Pay close attention to WHO or WHAT the memory is about. The subject \
@@ -1057,7 +1082,10 @@ def build_rerank_prompt(
         Tuple of (messages, json_schema) for the LLM call.
     """
     today_line = f"\nToday's date is {today}.\n" if today else ""
-    system_prompt = _RERANK_SYSTEM_PROMPT.format(today_line=today_line)
+    system_prompt = _RERANK_SYSTEM_PROMPT.format(
+        today_line=today_line,
+        anti_injection=ANTI_INJECTION_PREAMBLE,
+    )
 
     # Build memory list with numeric indices and metadata context for the LLM
     mem_lines = []
@@ -1080,7 +1108,12 @@ def build_rerank_prompt(
         mem_lines.append(f"[{idx}] {text}{tag_str}")
     mem_text = "\n".join(mem_lines)
 
-    user_content = f"Question: {question}\n\nMemories:\n{mem_text}"
+    user_content = (
+        "Question: "
+        + wrap_with_boundary(question, "user_question")
+        + "\n\nMemories:\n"
+        + wrap_with_boundary(mem_text, "existing_memories")
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},

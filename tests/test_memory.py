@@ -1691,9 +1691,7 @@ class TestBuildShortenPrompt:
         assert schema["name"] == "memory_extraction"
 
     def test_action_included_in_user_message(self):
-        """The oversized action should be in the user message as JSON."""
-        import json
-
+        """The oversized action should be in the user message (wrapped in boundary tags)."""
         from mnemory.prompts import build_shorten_prompt
 
         action = {
@@ -1709,8 +1707,9 @@ class TestBuildShortenPrompt:
         messages, _ = build_shorten_prompt(action, max_memory_length=50)
 
         user_content = messages[1]["content"]
-        parsed = json.loads(user_content)
-        assert parsed["memories"][0]["text"] == "Some long text"
+        # Content is wrapped in boundary tags but should contain the action
+        assert "Some long text" in user_content
+        assert '"action": "ADD"' in user_content
 
 
 # ── build_extraction_prompt enriched context ──────────────────────────
@@ -1754,6 +1753,7 @@ class TestExtractionPromptEnrichedContext:
         import json
 
         from mnemory.prompts import build_extraction_prompt
+        from mnemory.sanitize import _BOUNDARY_TAGS
 
         existing = [
             {
@@ -1769,9 +1769,11 @@ class TestExtractionPromptEnrichedContext:
             existing_memories=existing,
         )
         system_prompt = messages[0]["content"]
-        # Extract the JSON block from the existing memories section
-        json_start = system_prompt.index("```\n[") + 4
-        json_end = system_prompt.index("\n```", json_start)
+        # Extract the JSON block from the existing memories boundary tags
+        open_tag = _BOUNDARY_TAGS["existing_memories"][0]
+        close_tag = _BOUNDARY_TAGS["existing_memories"][1]
+        json_start = system_prompt.index(open_tag) + len(open_tag) + 1  # +1 for \n
+        json_end = system_prompt.index(close_tag) - 1  # -1 for \n
         existing_json = json.loads(system_prompt[json_start:json_end])
         # Empty type and categories should not appear in the memory entries
         assert "type" not in existing_json[0]

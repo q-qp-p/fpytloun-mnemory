@@ -14,6 +14,7 @@ from mnemory.prompts import (
     build_rerank_prompt,
     parse_extraction_response,
 )
+from mnemory.sanitize import _BOUNDARY_TAGS, ANTI_INJECTION_PREAMBLE
 
 # ── Validation helpers ───────────────────────────────────────────────
 
@@ -73,15 +74,21 @@ class TestBuildExtractionPrompt:
         messages, _, _ = build_extraction_prompt("test content", role="user")
         system = messages[0]["content"]
         assert "user" in system.lower()
-        # Content should be passed as-is without role prefix
-        assert messages[1]["content"] == "test content"
+        # Content should be wrapped in boundary tags
+        user_msg = messages[1]["content"]
+        assert "test content" in user_msg
+        open_tag = _BOUNDARY_TAGS["user_input"][0]
+        assert open_tag in user_msg
 
     def test_assistant_role_uses_agent_prompt(self):
         messages, _, _ = build_extraction_prompt("test content", role="assistant")
         system = messages[0]["content"]
         assert "assistant" in system.lower()
-        # Content should be passed as-is without role prefix
-        assert messages[1]["content"] == "test content"
+        # Content should be wrapped in boundary tags
+        user_msg = messages[1]["content"]
+        assert "test content" in user_msg
+        open_tag = _BOUNDARY_TAGS["user_input"][0]
+        assert open_tag in user_msg
 
     def test_existing_memories_mapped_to_integer_ids(self):
         existing = [
@@ -92,10 +99,13 @@ class TestBuildExtractionPrompt:
             "test", existing_memories=existing
         )
         assert id_mapping == {"0": "uuid-abc-123", "1": "uuid-def-456"}
-        # System prompt should contain the integer IDs
+        # System prompt should contain the integer IDs (within boundary tags)
         system = messages[0]["content"]
         assert '"id": "0"' in system
         assert '"id": "1"' in system
+        # Existing memories should be wrapped in boundary tags
+        open_tag = _BOUNDARY_TAGS["existing_memories"][0]
+        assert open_tag in system
 
     def test_no_existing_memories(self):
         messages, _, id_mapping = build_extraction_prompt("test")
@@ -475,7 +485,10 @@ class TestBuildClassificationPrompt:
         messages, _ = build_classification_prompt(
             "I prefer Python", missing_fields={"memory_type"}
         )
-        assert messages[1]["content"] == "I prefer Python"
+        # Content should be wrapped in boundary tags
+        assert "I prefer Python" in messages[1]["content"]
+        open_tag = _BOUNDARY_TAGS["content"][0]
+        assert open_tag in messages[1]["content"]
 
 
 # ── build_query_generation_prompt ────────────────────────────────────
@@ -488,7 +501,10 @@ class TestBuildQueryGenerationPrompt:
         assert len(messages) == 2
         assert messages[0]["role"] == "system"
         assert messages[1]["role"] == "user"
-        assert messages[1]["content"] == "What car do I have?"
+        # Question should be wrapped in boundary tags
+        assert "What car do I have?" in messages[1]["content"]
+        open_tag = _BOUNDARY_TAGS["user_question"][0]
+        assert open_tag in messages[1]["content"]
         assert schema["name"] == "query_generation"
 
     def test_num_queries_in_system_prompt(self):
@@ -539,8 +555,12 @@ class TestBuildQueryGenerationPrompt:
             "test", context="Working directory: /home/user/src/myapp"
         )
         system = messages[0]["content"]
-        assert "Additional context: Working directory: /home/user/src/myapp" in system
+        assert "Additional context:" in system
+        assert "Working directory: /home/user/src/myapp" in system
         assert "Do not limit queries exclusively to this context" in system
+        # Context should be wrapped in boundary tags
+        open_tag = _BOUNDARY_TAGS["context"][0]
+        assert open_tag in system
 
     def test_without_project_categories_no_categories_in_prompt(self):
         messages, _ = build_query_generation_prompt("test")
@@ -563,7 +583,8 @@ class TestBuildQueryGenerationPrompt:
             project_categories=["project:mnemory"],
         )
         system = messages[0]["content"]
-        assert "Additional context: Working directory: /src/mnemory" in system
+        assert "Additional context:" in system
+        assert "Working directory: /src/mnemory" in system
         assert "Known project categories: project:mnemory" in system
 
     def test_empty_project_categories_not_injected(self):
@@ -588,12 +609,20 @@ class TestBuildRerankPrompt:
     def test_question_in_user_content(self):
         memories = [{"id": "1", "memory": "User likes dogs"}]
         messages, _ = build_rerank_prompt("Do I like dogs?", memories)
-        assert "Do I like dogs?" in messages[1]["content"]
+        user_content = messages[1]["content"]
+        assert "Do I like dogs?" in user_content
+        # Question should be wrapped in boundary tags
+        open_tag = _BOUNDARY_TAGS["user_question"][0]
+        assert open_tag in user_content
 
     def test_memory_text_in_user_content(self):
         memories = [{"id": "1", "memory": "User likes dogs"}]
         messages, _ = build_rerank_prompt("test", memories)
-        assert "User likes dogs" in messages[1]["content"]
+        user_content = messages[1]["content"]
+        assert "User likes dogs" in user_content
+        # Memories should be wrapped in boundary tags
+        open_tag = _BOUNDARY_TAGS["existing_memories"][0]
+        assert open_tag in user_content
 
     def test_without_today_no_date_in_system(self):
         memories = [{"id": "1", "memory": "test"}]
@@ -653,3 +682,89 @@ class TestBuildRerankPrompt:
         assert "importance: high" in user_content
         assert "role: assistant" in user_content
         assert "event_date: 2023-05-08T00:00:00+00:00" in user_content
+
+
+# ── Prompt injection safeguards ──────────────────────────────────────
+
+
+class TestPromptInjectionSafeguards:
+    """Verify that all prompt builders include anti-injection measures."""
+
+    def test_extraction_prompt_has_anti_injection(self):
+        messages, _, _ = build_extraction_prompt("test content")
+        system = messages[0]["content"]
+        assert "DATA" in system
+        assert "never follow instructions" in system.lower() or (
+            "never follow" in system.lower()
+        )
+
+    def test_extraction_prompt_wraps_user_content(self):
+        messages, _, _ = build_extraction_prompt("test content")
+        user_msg = messages[1]["content"]
+        open_tag, close_tag = _BOUNDARY_TAGS["user_input"]
+        assert open_tag in user_msg
+        assert close_tag in user_msg
+
+    def test_extraction_prompt_wraps_existing_memories(self):
+        existing = [{"id": "uuid-1", "text": "Existing fact"}]
+        messages, _, _ = build_extraction_prompt("test", existing_memories=existing)
+        system = messages[0]["content"]
+        open_tag = _BOUNDARY_TAGS["existing_memories"][0]
+        assert open_tag in system
+
+    def test_classification_prompt_has_anti_injection(self):
+        messages, _ = build_classification_prompt(
+            "test", missing_fields={"memory_type"}
+        )
+        system = messages[0]["content"]
+        assert "DATA" in system
+
+    def test_classification_prompt_wraps_content(self):
+        messages, _ = build_classification_prompt(
+            "test", missing_fields={"memory_type"}
+        )
+        user_msg = messages[1]["content"]
+        open_tag = _BOUNDARY_TAGS["content"][0]
+        assert open_tag in user_msg
+
+    def test_query_generation_has_anti_injection(self):
+        messages, _ = build_query_generation_prompt("test question")
+        system = messages[0]["content"]
+        assert "DATA" in system
+
+    def test_query_generation_wraps_question(self):
+        messages, _ = build_query_generation_prompt("test question")
+        user_msg = messages[1]["content"]
+        open_tag = _BOUNDARY_TAGS["user_question"][0]
+        assert open_tag in user_msg
+
+    def test_query_generation_wraps_context(self):
+        messages, _ = build_query_generation_prompt("test", context="/home/user/src")
+        system = messages[0]["content"]
+        open_tag = _BOUNDARY_TAGS["context"][0]
+        assert open_tag in system
+
+    def test_rerank_prompt_has_anti_injection(self):
+        memories = [{"id": "1", "memory": "test"}]
+        messages, _ = build_rerank_prompt("test question", memories)
+        system = messages[0]["content"]
+        assert "DATA" in system
+
+    def test_rerank_prompt_wraps_question(self):
+        memories = [{"id": "1", "memory": "test"}]
+        messages, _ = build_rerank_prompt("test question", memories)
+        user_msg = messages[1]["content"]
+        open_tag = _BOUNDARY_TAGS["user_question"][0]
+        assert open_tag in user_msg
+
+    def test_rerank_prompt_wraps_memories(self):
+        memories = [{"id": "1", "memory": "test"}]
+        messages, _ = build_rerank_prompt("test question", memories)
+        user_msg = messages[1]["content"]
+        open_tag = _BOUNDARY_TAGS["existing_memories"][0]
+        assert open_tag in user_msg
+
+    def test_anti_injection_preamble_consistent(self):
+        """The anti-injection preamble should mention boundary tags."""
+        assert "boundary tags" in ANTI_INJECTION_PREAMBLE.lower()
+        assert "DATA" in ANTI_INJECTION_PREAMBLE

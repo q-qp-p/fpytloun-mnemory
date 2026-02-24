@@ -34,6 +34,12 @@ from mnemory.prompts import (
     build_shorten_prompt,
     parse_extraction_response,
 )
+from mnemory.sanitize import (
+    CORE_MEMORIES_PREAMBLE,
+    detect_injection_patterns,
+    escape_memory_headers,
+    log_injection_warning,
+)
 from mnemory.storage.artifact import ArtifactStore
 from mnemory.storage.vector import VectorStore
 from mnemory.ttl import (
@@ -271,6 +277,17 @@ class MemoryService:
             agent_id = _validate_id(agent_id, "agent_id")
         if role == "assistant" and not agent_id:
             raise ValueError("agent_id is required when role='assistant'")
+
+        # Detect potential prompt injection patterns (log only, never block)
+        patterns = detect_injection_patterns(content)
+        if patterns:
+            log_injection_warning(
+                content,
+                patterns,
+                user_id=user_id,
+                agent_id=agent_id or "",
+                operation="add_memory",
+            )
 
         # Parse and normalize event_date to UTC ISO 8601
         # Timezone priority: explicit tz in string > session header > config > server local
@@ -1543,7 +1560,7 @@ class MemoryService:
         if ts and "T" in ts:
             ts = ts.split("T")[0] + " " + ts.split("T")[1][:5]
 
-        text = memory.get("memory", "")
+        text = escape_memory_headers(memory.get("memory", ""))
         meta = memory.get("metadata") or {}
         mtype = meta.get("memory_type", "")
         cats = meta.get("categories", [])
@@ -1617,7 +1634,7 @@ class MemoryService:
                     meta = m.get("metadata") or {}
                     mt = meta.get("memory_type", "fact")
                     mr = meta.get("role", "user")
-                    text = m.get("memory", "")
+                    text = escape_memory_headers(m.get("memory", ""))
                     if mr == "assistant":
                         # Memory about the agent itself
                         if mt in ("preference", "fact"):
@@ -1647,7 +1664,7 @@ class MemoryService:
             other = []
             for m in user_pinned:
                 mt = (m.get("metadata") or {}).get("memory_type", "fact")
-                text = m.get("memory", "")
+                text = escape_memory_headers(m.get("memory", ""))
                 if mt == "fact":
                     facts.append(f"- {text}")
                 elif mt == "preference":
@@ -1716,7 +1733,9 @@ class MemoryService:
             self._core_cache.set(cache_key, output)
             return output
 
-        output = "\n\n".join(sections)
+        # Prepend security preamble to prevent stored memories from being
+        # treated as instructions by the consuming LLM
+        output = CORE_MEMORIES_PREAMBLE + "\n\n" + "\n\n".join(sections)
 
         # Truncate if too long (trim recent context first)
         if len(output) > max_len:
