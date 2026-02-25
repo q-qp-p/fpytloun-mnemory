@@ -1,8 +1,8 @@
 /**
  * mnemory UI — Memories Browse Tab (Alpine.js component).
  *
- * Lists all memories with filtering, sorting, inline expand,
- * add/edit/delete, and artifact management.
+ * Lists all memories with filtering, client-side pagination and sorting,
+ * inline expand, add/edit/delete, and artifact management.
  * Edit modal and artifact manager are global stores (app.js).
  */
 
@@ -11,19 +11,25 @@ function memoriesTab() {
     // ── State ──────────────────────────────────────────────────
     memories: [],
     loading: false,
-    totalCount: 0,
 
     filters: {
       memory_type: '',
       categories: [],
       role: '',
-      limit: 25,
+      limit: 5000,
       include_decayed: false,
     },
 
     sortBy: 'newest',
     filterArtifactsOnly: false,
     filterAgentId: '',
+    filterDecayedOnly: false,
+
+    /** Current page (1-indexed). Each page shows pageSize items. */
+    page: 1,
+    pageSize: 50,
+    /** Whether the server may have more results beyond our limit */
+    hasMoreOnServer: false,
 
     expandedId: null,
     availableCategories: [],
@@ -91,20 +97,18 @@ function memoriesTab() {
       try {
         const params = {
           limit: this.filters.limit,
-          include_decayed: this.filters.include_decayed,
+          include_decayed: this.filterDecayedOnly ? true : this.filters.include_decayed,
         };
         if (this.filters.memory_type) params.memory_type = this.filters.memory_type;
         if (this.filters.categories.length > 0) params.categories = this.filters.categories.join(',');
         if (this.filters.role) params.role = this.filters.role;
-        // Pass sort to API for server-side ordering (newest/oldest)
-        if (this.sortBy === 'newest' || this.sortBy === 'oldest') {
-          params.sort = this.sortBy;
-        }
+        // No sort param — all sorting is client-side now
 
         const data = await MnemoryAPI.listMemories(params);
         const results = data.results || [];
         this.memories = append ? this.memories.concat(results) : results;
-        this.totalCount = this.memories.length;
+        this.hasMoreOnServer = results.length >= this.filters.limit;
+        this.page = 1;
       } catch (err) {
         Alpine.store('notify').error(`Failed to load memories: ${err.message}`);
       } finally {
@@ -113,22 +117,25 @@ function memoriesTab() {
     },
 
     loadMore() {
-      this.filters.limit += 25;
-      this.loadMemories(false);
+      const filtered = this._filteredAndSorted();
+      if (this.page * this.pageSize < filtered.length) {
+        // More items available in the current dataset
+        this.page++;
+      } else if (this.hasMoreOnServer) {
+        // Fetch more from server
+        this.filters.limit += 5000;
+        this.loadMemories(false);
+      }
     },
 
     applyFilters() {
-      this.filters.limit = 25;
+      this.page = 1;
       this.loadMemories(false);
     },
 
-    /** Called when sort dropdown changes — reload if server-side sort needed */
+    /** Called when sort dropdown changes — all client-side now */
     onSortChange() {
-      if (this.sortBy === 'newest' || this.sortBy === 'oldest') {
-        // Server-side sort: need to reload from API
-        this.loadMemories(false);
-      }
-      // Client-side sorts (importance, type, alpha) are handled by the getter
+      this.page = 1;
     },
 
     // ── Sorting & Filtering ──────────────────────────────────
@@ -147,12 +154,20 @@ function memoriesTab() {
       return { critical: 4, high: 3, normal: 2, low: 1 }[importance] ?? 2;
     },
 
-    get sortedMemories() {
+    /** Apply all client-side filters and sorting, return full array */
+    _filteredAndSorted() {
       let arr = [...this.memories];
+
+      // Client-side filter: only decayed
+      if (this.filterDecayedOnly) {
+        arr = arr.filter(m => m.metadata?.decayed_at);
+      }
+
       // Client-side filter: has artifacts only
       if (this.filterArtifactsOnly) {
         arr = arr.filter(m => m.has_artifacts);
       }
+
       // Client-side filter: agent_id
       if (this.filterAgentId) {
         if (this.filterAgentId === '_none_') {
@@ -161,20 +176,49 @@ function memoriesTab() {
           arr = arr.filter(m => m.metadata?.agent_id === this.filterAgentId);
         }
       }
+
+      // All sorting is client-side
       switch (this.sortBy) {
         case 'newest':
+          arr.sort((a, b) => {
+            const da = a.metadata?.created_at_utc || '';
+            const db = b.metadata?.created_at_utc || '';
+            return db.localeCompare(da);
+          });
+          break;
         case 'oldest':
-          // Server already returned results in the correct order
-          return arr;
+          arr.sort((a, b) => {
+            const da = a.metadata?.created_at_utc || '';
+            const db = b.metadata?.created_at_utc || '';
+            return da.localeCompare(db);
+          });
+          break;
         case 'importance':
-          return arr.sort((a, b) => this._importanceWeight(b.metadata?.importance) - this._importanceWeight(a.metadata?.importance));
+          arr.sort((a, b) => this._importanceWeight(b.metadata?.importance) - this._importanceWeight(a.metadata?.importance));
+          break;
         case 'type':
-          return arr.sort((a, b) => (a.metadata?.memory_type || '').localeCompare(b.metadata?.memory_type || ''));
+          arr.sort((a, b) => (a.metadata?.memory_type || '').localeCompare(b.metadata?.memory_type || ''));
+          break;
         case 'alpha':
-          return arr.sort((a, b) => (a.memory || '').localeCompare(b.memory || ''));
-        default:
-          return arr;
+          arr.sort((a, b) => (a.memory || '').localeCompare(b.memory || ''));
+          break;
       }
+      return arr;
+    },
+
+    /** Total number of memories after filtering (before pagination) */
+    get totalFiltered() {
+      return this._filteredAndSorted().length;
+    },
+
+    /** Paginated slice of filtered+sorted memories */
+    get sortedMemories() {
+      return this._filteredAndSorted().slice(0, this.page * this.pageSize);
+    },
+
+    /** Whether the "Load More" button should be visible */
+    get canLoadMore() {
+      return (this.page * this.pageSize < this.totalFiltered) || this.hasMoreOnServer;
     },
 
     // ── Expand / Collapse ─────────────────────────────────────
@@ -275,7 +319,6 @@ function memoriesTab() {
       try {
         await MnemoryAPI.deleteMemory(id);
         this.memories = this.memories.filter((m) => m.id !== id);
-        this.totalCount = this.memories.length;
         this.deleteConfirm = null;
         Alpine.store('notify').success('Memory deleted');
       } catch (err) {

@@ -233,7 +233,7 @@ def list_memories(
     memory_type: str | None = Query(None, description="Filter by type"),
     categories: str | None = Query(None, description="Comma-separated categories"),
     role: str | None = Query(None, description="Filter by role"),
-    limit: int = Query(50, ge=1, le=500, description="Max results"),
+    limit: int = Query(50, ge=1, le=5000, description="Max results"),
     include_decayed: bool = Query(False, description="Include expired memories"),
     sort: str | None = Query(
         None, description="Sort order: newest (desc by created_at), oldest (asc)"

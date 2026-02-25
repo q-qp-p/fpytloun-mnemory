@@ -57,6 +57,9 @@ function searchTab() {
     /** Client-side filter: agent_id */
     filterAgentId: '',
 
+    /** Client-side filter: show only decayed memories */
+    filterDecayedOnly: false,
+
     /** All known agent IDs (loaded from stats API, not from current results) */
     availableAgentIds: [],
 
@@ -127,7 +130,7 @@ function searchTab() {
         if (this.filters.limit && this.filters.limit !== 10) {
           filters.limit = this.filters.limit;
         }
-        if (this.filters.include_decayed) {
+        if (this.filters.include_decayed || this.filterDecayedOnly) {
           filters.include_decayed = true;
         }
 
@@ -240,6 +243,10 @@ function searchTab() {
      */
     get sortedResults() {
       let arr = [...this.results];
+      // Client-side filter: only decayed
+      if (this.filterDecayedOnly) {
+        arr = arr.filter(r => r.metadata?.decayed_at);
+      }
       // Client-side filter: has artifacts only
       if (this.filterArtifactsOnly) {
         arr = arr.filter(r => r.has_artifacts);
