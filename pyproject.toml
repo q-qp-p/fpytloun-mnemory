@@ -43,6 +43,7 @@ all = [
 ]
 dev = [
     "pytest>=8.0",
+    "pytest-timeout>=2.3.0",
     "ruff>=0.5.0",
 ]
 
@@ -61,6 +62,12 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end tests requiring LLM API key and real backends (deselected by default)",
+]
+addopts = "-m 'not e2e'"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mnemory"]
