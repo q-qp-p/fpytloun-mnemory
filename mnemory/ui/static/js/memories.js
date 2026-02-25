@@ -50,6 +50,9 @@ function memoriesTab() {
     deleteConfirm: null,
     initialized: false,
 
+    /** All known agent IDs (loaded from stats API, not from current results) */
+    availableAgentIds: [],
+
     // ── Lifecycle ──────────────────────────────────────────────
 
     init() {
@@ -64,9 +67,11 @@ function memoriesTab() {
         if (this.initialized) {
           this.loadMemories(false);
         }
+        this._loadAgentIds();
       });
 
       this.loadCategories();
+      this._loadAgentIds();
     },
 
     async loadCategories() {
@@ -128,14 +133,14 @@ function memoriesTab() {
 
     // ── Sorting & Filtering ──────────────────────────────────
 
-    /** Unique agent IDs found in loaded memories (for filter dropdown) */
-    get availableAgentIds() {
-      const ids = new Set();
-      for (const m of this.memories) {
-        const aid = m.metadata?.agent_id;
-        if (aid) ids.add(aid);
+    /** Load all known agent IDs from the stats API */
+    async _loadAgentIds() {
+      try {
+        const data = await MnemoryAPI.stats();
+        this.availableAgentIds = data.agents || [];
+      } catch {
+        this.availableAgentIds = [];
       }
-      return [...ids].sort();
     },
 
     _importanceWeight(importance) {

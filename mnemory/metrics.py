@@ -245,6 +245,7 @@ class MetricsCollector:
         by_category: dict[str, int] = defaultdict(int)
         by_role: dict[str, int] = defaultdict(int)
         users: set[str] = set()
+        agents: set[str] = set()
         by_user: dict[str, dict] = {}
 
         def _ensure_user(uid: str) -> dict:
@@ -269,6 +270,8 @@ class MetricsCollector:
                 by_type[mtype] += count
                 by_role[role] += count
                 users.add(uid)
+                if aid:
+                    agents.add(aid)
                 u = _ensure_user(uid)
                 u["total"] += count
                 u["by_type"][mtype] = u["by_type"].get(mtype, 0) + count
@@ -360,6 +363,7 @@ class MetricsCollector:
             "artifact_backend": artifact_backend,
             "active_sessions": self._session_store.active_count,
             "users": sorted(users),
+            "agents": sorted(agents),
             "totals": totals,
             "by_type": dict(sorted(by_type.items(), key=lambda x: x[1], reverse=True)),
             "by_category": dict(

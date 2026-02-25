@@ -57,10 +57,13 @@ function searchTab() {
     /** Client-side filter: agent_id */
     filterAgentId: '',
 
+    /** All known agent IDs (loaded from stats API, not from current results) */
+    availableAgentIds: [],
+
     // ── Lifecycle ────────────────────────────────────────────────
 
     /**
-     * Initialize the component: load categories and listen for user switches.
+     * Initialize the component: load categories, agent IDs, and listen for events.
      */
     async init() {
       // Load categories for the filter dropdown
@@ -73,12 +76,25 @@ function searchTab() {
         this.availableCategories = [];
       }
 
+      this._loadAgentIds();
+
       // Clear results when the active user changes
       window.addEventListener('mnemory:user-changed', () => {
         this.results = [];
         this.searched = false;
         this.expandedId = null;
         this.deleteConfirm = null;
+        this._loadAgentIds();
+      });
+
+      // Listen for search requests from the graph tab
+      window.addEventListener('mnemory:search-from-graph', (e) => {
+        const q = e.detail?.query;
+        if (q) {
+          this.query = q;
+          this.mode = 'search';
+          this.search();
+        }
       });
     },
 
@@ -199,14 +215,14 @@ function searchTab() {
 
     // ── Sorting & Filtering ────────────────────────────────────
 
-    /** Unique agent IDs found in search results (for filter dropdown) */
-    get availableAgentIds() {
-      const ids = new Set();
-      for (const r of this.results) {
-        const aid = r.metadata?.agent_id;
-        if (aid) ids.add(aid);
+    /** Load all known agent IDs from the stats API */
+    async _loadAgentIds() {
+      try {
+        const data = await MnemoryAPI.stats();
+        this.availableAgentIds = data.agents || [];
+      } catch {
+        this.availableAgentIds = [];
       }
-      return [...ids].sort();
     },
 
     /**
