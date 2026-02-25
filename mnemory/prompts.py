@@ -216,6 +216,10 @@ You are a memory manager for an AI assistant. Your job is to:
   them in the extracted fact. Convert relative references (yesterday,
   last week, last year, recently, etc.) to absolute dates using
   Today's date.
+- Do NOT append storage dates, creation timestamps, or "(stored ...)"
+  annotations to extracted facts. Only include dates when the original
+  content contains temporal information (events, deadlines, etc.).
+  The storage timestamp is tracked separately in metadata.
 
 ### Examples
 
@@ -417,6 +421,10 @@ You are a memory manager for an AI assistant. Your job is to:
   them in the extracted fact. Convert relative references (yesterday,
   last week, last year, recently, etc.) to absolute dates using
   Today's date.
+- Do NOT append storage dates, creation timestamps, or "(stored ...)"
+  annotations to extracted facts. Only include dates when the original
+  content contains temporal information (events, deadlines, etc.).
+  The storage timestamp is tracked separately in metadata.
 
 ### Examples
 

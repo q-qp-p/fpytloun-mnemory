@@ -270,11 +270,14 @@ class Filter:
         session_id = self._sessions.get(chat_id)
         messages = body.get("messages", [])
 
-        if len(messages) < 2:
+        # Only user/assistant messages — exclude system prompts and tool results
+        conversation = [m for m in messages if m.get("role") in ("user", "assistant")]
+
+        if len(conversation) < 2:
             return body
 
-        # Last 2 messages only (current exchange: user + assistant)
-        last_two = messages[-2:]
+        # Last 2 user/assistant messages (current exchange)
+        last_two = conversation[-2:]
 
         # Fire-and-forget
         asyncio.create_task(
