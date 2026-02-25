@@ -499,11 +499,12 @@ class TestStatsEndpoint:
         import asyncio
         from unittest.mock import MagicMock, patch
 
+        from mnemory import __version__
         from mnemory.api.ui import stats
 
         mock_collector = MagicMock()
         mock_collector.get_stats_json.return_value = {
-            "version": "1.0.0",
+            "version": __version__,
             "vector_backend": "qdrant-local",
             "artifact_backend": "filesystem",
             "active_sessions": 2,
@@ -519,7 +520,7 @@ class TestStatsEndpoint:
         with patch("mnemory.metrics.get_collector", return_value=mock_collector):
             result = asyncio.run(stats())
 
-        assert result["version"] == "1.0.0"
+        assert result["version"] == __version__
         assert result["totals"]["memories"] == 42
         assert result["users"] == ["filip", "bob"]
         assert result["active_sessions"] == 2
