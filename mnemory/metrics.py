@@ -254,6 +254,9 @@ class MetricsCollector:
                     "pinned": 0,
                     "decayed": 0,
                     "with_artifacts": 0,
+                    "by_type": {},
+                    "by_category": {},
+                    "by_role": {},
                 }
             return by_user[uid]
 
@@ -266,7 +269,10 @@ class MetricsCollector:
                 by_type[mtype] += count
                 by_role[role] += count
                 users.add(uid)
-                _ensure_user(uid)["total"] += count
+                u = _ensure_user(uid)
+                u["total"] += count
+                u["by_type"][mtype] = u["by_type"].get(mtype, 0) + count
+                u["by_role"][role] = u["by_role"].get(role, 0) + count
         except Exception:
             logger.debug("Failed to read _memories_total gauge", exc_info=True)
 
@@ -310,6 +316,8 @@ class MetricsCollector:
                 count = int(metric._value.get())
                 by_category[cat] += count
                 users.add(uid)
+                u = _ensure_user(uid)
+                u["by_category"][cat] = u["by_category"].get(cat, 0) + count
         except Exception:
             logger.debug("Failed to read _memories_by_category gauge", exc_info=True)
 
@@ -358,7 +366,25 @@ class MetricsCollector:
                 sorted(by_category.items(), key=lambda x: x[1], reverse=True)
             ),
             "by_role": dict(by_role),
-            "by_user": dict(sorted(by_user.items())),
+            "by_user": {
+                uid: {
+                    **udata,
+                    "by_type": dict(
+                        sorted(
+                            udata["by_type"].items(), key=lambda x: x[1], reverse=True
+                        )
+                    ),
+                    "by_category": dict(
+                        sorted(
+                            udata["by_category"].items(),
+                            key=lambda x: x[1],
+                            reverse=True,
+                        )
+                    ),
+                    "by_role": dict(udata["by_role"]),
+                }
+                for uid, udata in sorted(by_user.items())
+            },
             "operations": operations,
         }
 

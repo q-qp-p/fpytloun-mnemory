@@ -48,6 +48,9 @@ function searchTab() {
     /** Memory ID pending delete confirmation (null = no pending delete) */
     deleteConfirm: null,
 
+    /** Current sort key for search results */
+    sortBy: 'relevance',
+
     // ── Lifecycle ────────────────────────────────────────────────
 
     /**
@@ -156,6 +159,49 @@ function searchTab() {
         Alpine.store('notify').success('Memory ID copied to clipboard');
       } catch {
         Alpine.store('notify').error('Failed to copy to clipboard');
+      }
+    },
+
+    // ── Sorting ──────────────────────────────────────────────────
+
+    /**
+     * Importance level to numeric weight for sorting.
+     * @param {string} importance
+     * @returns {number}
+     */
+    _importanceWeight(importance) {
+      return { critical: 4, high: 3, normal: 2, low: 1 }[importance] ?? 2;
+    },
+
+    /**
+     * Return a sorted copy of this.results based on this.sortBy.
+     * @returns {Array}
+     */
+    get sortedResults() {
+      const arr = [...this.results];
+      switch (this.sortBy) {
+        case 'relevance':
+          // Results already ordered by score desc from the API
+          return arr.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+        case 'newest':
+          return arr.sort((a, b) => {
+            const da = a.metadata?.created_at_utc || '';
+            const db = b.metadata?.created_at_utc || '';
+            return db.localeCompare(da);
+          });
+        case 'oldest':
+          return arr.sort((a, b) => {
+            const da = a.metadata?.created_at_utc || '';
+            const db = b.metadata?.created_at_utc || '';
+            return da.localeCompare(db);
+          });
+        case 'importance':
+          return arr.sort((a, b) =>
+            this._importanceWeight(b.metadata?.importance) -
+            this._importanceWeight(a.metadata?.importance)
+          );
+        default:
+          return arr;
       }
     },
 

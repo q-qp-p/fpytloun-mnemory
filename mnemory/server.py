@@ -30,7 +30,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 
 from mnemory import __version__
@@ -1565,6 +1565,11 @@ def create_app() -> Starlette:
     # Mount management UI if static directory exists (graceful degradation)
     ui_static_dir = Path(__file__).parent / "ui" / "static"
     if ui_static_dir.is_dir():
+        # Redirect /ui (no trailing slash) → /ui/ so index.html is served
+        async def _ui_redirect(request: Request) -> RedirectResponse:
+            return RedirectResponse("/ui/", status_code=301)
+
+        routes.append(Route("/ui", _ui_redirect))
         routes.append(Mount("/ui", app=StaticFiles(directory=ui_static_dir, html=True)))
 
     routes.extend(

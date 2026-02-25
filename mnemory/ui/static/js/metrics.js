@@ -4,6 +4,8 @@
  * Loads server stats from /api/stats and renders summary cards
  * plus Chart.js donut charts for memory breakdowns by type,
  * category, and role. Supports auto-refresh on a 30s interval.
+ * When a specific user is selected, stat cards and charts show
+ * that user's data instead of global totals.
  *
  * Usage:
  *   <div x-data="metricsTab()" x-init="init()"> ... </div>
@@ -56,9 +58,13 @@ function metricsTab() {
           }
         });
 
-        // Re-load when the active user changes (multi-user switching)
+        // Re-render charts when the active user changes (per-user filtering)
         window.addEventListener('mnemory:user-changed', () => {
-          this.loadData();
+          if (this.data) {
+            this.$nextTick(() => this.renderCharts());
+          } else {
+            this.loadData();
+          }
         });
       }
     },
@@ -81,16 +87,50 @@ function metricsTab() {
       }
     },
 
+    // ── Per-user data helpers ────────────────────────────────────
+
+    /**
+     * Return the currently selected user from the auth store, or null.
+     * @returns {string|null}
+     */
+    _selectedUser() {
+      return Alpine.store('auth')?.selectedUser || null;
+    },
+
+    /**
+     * Return the per-user data slice if a user is selected and has data,
+     * otherwise return null (caller falls back to global).
+     * @returns {object|null}
+     */
+    _userSlice() {
+      const uid = this._selectedUser();
+      if (!uid || !this.data?.by_user?.[uid]) return null;
+      return this.data.by_user[uid];
+    },
+
+    /**
+     * Totals to display in stat cards — per-user if selected, else global.
+     * @returns {object}
+     */
+    get displayTotals() {
+      const u = this._userSlice();
+      return u ? { memories: u.total, pinned: u.pinned, decayed: u.decayed, with_artifacts: u.with_artifacts }
+               : (this.data?.totals ?? {});
+    },
+
     // ── Chart rendering ─────────────────────────────────────────
 
     /**
      * Render (or re-render) the three donut charts using Chart.js.
+     * Uses per-user breakdowns when a user is selected.
      *
      * Each chart is keyed by its canvas ID. Existing instances are
      * destroyed first to avoid "Canvas is already in use" errors.
      */
     renderCharts() {
       if (!this.data) return;
+
+      const u = this._userSlice();
 
       // -- Memory type colors (from CSS custom properties) --
       const typeColors = getTypeColors();
@@ -112,23 +152,26 @@ function metricsTab() {
         '#6366F1', // indigo
       ];
 
-      // By type
-      this._renderDonut('chart-by-type', this.data.by_type, typeColors);
+      // By type — use per-user slice if available
+      const byType = u?.by_type ?? this.data.by_type;
+      this._renderDonut('chart-by-type', byType, typeColors);
 
       // By category — assign colors from the brand palette in order
+      const byCategory = u?.by_category ?? this.data.by_category;
       const catColors = {};
-      const catKeys = Object.keys(this.data.by_category || {});
+      const catKeys = Object.keys(byCategory || {});
       catKeys.forEach((key, i) => {
         catColors[key] = brandPalette[i % brandPalette.length];
       });
-      this._renderDonut('chart-by-category', this.data.by_category, catColors);
+      this._renderDonut('chart-by-category', byCategory, catColors);
 
       // By role
+      const byRole = u?.by_role ?? this.data.by_role;
       const roleColors = {
         user:      '#3B82F6', // blue
         assistant: '#8B5CF6', // violet
       };
-      this._renderDonut('chart-by-role', this.data.by_role, roleColors);
+      this._renderDonut('chart-by-role', byRole, roleColors);
     },
 
     /**
