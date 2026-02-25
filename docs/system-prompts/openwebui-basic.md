@@ -32,10 +32,10 @@ A minimal setup where mnemory enhances any Open WebUI model with persistent memo
 ```
 You are a helpful assistant.
 
-Always call initialize_memory at the start of each conversation.
+Always call initialize_memory at the start of each conversation and follow received instructions for further memory interactions.
 ```
 
-The `initialize_memory` tool returns behavioral instructions and core memories in one call, so the LLM knows how to use memory tools effectively.
+The `initialize_memory` tool returns behavioral instructions and core memories in one call, so the LLM knows how to use all memory tools effectively.
 
 ### With personality flavor
 
@@ -44,7 +44,7 @@ You are a helpful assistant. You are friendly, concise, and practical.
 You remember things about the user across conversations and use that
 context to give better, more personalized answers.
 
-Always call initialize_memory at the start of each conversation.
+Always call initialize_memory at the start of each conversation and follow received instructions for further memory interactions.
 ```
 
 ## How It Works

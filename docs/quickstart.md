@@ -8,7 +8,7 @@ mnemory picks up `OPENAI_API_KEY` from your environment automatically and stores
 
 **Using uvx (recommended):**
 ```bash
-uvx "mnemory[chroma]"
+uvx mnemory
 ```
 
 **Using Docker:**
@@ -19,7 +19,7 @@ docker-compose up -d
 
 **Using pip:**
 ```bash
-pip install "mnemory[chroma]"
+pip install mnemory
 mnemory
 ```
 
@@ -34,11 +34,11 @@ mnemory is now running at `http://localhost:8050/mcp`.
 3. URL: `http://mnemory:8050/mcp` (or `http://localhost:8050/mcp`)
 4. Custom headers: `X-Agent-Id: open-webui`
 5. Enable on your model: **Workspace > Models > Advanced Params > Function Calling: Native**
-6. Add to your model's system prompt: `Always call initialize_memory at the start of each conversation.`
+6. Add to your model's system prompt: `Always call initialize_memory at the start of each conversation and follow received instructions for further memory interactions.`
 
 **Note**: Open WebUI doesn't inject MCP server instructions, so you need to tell the LLM to call `initialize_memory`. This tool returns behavioral instructions + core memories in one call.
 
-### Claude Code / Opencode
+### Claude Code / OpenCode
 
 Add to your MCP config:
 ```json
@@ -54,6 +54,8 @@ Add to your MCP config:
   }
 }
 ```
+
+See [all client setup guides](clients/) for more options (ChatGPT, Cursor, Windsurf, etc.).
 
 ## Step 3: Start Chatting
 
@@ -89,7 +91,7 @@ Then add the key to your client configuration:
 
 ## Step 5 (Optional): Create a Personality Agent
 
-Want an agent with its own evolving personality? See [openwebui-personality.md](openwebui-personality.md) for the full guide. Short version:
+Want an agent with its own evolving personality? See [openwebui-personality.md](system-prompts/openwebui-personality.md) for the full guide. Short version:
 
 1. Set `INSTRUCTION_MODE=personality` on the server (or add the personality snippet to the agent's system prompt)
 2. Create a new model in Open WebUI with a system prompt that defines the agent's character
@@ -101,23 +103,24 @@ Want an agent with its own evolving personality? See [openwebui-personality.md](
 Conversation start:
   Agent calls initialize_memory() [Open WebUI]
     or get_core_memories() [Claude Code, Cursor]
-  → Loads pinned facts: "Alex is a frontend developer in Berlin"
-  → Loads recent context: "Working on MetricsHub dashboard"
+  -> Loads pinned facts: "Alex is a frontend developer in Berlin"
+  -> Loads recent context: "Working on MetricsHub dashboard"
 
 You ask: "What React library should I use for charts?"
   Agent calls search_memories("React charts dashboard")
-  → Finds: "Prefers TypeScript", "Working on MetricsHub dashboard"
-  → Gives personalized recommendation based on your stack and project
+  -> Finds: "Prefers TypeScript", "Working on MetricsHub dashboard"
+  -> Gives personalized recommendation based on your stack and project
 
 You say: "I decided to go with Recharts for the dashboard"
   Agent calls add_memory("Chose Recharts for MetricsHub dashboard charts")
-  → Stored as: type=decision, category=project:metricshub
-  → Available in all future conversations
+  -> Stored as: type=decision, category=project:metricshub
+  -> Available in all future conversations
 ```
 
 ## Next Steps
 
-- [openwebui-basic.md](openwebui-basic.md) — Detailed Open WebUI setup
-- [openwebui-personality.md](openwebui-personality.md) — Agents with evolving personality
-- [claude-code.md](claude-code.md) — Coding assistants with memory
-- [README.md](../../README.md) — Full configuration reference
+- [Client setup guides](clients/) -- All supported clients
+- [Open WebUI -- Basic](system-prompts/openwebui-basic.md) -- Detailed Open WebUI setup
+- [Open WebUI -- Personality](system-prompts/openwebui-personality.md) -- Agents with evolving personality
+- [Claude Code / OpenCode](system-prompts/claude-code.md) -- Coding assistants with memory
+- [README.md](../README.md) -- Full configuration reference

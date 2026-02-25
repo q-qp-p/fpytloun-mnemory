@@ -4,7 +4,7 @@
 
 # mnemory
 
-Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://modelcontextprotocol.io/) server that adds personalization and long-term memory to any AI assistant — Claude Code, Open WebUI, Opencode, Cursor, or any MCP-compatible client.
+Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://modelcontextprotocol.io/) server that adds personalization and long-term memory to any AI assistant — Claude Code, ChatGPT, Open WebUI, Cursor, or any MCP-compatible client.
 
 **Plug and play.** Connect mnemory and your agent immediately starts remembering user preferences, facts, decisions, and context across conversations. No system prompt changes needed.
 
@@ -15,8 +15,7 @@ Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://mo
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Client Configuration](#client-configuration)
-- [System Prompts & Examples](#system-prompts--examples)
+- [Supported Clients](#supported-clients)
 - [Configuration](#configuration)
 - [Memory Model](#memory-model)
 - [MCP Tools](#mcp-tools)
@@ -39,7 +38,7 @@ uvx mnemory
 
 That's it. mnemory starts on `http://localhost:8050/mcp`, stores data in `~/.mnemory/`.
 
-Now connect your client — for **Claude Code** or **Opencode**, add to your MCP config:
+Now connect your client — for **Claude Code**, add to your MCP config:
 
 ```json
 {
@@ -91,80 +90,30 @@ docker run -d \
   genunix/mnemory:latest
 ```
 
-## Client Configuration
+## Supported Clients
 
-### Claude Code / Opencode
+mnemory works with any MCP-compatible client. Some clients also have dedicated plugins for automatic recall/remember.
 
-Add to your MCP configuration:
+| Client | MCP | Plugin | Setup Guide |
+|---|---|---|---|
+| Claude Code | Yes | Yes ([hooks](integrations/claude-code/)) | [docs/clients/claude-code.md](docs/clients/claude-code.md) |
+| ChatGPT | Yes (MCP connector) | -- | [docs/clients/chatgpt.md](docs/clients/chatgpt.md) |
+| Claude Desktop | Yes | -- | [docs/clients/claude-desktop.md](docs/clients/claude-desktop.md) |
+| Open WebUI | Yes | Yes ([filter](integrations/openwebui/)) | [docs/clients/open-webui.md](docs/clients/open-webui.md) |
+| OpenCode | Yes | Yes ([plugin](integrations/opencode/)) | [docs/clients/opencode.md](docs/clients/opencode.md) |
+| Cursor | Yes | -- | [docs/clients/cursor.md](docs/clients/cursor.md) |
+| Windsurf | Yes | -- | [docs/clients/windsurf.md](docs/clients/windsurf.md) |
+| Cline | Yes | -- | [docs/clients/cline.md](docs/clients/cline.md) |
+| Continue.dev | Yes | -- | [docs/clients/continue.md](docs/clients/continue.md) |
+| Codex CLI | Yes | -- | [docs/clients/codex.md](docs/clients/codex.md) |
 
-```json
-{
-  "mcpServers": {
-    "mnemory": {
-      "type": "streamable-http",
-      "url": "https://mem.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer your-api-key",
-        "X-Agent-Id": "claude-code"
-      }
-    }
-  }
-}
-```
+**MCP** = works via Model Context Protocol (LLM-driven tool calls). **Plugin** = dedicated integration with automatic recall/remember (no LLM tool-calling needed).
 
-With `MCP_API_KEYS` configured, the LLM doesn't need to pass `user_id` or `agent_id` — both are resolved from the API key mapping and `X-Agent-Id` header.
-
-### Open WebUI (v0.6.31+)
-
-1. Go to **Admin Settings > External Tools > Add Server**
-2. Type: **MCP (Streamable HTTP)**
-3. URL: `http://mnemory:8050/mcp` (same namespace) or `https://mem.example.com/mcp` (via ingress)
-4. Auth: **Bearer**, Key: `your-api-key`
-5. Custom headers: `X-Agent-Id: open-webui`
-6. Enable tools on models: **Workspace > Models > Advanced Params > Function Calling: Native**
-
-**Note on MCP instructions**: Open WebUI does not inject MCP server instructions into the LLM's system prompt — it only exposes tool descriptions. For optimal proactive memory behavior, add this to your model's system prompt:
-
-> Always call initialize_memory at the start of each conversation.
-
-Or use the full system prompt templates in [examples/system-prompts/](examples/system-prompts/).
-
-**Multi-user setup** (recommended): Enable `ENABLE_FORWARD_USER_INFO_HEADERS=true` in Open WebUI so it forwards `X-OpenWebUI-User-Email` per user. Use a wildcard API key in mnemory — user identity is resolved automatically from the email header:
-
-```bash
-# Open WebUI environment
-ENABLE_FORWARD_USER_INFO_HEADERS=true
-
-# Mnemory environment
-MCP_API_KEYS='{"shared-openwebui-key": "*"}'
-```
-
-**Single-user setup**: Use a non-wildcard API key that binds directly to a user:
-
-```bash
-MCP_API_KEYS='{"your-api-key": "filip"}'
-```
-
-### Cursor / VS Code
-
-Add to MCP settings with the Streamable HTTP URL. Set `Authorization` and `X-Agent-Id` headers.
-
-## System Prompts & Examples
-
-mnemory ships behavioral instructions via the MCP protocol — most clients inject these into the LLM's system prompt automatically. With `INSTRUCTION_MODE=proactive` (the default), memory works out of the box with zero system prompt configuration.
-
-For advanced setups, example system prompts and guides are available in [`examples/system-prompts/`](examples/system-prompts/):
-
-| Template | Description |
-|---|---|
-| [Quick Start](examples/system-prompts/quickstart.md) | Get running in 5 minutes — step-by-step guide |
-| [Open WebUI — Basic](examples/system-prompts/openwebui-basic.md) | Minimal setup, memory works automatically |
-| [Open WebUI — Personality](examples/system-prompts/openwebui-personality.md) | Agent with evolving identity and "soul" (sub-agent pattern) |
-| [Claude Code / Opencode](examples/system-prompts/claude-code.md) | Coding assistant with project context memory |
+See [docs/](docs/) for all setup guides, system prompt templates, and the [quick start guide](docs/quickstart.md).
 
 ### Per-Agent Personality (without server-wide `personality` mode)
 
-To give a specific agent personality behavior while keeping the server in `proactive` mode, add the personality snippet to that agent's system prompt. See [examples/system-prompts/openwebui-personality.md](examples/system-prompts/openwebui-personality.md) for the full template, or use this snippet:
+To give a specific agent personality behavior while keeping the server in `proactive` mode, add the personality snippet to that agent's system prompt. See [docs/system-prompts/openwebui-personality.md](docs/system-prompts/openwebui-personality.md) for the full template, or use this snippet:
 
 ```
 ## Memory-Driven Identity
@@ -202,7 +151,7 @@ Regularly reflect on interactions and update your self-understanding.
 Your identity should feel consistent but can evolve naturally over time.
 ```
 
-For sub-agents (e.g., `openwebui:yoda`), you must also hardcode the `agent_id` in the system prompt — see the [personality template](examples/system-prompts/openwebui-personality.md) for details.
+For sub-agents (e.g., `openwebui:yoda`), you must also hardcode the `agent_id` in the system prompt — see the [personality template](docs/system-prompts/openwebui-personality.md) for details.
 
 ## Configuration
 
@@ -270,7 +219,7 @@ Controls how aggressively the LLM uses memory tools. These instructions are sent
 
 For most setups, `proactive` (default) is the right choice — it makes memory work automatically without any system prompt configuration. Use `personality` when all connected agents should develop their own identity. Use `passive` for manual control.
 
-To activate personality behavior for a **specific agent** while keeping the server in `proactive` mode, add the personality snippet to that agent's system prompt instead. See [examples/system-prompts/](examples/system-prompts/) for templates.
+To activate personality behavior for a **specific agent** while keeping the server in `proactive` mode, add the personality snippet to that agent's system prompt instead. See [docs/system-prompts/](docs/system-prompts/) for templates.
 
 #### Session-Level Identity (`MCP_API_KEYS`)
 
@@ -624,9 +573,9 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Client Layer                                │
 │                                                                  │
-│  Open WebUI Filter    Open WebUI OpenAPI Tool    OpenCode Plugin │
+│  Open WebUI Filter    Open WebUI OpenAPI Tool    Claude Code Plugin │
 │  (auto recall/remember)  (LLM-driven ops)       (auto recall)   │
-│  Claude Code / Opencode / Cursor (MCP)                          │
+│  Claude Code / OpenCode / Cursor (MCP)                          │
 └──────────┬──────────────────┬──────────────────────┬────────────┘
            │ REST              │ REST (OpenAPI)        │ MCP
            ▼                  ▼                       ▼
@@ -711,23 +660,29 @@ scrape_configs:
 
 ### Grafana Dashboard
 
-A pre-built Grafana dashboard is available in [`examples/grafana/`](examples/grafana/). Import `dashboard.json` into Grafana for an overview of memories, operations, and breakdowns by type/category/role with user and agent filtering.
+A pre-built Grafana dashboard is available in [`integrations/grafana/`](integrations/grafana/). Import `dashboard.json` into Grafana for an overview of memories, operations, and breakdowns by type/category/role with user and agent filtering.
 
 ## Plugins
 
 Native plugins that automatically recall memories on each user message and store memories after each exchange — no LLM tool-calling required.
 
+### Claude Code Plugin
+
+A hooks-based integration that calls `/api/recall` on each user prompt and `/api/remember` after each response. Injects memories as additional context.
+
+See [`integrations/claude-code/`](integrations/claude-code/) for the plugin and setup instructions.
+
 ### Open WebUI Filter
 
 A filter function that calls `/api/recall` on inlet (before LLM) and `/api/remember` on outlet (after LLM). Injects memories into the system prompt automatically.
 
-See [`examples/openwebui/`](examples/openwebui/) for the filter and setup instructions.
+See [`integrations/openwebui/`](integrations/openwebui/) for the filter and setup instructions.
 
 ### OpenCode Plugin
 
 A TypeScript plugin that hooks into session lifecycle for automatic recall/remember.
 
-See [`examples/opencode/`](examples/opencode/) for the plugin and setup instructions.
+See [`integrations/opencode/`](integrations/opencode/) for the plugin and setup instructions.
 
 ### Hybrid Approach
 

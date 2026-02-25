@@ -6,7 +6,7 @@ Use mnemory with Claude Code or Opencode to remember project context, architectu
 
 1. Start mnemory (if not already running):
    ```bash
-   uvx "mnemory[chroma]"
+   uvx mnemory
    ```
 
 2. Add to your MCP configuration (Claude Code: `~/.claude/claude_code_config.json`, Opencode: `opencode.json`):
