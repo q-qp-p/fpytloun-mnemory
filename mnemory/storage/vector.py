@@ -89,47 +89,63 @@ class VectorStore:
             return QdrantClient(path=vc.qdrant_path)
 
     def _ensure_collection(self) -> None:
-        """Create the collection if it doesn't exist."""
+        """Create the collection if it doesn't exist, then ensure indexes."""
         name = self.collection_name
         existing = [c.name for c in self._client.get_collections().collections]
-        if name in existing:
+        if name not in existing:
+            logger.info(
+                "Creating collection '%s' (dims=%d, distance=COSINE)",
+                name,
+                self._embedding.dims,
+            )
+            self._client.create_collection(
+                collection_name=name,
+                vectors_config=VectorParams(
+                    size=self._embedding.dims,
+                    distance=Distance.COSINE,
+                ),
+            )
+        else:
             logger.debug("Collection '%s' already exists", name)
+
+        # Ensure payload indexes exist (idempotent — safe to run every startup)
+        self._ensure_indexes()
+
+    def _ensure_indexes(self) -> None:
+        """Create payload indexes for efficient filtering and ordering.
+
+        Runs on every startup (not just collection creation) to ensure
+        indexes exist for existing collections that were created before
+        new indexes were added. Qdrant's create_payload_index is
+        idempotent — it no-ops if the index already exists.
+
+        Only applies to remote Qdrant; local embedded mode doesn't
+        need explicit indexes.
+        """
+        if not self._config.vector.is_remote:
             return
 
-        logger.info(
-            "Creating collection '%s' (dims=%d, distance=COSINE)",
-            name,
-            self._embedding.dims,
-        )
-        self._client.create_collection(
-            collection_name=name,
-            vectors_config=VectorParams(
-                size=self._embedding.dims,
-                distance=Distance.COSINE,
-            ),
-        )
-
-        # Create payload indexes for efficient filtering (remote only)
-        if self._config.vector.is_remote:
-            for field in ("user_id", "agent_id", "pinned", "memory_type"):
-                try:
-                    self._client.create_payload_index(
-                        collection_name=name,
-                        field_name=field,
-                        field_schema="keyword" if field != "pinned" else "bool",
-                    )
-                except Exception:
-                    pass  # Index may already exist
-            # Datetime indexes for DatetimeRange filters
-            for field in ("created_at", "expires_at"):
-                try:
-                    self._client.create_payload_index(
-                        collection_name=name,
-                        field_name=field,
-                        field_schema="datetime",
-                    )
-                except Exception:
-                    pass  # Index may already exist
+        name = self.collection_name
+        # Keyword/bool indexes for filtering
+        for field in ("user_id", "agent_id", "pinned", "memory_type"):
+            try:
+                self._client.create_payload_index(
+                    collection_name=name,
+                    field_name=field,
+                    field_schema="keyword" if field != "pinned" else "bool",
+                )
+            except Exception:
+                pass  # Index may already exist
+        # Datetime indexes for DatetimeRange filters and order_by
+        for field in ("created_at", "expires_at"):
+            try:
+                self._client.create_payload_index(
+                    collection_name=name,
+                    field_name=field,
+                    field_schema="datetime",
+                )
+            except Exception:
+                pass  # Index may already exist
 
     @property
     def collection_name(self) -> str:
@@ -514,14 +530,40 @@ class VectorStore:
                     FieldCondition(key=key, match=MatchValue(value=value))
                 )
 
-        points, _ = self._client.scroll(
-            collection_name=self.collection_name,
-            scroll_filter=Filter(must=must_conditions),
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
-            order_by=order_by,
-        )
+        scroll_kwargs: dict[str, Any] = {
+            "collection_name": self.collection_name,
+            "scroll_filter": Filter(must=must_conditions),
+            "limit": limit,
+            "with_payload": True,
+            "with_vectors": False,
+        }
+        if order_by is not None:
+            scroll_kwargs["order_by"] = order_by
+
+        try:
+            points, _ = self._client.scroll(**scroll_kwargs)
+        except Exception:
+            if order_by is not None:
+                # Fallback: order_by failed (e.g., missing payload index).
+                # Retry without order_by and sort in Python instead.
+                logger.warning(
+                    "order_by scroll failed (missing index?), "
+                    "falling back to client-side sort"
+                )
+                scroll_kwargs.pop("order_by", None)
+                points, _ = self._client.scroll(**scroll_kwargs)
+                results = [self._point_to_memory(p) for p in points]
+                # Replicate the requested sort order in Python
+                reverse = (
+                    order_by.direction is None
+                    or str(order_by.direction).lower() != "asc"
+                )
+                results.sort(
+                    key=lambda m: m.get(order_by.key, ""),  # type: ignore[union-attr]
+                    reverse=reverse,
+                )
+                return {"results": results}
+            raise
 
         return {"results": [self._point_to_memory(p) for p in points]}
 
