@@ -137,6 +137,35 @@ function searchTab() {
     },
 
     /**
+     * Open the global edit modal for a search result.
+     * @param {object} result - The memory result object to edit.
+     */
+    openEdit(result) {
+      Alpine.store('memoryEdit').show(result, (payload) => {
+        // Update the local result object immediately
+        const idx = this.results.findIndex(r => r.id === result.id);
+        if (idx !== -1) {
+          const r = this.results[idx];
+          if (payload.content !== undefined) r.memory = payload.content;
+          if (!r.metadata) r.metadata = {};
+          if (payload.memory_type) r.metadata.memory_type = payload.memory_type;
+          if (payload.categories) r.metadata.categories = payload.categories;
+          if (payload.importance) r.metadata.importance = payload.importance;
+          if (payload.pinned !== undefined) r.metadata.pinned = payload.pinned;
+          if (payload.ttl_days !== undefined) r.metadata.ttl_days = payload.ttl_days;
+        }
+      });
+    },
+
+    /**
+     * Open the global artifact manager for a search result.
+     * @param {object} result - The memory result object.
+     */
+    openArtifacts(result) {
+      Alpine.store('artifactMgr').show(result);
+    },
+
+    /**
      * Delete a memory by ID (requires prior confirmation via deleteConfirm).
      */
     async deleteMemory(id) {

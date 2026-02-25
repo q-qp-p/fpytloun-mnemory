@@ -353,8 +353,12 @@
                   <div><span class="text-muted">Expires:</span> <span class="text-secondary" x-text="formatDate(result.metadata?.expires_at) || '—'"></span></div>
                   <div><span class="text-muted">Accessed:</span> <span class="text-secondary" x-text="(result.metadata?.access_count ?? 0) + ' times'"></span></div>
                 </div>
-                <div class="flex gap-2">
+                <div class="flex gap-2 flex-wrap">
                   <button @click.stop="copyId(result.id)" class="btn-ghost text-xs">Copy ID</button>
+                  <button @click.stop="openEdit(result)" class="btn-ghost text-xs">Edit</button>
+                  <button @click.stop="openArtifacts(result)" class="btn-ghost text-xs">
+                    Artifacts<template x-if="result.has_artifacts"><span class="ml-1 text-violet-400" x-text="'(' + (result.metadata?.artifacts?.length || '…') + ')'"></span></template>
+                  </button>
                   <template x-if="deleteConfirm !== result.id">
                     <button @click.stop="deleteConfirm = result.id" class="btn-ghost text-xs text-red-400">Delete</button>
                   </template>
@@ -383,7 +387,7 @@
       <!-- Memories Browse Tab -->
       <div x-show="$store.nav.activeTab === 'memories'" x-data="memoriesTab()" x-init="init()">
 
-        <!-- Filters -->
+        <!-- Filters + Add button -->
         <div class="flex flex-wrap items-end gap-4 mb-6">
           <div>
             <label class="block text-xs text-secondary mb-1">Type</label>
@@ -436,8 +440,9 @@
                    class="rounded border-brand-border bg-brand-elevated text-brand-accent focus:ring-brand-accent/30">
             <label for="mem-decayed" class="text-sm text-secondary cursor-pointer">Include decayed</label>
           </div>
-          <div class="ml-auto text-sm text-muted">
-            Showing <span class="text-secondary" x-text="memories.length"></span> memories
+          <div class="ml-auto flex items-center gap-3">
+            <span class="text-sm text-muted">Showing <span class="text-secondary" x-text="memories.length"></span> memories</span>
+            <button @click="openAdd()" class="btn-primary text-sm">+ Add Memory</button>
           </div>
         </div>
 
@@ -489,9 +494,12 @@
                   <div><span class="text-muted">Accessed:</span> <span class="text-secondary" x-text="(mem.metadata?.access_count ?? 0) + ' times'"></span></div>
                   <div><span class="text-muted">Importance:</span> <span class="text-secondary" x-text="mem.metadata?.importance"></span></div>
                 </div>
-                <div class="flex gap-2">
+                <div class="flex gap-2 flex-wrap">
                   <button @click.stop="copyId(mem.id)" class="btn-ghost text-xs">Copy ID</button>
                   <button @click.stop="openEdit(mem)" class="btn-ghost text-xs">Edit</button>
+                  <button @click.stop="openArtifacts(mem)" class="btn-ghost text-xs">
+                    Artifacts<template x-if="mem.has_artifacts"><span class="ml-1 text-violet-400" x-text="'(' + (mem.metadata?.artifacts?.length || '…') + ')'"></span></template>
+                  </button>
                   <template x-if="deleteConfirm !== mem.id">
                     <button @click.stop="deleteConfirm = mem.id" class="btn-ghost text-xs text-red-400">Delete</button>
                   </template>
@@ -521,57 +529,136 @@
           <p class="text-sm text-muted mt-1">Try adjusting the filters or adding memories via the API.</p>
         </div>
 
-        <!-- Edit Modal -->
-        <div x-show="editModal.open" class="modal-overlay" @click="editModal.open = false" x-transition>
-          <div class="modal-content" @click.stop>
-            <h3 class="text-lg font-semibold text-[#E6EDF3] mb-4">Edit Memory</h3>
+        <!-- Add Memory Modal -->
+        <div x-show="addModal.open" class="modal-overlay" @click="addModal.open = false" x-transition>
+          <div class="modal-content max-w-2xl" @click.stop>
+            <h3 class="text-lg font-semibold text-[#E6EDF3] mb-4">Add Memory</h3>
             <div class="space-y-4">
+              <!-- Required: content -->
               <div>
-                <label class="block text-sm text-secondary mb-1">Content</label>
-                <textarea x-model="editModal.form.content" rows="4" class="input resize-y"></textarea>
+                <label class="block text-sm text-secondary mb-1">
+                  Content <span class="text-red-400">*</span>
+                  <span class="text-xs text-muted ml-1">— what to remember</span>
+                </label>
+                <textarea x-model="addModal.form.content" rows="5" class="input resize-y"
+                          placeholder="e.g. User prefers dark mode and uses VS Code for development"></textarea>
               </div>
-              <div class="grid grid-cols-2 gap-4">
-                <div>
-                  <label class="block text-sm text-secondary mb-1">Type</label>
-                  <select x-model="editModal.form.memory_type" class="select text-sm w-full">
-                    <option value="fact">fact</option>
-                    <option value="preference">preference</option>
-                    <option value="episodic">episodic</option>
-                    <option value="procedural">procedural</option>
-                    <option value="context">context</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="block text-sm text-secondary mb-1">Importance</label>
-                  <select x-model="editModal.form.importance" class="select text-sm w-full">
-                    <option value="low">low</option>
-                    <option value="normal">normal</option>
-                    <option value="high">high</option>
-                    <option value="critical">critical</option>
-                  </select>
-                </div>
-              </div>
+
+              <!-- Advanced toggle -->
               <div>
-                <label class="block text-sm text-secondary mb-1">Categories (comma-separated)</label>
-                <input type="text" x-model="editModal.form.categories" class="input text-sm"
-                       placeholder="personal, work, technical">
+                <button type="button" @click="addModal.showAdvanced = !addModal.showAdvanced"
+                        class="flex items-center gap-2 text-sm text-secondary hover:text-[#E6EDF3] transition-colors">
+                  <svg class="w-4 h-4 transition-transform" :class="addModal.showAdvanced ? 'rotate-90' : ''"
+                       fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+                  </svg>
+                  Advanced options
+                  <span class="text-xs text-muted">(type, categories, importance, role, TTL…)</span>
+                </button>
               </div>
-              <div class="grid grid-cols-2 gap-4">
+
+              <!-- Advanced fields -->
+              <div x-show="addModal.showAdvanced" x-transition class="space-y-4 border-t border-brand-border pt-4">
+                <!-- Infer toggle — prominent -->
+                <div class="flex items-start gap-3 p-3 rounded-lg bg-brand-elevated border border-brand-border">
+                  <input type="checkbox" x-model="addModal.form.infer" id="add-infer"
+                         class="mt-0.5 rounded border-brand-border bg-brand-bg text-brand-accent focus:ring-brand-accent/30">
+                  <div>
+                    <label for="add-infer" class="text-sm text-[#E6EDF3] cursor-pointer font-medium">AI extraction (infer)</label>
+                    <p class="text-xs text-muted mt-0.5">Use AI to extract key facts, auto-classify, and deduplicate against existing memories. Recommended. Disable to store content as-is (faster).</p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-sm text-secondary mb-1">Type <span class="text-xs text-muted">(auto if blank)</span></label>
+                    <select x-model="addModal.form.memory_type" class="select text-sm w-full">
+                      <option value="">Auto-classify</option>
+                      <option value="fact">fact</option>
+                      <option value="preference">preference</option>
+                      <option value="episodic">episodic</option>
+                      <option value="procedural">procedural</option>
+                      <option value="context">context</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="block text-sm text-secondary mb-1">Importance <span class="text-xs text-muted">(auto if blank)</span></label>
+                    <select x-model="addModal.form.importance" class="select text-sm w-full">
+                      <option value="">Auto-classify</option>
+                      <option value="low">low</option>
+                      <option value="normal">normal</option>
+                      <option value="high">high</option>
+                      <option value="critical">critical</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block text-sm text-secondary mb-1">Categories <span class="text-xs text-muted">(comma-separated, auto if blank)</span></label>
+                  <input type="text" x-model="addModal.form.categories" class="input text-sm"
+                         placeholder="personal, work, technical">
+                  <!-- Category pills for quick selection -->
+                  <div class="flex flex-wrap gap-1 mt-2" x-show="availableCategories.length > 0">
+                    <template x-for="cat in availableCategories" :key="cat">
+                      <button type="button"
+                              @click="addModal.form.categories = addModal.form.categories
+                                ? (addModal.form.categories.split(',').map(c=>c.trim()).includes(cat)
+                                    ? addModal.form.categories.split(',').map(c=>c.trim()).filter(c=>c!==cat).join(', ')
+                                    : addModal.form.categories + ', ' + cat)
+                                : cat"
+                              :class="addModal.form.categories.split(',').map(c=>c.trim()).includes(cat)
+                                ? 'badge badge-fact cursor-pointer'
+                                : 'badge bg-brand-elevated text-secondary cursor-pointer hover:text-[#E6EDF3]'"
+                              x-text="cat">
+                      </button>
+                    </template>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-sm text-secondary mb-1">Role</label>
+                    <select x-model="addModal.form.role" class="select text-sm w-full">
+                      <option value="user">user — about the user</option>
+                      <option value="assistant">assistant — about the agent</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="block text-sm text-secondary mb-1">Agent ID <span class="text-xs text-muted">(optional)</span></label>
+                    <input type="text" x-model="addModal.form.agent_id" class="input text-sm"
+                           placeholder="e.g. claude-code">
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-sm text-secondary mb-1">TTL (days) <span class="text-xs text-muted">(empty = type default)</span></label>
+                    <input type="number" x-model="addModal.form.ttl_days" class="input text-sm"
+                           placeholder="e.g. 30">
+                  </div>
+                  <div>
+                    <label class="block text-sm text-secondary mb-1">Event Date <span class="text-xs text-muted">(ISO 8601, optional)</span></label>
+                    <input type="text" x-model="addModal.form.event_date" class="input text-sm"
+                           placeholder="2024-01-15T10:00:00">
+                  </div>
+                </div>
+
                 <div class="flex items-center gap-2">
-                  <input type="checkbox" x-model="editModal.form.pinned" id="edit-pinned"
+                  <input type="checkbox" x-model="addModal.form.pinned" id="add-pinned"
                          class="rounded border-brand-border bg-brand-elevated text-brand-accent focus:ring-brand-accent/30">
-                  <label for="edit-pinned" class="text-sm text-secondary">Pinned</label>
-                </div>
-                <div>
-                  <label class="block text-sm text-secondary mb-1">TTL (days)</label>
-                  <input type="number" x-model.number="editModal.form.ttl_days" class="input text-sm"
-                         placeholder="empty = permanent">
+                  <label for="add-pinned" class="text-sm text-secondary cursor-pointer">
+                    Pinned — load at every conversation start
+                  </label>
                 </div>
               </div>
             </div>
+
             <div class="flex justify-end gap-3 mt-6">
-              <button @click="editModal.open = false" class="btn-secondary">Cancel</button>
-              <button @click="saveEdit()" class="btn-primary">Save Changes</button>
+              <button @click="addModal.open = false" class="btn-secondary">Cancel</button>
+              <button @click="saveAdd()" class="btn-primary" :disabled="addModal.saving || !addModal.form.content.trim()">
+                <span x-show="!addModal.saving">Save Memory</span>
+                <span x-show="addModal.saving">Saving...</span>
+              </button>
             </div>
           </div>
         </div>
@@ -687,6 +774,168 @@
            x-text="toast.message">
       </div>
     </template>
+  </div>
+
+  <!-- ── Global Edit Memory Modal ────────────────────────────── -->
+  <div x-show="$store.memoryEdit.open" class="modal-overlay" @click="$store.memoryEdit.close()" x-transition x-cloak>
+    <div class="modal-content" @click.stop>
+      <h3 class="text-lg font-semibold text-[#E6EDF3] mb-4">Edit Memory</h3>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm text-secondary mb-1">Content</label>
+          <textarea x-model="$store.memoryEdit.form.content" rows="4" class="input resize-y"></textarea>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm text-secondary mb-1">Type</label>
+            <select x-model="$store.memoryEdit.form.memory_type" class="select text-sm w-full">
+              <option value="">— unchanged —</option>
+              <option value="fact">fact</option>
+              <option value="preference">preference</option>
+              <option value="episodic">episodic</option>
+              <option value="procedural">procedural</option>
+              <option value="context">context</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm text-secondary mb-1">Importance</label>
+            <select x-model="$store.memoryEdit.form.importance" class="select text-sm w-full">
+              <option value="low">low</option>
+              <option value="normal">normal</option>
+              <option value="high">high</option>
+              <option value="critical">critical</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm text-secondary mb-1">Categories <span class="text-xs text-muted">(comma-separated)</span></label>
+          <input type="text" x-model="$store.memoryEdit.form.categories" class="input text-sm"
+                 placeholder="personal, work, technical">
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div class="flex items-center gap-2">
+            <input type="checkbox" x-model="$store.memoryEdit.form.pinned" id="global-edit-pinned"
+                   class="rounded border-brand-border bg-brand-elevated text-brand-accent focus:ring-brand-accent/30">
+            <label for="global-edit-pinned" class="text-sm text-secondary cursor-pointer">Pinned</label>
+          </div>
+          <div>
+            <label class="block text-sm text-secondary mb-1">TTL (days) <span class="text-xs text-muted">(empty = no change)</span></label>
+            <input type="number" x-model.number="$store.memoryEdit.form.ttl_days" class="input text-sm"
+                   placeholder="empty = permanent">
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 mt-6">
+        <button @click="$store.memoryEdit.close()" class="btn-secondary">Cancel</button>
+        <button @click="$store.memoryEdit.save()" class="btn-primary">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Global Artifact Manager Modal ───────────────────────── -->
+  <div x-show="$store.artifactMgr.open" class="modal-overlay" @click="$store.artifactMgr.close()" x-transition x-cloak>
+    <div class="modal-content max-w-3xl" @click.stop>
+      <!-- Header -->
+      <div class="flex items-start justify-between mb-4">
+        <div class="flex-1 min-w-0 mr-4">
+          <h3 class="text-lg font-semibold text-[#E6EDF3]">Artifacts</h3>
+          <p class="text-xs text-muted mt-0.5 truncate" x-text="$store.artifactMgr.memoryText"></p>
+        </div>
+        <button @click="$store.artifactMgr.close()" class="btn-ghost text-sm shrink-0">Close</button>
+      </div>
+
+      <!-- Loading -->
+      <div x-show="$store.artifactMgr.loading" class="text-center py-8 text-secondary text-sm">Loading artifacts...</div>
+
+      <!-- Artifact list -->
+      <div x-show="!$store.artifactMgr.loading">
+        <div x-show="$store.artifactMgr.artifacts.length === 0 && !$store.artifactMgr.addForm.open"
+             class="text-center py-8 text-muted text-sm">No artifacts attached to this memory.</div>
+
+        <div class="space-y-2 mb-4">
+          <template x-for="artifact in $store.artifactMgr.artifacts" :key="artifact.id">
+            <div class="card-elevated rounded-lg p-3">
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm font-medium text-[#E6EDF3]" x-text="artifact.filename"></span>
+                    <span class="badge bg-brand-elevated text-secondary text-xs" x-text="artifact.content_type"></span>
+                    <span class="text-xs text-muted" x-text="$store.artifactMgr.formatSize(artifact.size)"></span>
+                  </div>
+                  <div class="text-xs text-muted mt-0.5" x-text="$store.artifactMgr.formatDate(artifact.created_at)"></div>
+                </div>
+                <div class="flex gap-2 shrink-0">
+                  <button @click="$store.artifactMgr.viewArtifact(artifact)" class="btn-ghost text-xs">View</button>
+                  <template x-if="$store.artifactMgr.deleteConfirm !== artifact.id">
+                    <button @click="$store.artifactMgr.deleteConfirm = artifact.id" class="btn-ghost text-xs text-red-400">Delete</button>
+                  </template>
+                  <template x-if="$store.artifactMgr.deleteConfirm === artifact.id">
+                    <div class="flex gap-1">
+                      <button @click="$store.artifactMgr.deleteArtifact(artifact.id)" class="btn-danger text-xs">Confirm</button>
+                      <button @click="$store.artifactMgr.deleteConfirm = null" class="btn-ghost text-xs">Cancel</button>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <!-- Inline content viewer -->
+              <div x-show="$store.artifactMgr.view.open && $store.artifactMgr.view.artifact?.id === artifact.id"
+                   x-transition class="mt-3 pt-3 border-t border-brand-border">
+                <div x-show="$store.artifactMgr.view.loading" class="text-xs text-muted py-2">Loading content...</div>
+                <pre x-show="!$store.artifactMgr.view.loading"
+                     class="text-xs text-[#E6EDF3] bg-brand-bg rounded p-3 overflow-auto max-h-64 whitespace-pre-wrap break-words"
+                     x-text="$store.artifactMgr.view.content"></pre>
+                <div x-show="$store.artifactMgr.view.hasMore && !$store.artifactMgr.view.loading" class="mt-2">
+                  <button @click="$store.artifactMgr.loadMoreContent()" class="btn-ghost text-xs">Load more…</button>
+                </div>
+                <button @click="$store.artifactMgr.view.open = false" class="btn-ghost text-xs mt-2">Hide content</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- Add artifact form -->
+        <div x-show="!$store.artifactMgr.addForm.open" class="mt-2">
+          <button @click="$store.artifactMgr.addForm.open = true" class="btn-secondary text-sm">+ Add Artifact</button>
+        </div>
+
+        <div x-show="$store.artifactMgr.addForm.open" x-transition class="border-t border-brand-border pt-4 mt-2 space-y-3">
+          <h4 class="text-sm font-medium text-[#E6EDF3]">New Artifact</h4>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-secondary mb-1">Filename</label>
+              <input type="text" x-model="$store.artifactMgr.addForm.filename" class="input text-sm"
+                     placeholder="note.md">
+            </div>
+            <div>
+              <label class="block text-xs text-secondary mb-1">Content Type</label>
+              <select x-model="$store.artifactMgr.addForm.content_type" class="select text-sm w-full">
+                <option value="text/markdown">text/markdown</option>
+                <option value="text/plain">text/plain</option>
+                <option value="application/json">application/json</option>
+                <option value="text/html">text/html</option>
+                <option value="text/csv">text/csv</option>
+                <option value="text/x-python">text/x-python</option>
+                <option value="text/x-yaml">text/x-yaml</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs text-secondary mb-1">Content</label>
+            <textarea x-model="$store.artifactMgr.addForm.content" rows="6" class="input resize-y text-sm font-mono"
+                      placeholder="Paste or type artifact content here…"></textarea>
+          </div>
+          <div class="flex gap-2">
+            <button @click="$store.artifactMgr.saveArtifact()" class="btn-primary text-sm"
+                    :disabled="$store.artifactMgr.addForm.saving || !$store.artifactMgr.addForm.content.trim()">
+              <span x-show="!$store.artifactMgr.addForm.saving">Save Artifact</span>
+              <span x-show="$store.artifactMgr.addForm.saving">Saving...</span>
+            </button>
+            <button @click="$store.artifactMgr.addForm.open = false" class="btn-secondary text-sm">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
 </body>

@@ -165,12 +165,24 @@ const MnemoryAPI = {
     return this.del(`/memories/${id}`);
   },
 
+  addMemory(data) {
+    return this.post('/memories', data);
+  },
+
   listArtifacts(memoryId) {
     return this.get(`/memories/${memoryId}/artifacts`);
   },
 
   getArtifact(memoryId, artifactId, offset = 0, limit = 5000) {
     return this.get(`/memories/${memoryId}/artifacts/${artifactId}`, { offset, limit });
+  },
+
+  saveArtifact(memoryId, data) {
+    return this.post(`/memories/${memoryId}/artifacts`, data);
+  },
+
+  deleteArtifact(memoryId, artifactId) {
+    return this.del(`/memories/${memoryId}/artifacts/${artifactId}`);
   },
 };
 

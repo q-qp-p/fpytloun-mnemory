@@ -123,6 +123,230 @@ document.addEventListener('alpine:init', () => {
     },
   });
 
+  // ── Memory Edit Store ────────────────────────────────────────
+  // Global edit modal — shared between Memories and Search tabs.
+  Alpine.store('memoryEdit', {
+    open: false,
+    memory: null,   // original memory object
+    form: {},       // editable copy
+    _onSaved: null, // callback(updatedFields) after successful save
+
+    /**
+     * Open the edit modal for a memory.
+     * @param {object} memory - The memory object to edit.
+     * @param {function} onSaved - Called with updated field map after save.
+     */
+    show(memory, onSaved) {
+      const meta = memory.metadata || {};
+      this.memory = memory;
+      this._onSaved = onSaved || null;
+      this.form = {
+        content: memory.memory || '',
+        memory_type: meta.memory_type || '',
+        categories: (meta.categories || []).join(', '),
+        importance: meta.importance || 'normal',
+        pinned: !!meta.pinned,
+        ttl_days: meta.ttl_days ?? '',
+      };
+      this.open = true;
+    },
+
+    close() {
+      this.open = false;
+      this.memory = null;
+      this._onSaved = null;
+    },
+
+    async save() {
+      const form = this.form;
+      const memoryId = this.memory.id;
+      const meta = this.memory.metadata || {};
+      const payload = {};
+
+      if (form.content !== this.memory.memory) payload.content = form.content;
+      if (form.memory_type && form.memory_type !== meta.memory_type) payload.memory_type = form.memory_type;
+
+      const newCats = form.categories
+        ? form.categories.split(',').map(c => c.trim()).filter(Boolean)
+        : [];
+      if (JSON.stringify(newCats) !== JSON.stringify(meta.categories || [])) payload.categories = newCats;
+
+      if (form.importance && form.importance !== meta.importance) payload.importance = form.importance;
+      if (form.pinned !== !!meta.pinned) payload.pinned = form.pinned;
+
+      if (form.ttl_days !== '' && form.ttl_days !== null) {
+        const ttl = parseInt(form.ttl_days, 10);
+        if (!isNaN(ttl) && ttl !== meta.ttl_days) payload.ttl_days = ttl;
+      }
+
+      if (Object.keys(payload).length === 0) { this.close(); return; }
+
+      try {
+        await MnemoryAPI.updateMemory(memoryId, payload);
+        if (this._onSaved) this._onSaved(payload);
+        Alpine.store('notify').success('Memory updated');
+        this.close();
+      } catch (err) {
+        Alpine.store('notify').error(`Failed to update: ${err.message}`);
+      }
+    },
+  });
+
+  // ── Artifact Manager Store ───────────────────────────────────
+  // Global artifact modal — shared between Memories and Search tabs.
+  Alpine.store('artifactMgr', {
+    open: false,
+    memoryId: null,
+    memoryText: '',
+    artifacts: [],
+    loading: false,
+    deleteConfirm: null,
+
+    // View sub-panel
+    view: {
+      open: false,
+      artifact: null,
+      content: '',
+      hasMore: false,
+      offset: 0,
+      loading: false,
+    },
+
+    // Add artifact sub-form
+    addForm: {
+      open: false,
+      saving: false,
+      filename: 'note.md',
+      content_type: 'text/markdown',
+      content: '',
+    },
+
+    /**
+     * Open the artifact manager for a memory.
+     * @param {object} memory - Memory object with id and memory text.
+     */
+    show(memory) {
+      this.memoryId = memory.id;
+      this.memoryText = memory.memory || '';
+      this.artifacts = [];
+      this.deleteConfirm = null;
+      this.view = { open: false, artifact: null, content: '', hasMore: false, offset: 0, loading: false };
+      this.addForm = { open: false, saving: false, filename: 'note.md', content_type: 'text/markdown', content: '' };
+      this.open = true;
+      this.loadArtifacts();
+    },
+
+    close() {
+      this.open = false;
+      this.memoryId = null;
+    },
+
+    async loadArtifacts() {
+      this.loading = true;
+      try {
+        const result = await MnemoryAPI.listArtifacts(this.memoryId);
+        // API returns array directly or { artifacts: [...] }
+        this.artifacts = Array.isArray(result) ? result : (result.artifacts || []);
+      } catch (err) {
+        Alpine.store('notify').error(`Failed to load artifacts: ${err.message}`);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async viewArtifact(artifact) {
+      this.view = { open: true, artifact, content: '', hasMore: false, offset: 0, loading: true };
+      try {
+        const result = await MnemoryAPI.getArtifact(this.memoryId, artifact.id, 0, 5000);
+        this.view.content = result.content || '';
+        this.view.hasMore = result.has_more || false;
+        this.view.offset = (result.content || '').length;
+      } catch (err) {
+        Alpine.store('notify').error(`Failed to load artifact: ${err.message}`);
+        this.view.open = false;
+      } finally {
+        this.view.loading = false;
+      }
+    },
+
+    async loadMoreContent() {
+      if (!this.view.hasMore || this.view.loading) return;
+      this.view.loading = true;
+      try {
+        const result = await MnemoryAPI.getArtifact(this.memoryId, this.view.artifact.id, this.view.offset, 5000);
+        this.view.content += result.content || '';
+        this.view.hasMore = result.has_more || false;
+        this.view.offset += (result.content || '').length;
+      } catch (err) {
+        Alpine.store('notify').error(`Failed to load more: ${err.message}`);
+      } finally {
+        this.view.loading = false;
+      }
+    },
+
+    async saveArtifact() {
+      const f = this.addForm;
+      if (!f.content.trim()) {
+        Alpine.store('notify').error('Content is required');
+        return;
+      }
+      f.saving = true;
+      try {
+        const result = await MnemoryAPI.saveArtifact(this.memoryId, {
+          content: f.content,
+          filename: f.filename || 'note.md',
+          content_type: f.content_type || 'text/markdown',
+        });
+        // result is the artifact metadata
+        this.artifacts.push(result);
+        f.open = false;
+        f.content = '';
+        f.filename = 'note.md';
+        f.content_type = 'text/markdown';
+        Alpine.store('notify').success('Artifact saved');
+      } catch (err) {
+        Alpine.store('notify').error(`Failed to save artifact: ${err.message}`);
+      } finally {
+        f.saving = false;
+      }
+    },
+
+    async deleteArtifact(artifactId) {
+      try {
+        await MnemoryAPI.deleteArtifact(this.memoryId, artifactId);
+        this.artifacts = this.artifacts.filter(a => a.id !== artifactId);
+        this.deleteConfirm = null;
+        // Close view panel if we just deleted the viewed artifact
+        if (this.view.artifact?.id === artifactId) {
+          this.view.open = false;
+        }
+        Alpine.store('notify').success('Artifact deleted');
+      } catch (err) {
+        this.deleteConfirm = null;
+        Alpine.store('notify').error(`Failed to delete artifact: ${err.message}`);
+      }
+    },
+
+    /** Format bytes to human-readable string */
+    formatSize(bytes) {
+      if (!bytes) return '0 B';
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    },
+
+    /** Format ISO date string for display */
+    formatDate(dateStr) {
+      if (!dateStr) return '';
+      try {
+        return new Date(dateStr).toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit',
+        });
+      } catch { return dateStr; }
+    },
+  });
+
   // ── Navigation Store ─────────────────────────────────────────
   Alpine.store('nav', {
     activeTab: 'dashboard',
