@@ -22,6 +22,7 @@ function memoriesTab() {
     },
 
     sortBy: 'newest',
+    filterArtifactsOnly: false,
 
     expandedId: null,
     availableCategories: [],
@@ -89,6 +90,10 @@ function memoriesTab() {
         if (this.filters.memory_type) params.memory_type = this.filters.memory_type;
         if (this.filters.categories.length > 0) params.categories = this.filters.categories.join(',');
         if (this.filters.role) params.role = this.filters.role;
+        // Pass sort to API for server-side ordering (newest/oldest)
+        if (this.sortBy === 'newest' || this.sortBy === 'oldest') {
+          params.sort = this.sortBy;
+        }
 
         const data = await MnemoryAPI.listMemories(params);
         const results = data.results || [];
@@ -111,6 +116,15 @@ function memoriesTab() {
       this.loadMemories(false);
     },
 
+    /** Called when sort dropdown changes — reload if server-side sort needed */
+    onSortChange() {
+      if (this.sortBy === 'newest' || this.sortBy === 'oldest') {
+        // Server-side sort: need to reload from API
+        this.loadMemories(false);
+      }
+      // Client-side sorts (importance, type, alpha) are handled by the getter
+    },
+
     // ── Sorting ───────────────────────────────────────────────
 
     _importanceWeight(importance) {
@@ -118,12 +132,16 @@ function memoriesTab() {
     },
 
     get sortedMemories() {
-      const arr = [...this.memories];
+      let arr = [...this.memories];
+      // Client-side filter: has artifacts only
+      if (this.filterArtifactsOnly) {
+        arr = arr.filter(m => m.has_artifacts);
+      }
       switch (this.sortBy) {
         case 'newest':
-          return arr.sort((a, b) => (b.metadata?.created_at_utc || '').localeCompare(a.metadata?.created_at_utc || ''));
         case 'oldest':
-          return arr.sort((a, b) => (a.metadata?.created_at_utc || '').localeCompare(b.metadata?.created_at_utc || ''));
+          // Server already returned results in the correct order
+          return arr;
         case 'importance':
           return arr.sort((a, b) => this._importanceWeight(b.metadata?.importance) - this._importanceWeight(a.metadata?.importance));
         case 'type':

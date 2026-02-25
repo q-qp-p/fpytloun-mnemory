@@ -235,9 +235,12 @@ def list_memories(
     role: str | None = Query(None, description="Filter by role"),
     limit: int = Query(50, ge=1, le=500, description="Max results"),
     include_decayed: bool = Query(False, description="Include expired memories"),
+    sort: str | None = Query(
+        None, description="Sort order: newest (desc by created_at), oldest (asc)"
+    ),
     ctx: SessionContext = Depends(get_session_context),
 ):
-    """List all or filtered memories."""
+    """List all or filtered memories with optional sorting."""
     _record("list_memories", ctx)
     service = _get_service()
     cat_list = [c.strip() for c in categories.split(",")] if categories else None
@@ -253,6 +256,7 @@ def list_memories(
                 role=role,
                 limit=limit,
                 include_decayed=include_decayed,
+                sort=sort,
             )
         else:
             results = service.list_memories(
@@ -263,6 +267,7 @@ def list_memories(
                 role=role,
                 limit=limit,
                 include_decayed=include_decayed,
+                sort=sort,
             )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

@@ -51,6 +51,9 @@ function searchTab() {
     /** Current sort key for search results */
     sortBy: 'relevance',
 
+    /** Client-side filter: only show results with artifacts */
+    filterArtifactsOnly: false,
+
     // ── Lifecycle ────────────────────────────────────────────────
 
     /**
@@ -207,7 +210,11 @@ function searchTab() {
      * @returns {Array}
      */
     get sortedResults() {
-      const arr = [...this.results];
+      let arr = [...this.results];
+      // Client-side filter: has artifacts only
+      if (this.filterArtifactsOnly) {
+        arr = arr.filter(r => r.has_artifacts);
+      }
       switch (this.sortBy) {
         case 'relevance':
           // Results already ordered by score desc from the API

@@ -156,6 +156,27 @@ def _validate_id(value: str, name: str) -> str:
     return value
 
 
+def _sort_to_order_by(sort: str | None):
+    """Convert a sort string to a Qdrant OrderBy object.
+
+    Args:
+        sort: "newest" for descending by created_at, "oldest" for ascending.
+              None or empty string returns None (no ordering).
+
+    Returns:
+        OrderBy instance or None.
+    """
+    if not sort:
+        return None
+    from qdrant_client.models import Direction, OrderBy
+
+    if sort == "newest":
+        return OrderBy(key="created_at", direction=Direction.DESC)
+    elif sort == "oldest":
+        return OrderBy(key="created_at", direction=Direction.ASC)
+    return None
+
+
 def _parse_event_date(value: str, default_tz: str = "") -> str:
     """Parse and normalize an event_date string to UTC ISO 8601.
 
@@ -1923,12 +1944,18 @@ class MemoryService:
         role: str | None = None,
         limit: int = 50,
         include_decayed: bool = False,
+        sort: str | None = None,
     ) -> list[dict]:
-        """List memories with optional filtering.
+        """List memories with optional filtering and sorting.
 
         By default, expired and decayed memories are excluded. Set
         include_decayed=True to include them (useful for browsing
         historical memories).
+
+        Args:
+            sort: Optional sort order. "newest" for descending by
+                created_at, "oldest" for ascending. None for default
+                (arbitrary Qdrant scroll order).
         """
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
@@ -1943,11 +1970,14 @@ class MemoryService:
                 raise ValueError("role filter must be 'user' or 'assistant'")
             filters["role"] = role
 
+        order_by = _sort_to_order_by(sort)
+
         result = self.vector.get_all(
             user_id=user_id,
             agent_id=agent_id,
             filters=filters if filters else None,
             limit=limit * 2,  # Fetch extra for post-filtering
+            order_by=order_by,
         )
 
         memories = result.get("results", [])
@@ -1976,11 +2006,16 @@ class MemoryService:
         role: str | None = None,
         limit: int = 50,
         include_decayed: bool = False,
+        sort: str | None = None,
     ) -> list[dict]:
         """List both agent-scoped and shared memories, merge and deduplicate.
 
         Used when a session has an agent_id but the LLM doesn't pass one
         (meaning: list everything I can see).
+
+        Args:
+            sort: Optional sort order. "newest" for descending by
+                created_at, "oldest" for ascending. None for default.
         """
         user_id = _validate_id(user_id, "user_id")
         session_agent_id = _validate_id(session_agent_id, "agent_id")
@@ -1995,6 +2030,7 @@ class MemoryService:
             filters["role"] = role
 
         fetch_limit = limit * 2
+        order_by = _sort_to_order_by(sort)
 
         # Fetch 1: agent-scoped memories
         agent_result = self.vector.get_all(
@@ -2002,6 +2038,7 @@ class MemoryService:
             agent_id=session_agent_id,
             filters=filters if filters else None,
             limit=fetch_limit,
+            order_by=order_by,
         )
         # Fetch 2: shared memories only (no agent_id).
         # shared_only=True ensures we only get memories without any agent_id,
@@ -2012,6 +2049,7 @@ class MemoryService:
             shared_only=True,
             filters=filters if filters else None,
             limit=fetch_limit,
+            order_by=order_by,
         )
 
         # Merge and deduplicate by memory ID
@@ -2035,6 +2073,13 @@ class MemoryService:
                     (m.get("metadata") or {}).get("categories", []), categories
                 )
             ]
+
+        # When server-side ordering was used, re-sort after merge to
+        # maintain correct order across the two fetches.
+        if sort == "newest":
+            memories.sort(key=lambda m: m.get("created_at", ""), reverse=True)
+        elif sort == "oldest":
+            memories.sort(key=lambda m: m.get("created_at", ""))
 
         return memories[:limit]
 

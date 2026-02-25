@@ -21,6 +21,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    OrderBy,
     PayloadField,
     PointIdsList,
     PointStruct,
@@ -476,8 +477,9 @@ class VectorStore:
         shared_only: bool = False,
         filters: dict | None = None,
         limit: int = 100,
+        order_by: OrderBy | None = None,
     ) -> dict:
-        """List memories with optional filters.
+        """List memories with optional filters and ordering.
 
         Args:
             user_id: Required user scope.
@@ -487,6 +489,9 @@ class VectorStore:
                 dual-scope list to avoid leaking sub-agent memories.
             filters: Simple key-value metadata filters.
             limit: Maximum results.
+            order_by: Optional Qdrant OrderBy for server-side sorting.
+                When set, results are returned in the specified order.
+                Note: points missing the ordered field are excluded.
 
         Returns dict with "results" key containing list of memory dicts.
         """
@@ -515,6 +520,7 @@ class VectorStore:
             limit=limit,
             with_payload=True,
             with_vectors=False,
+            order_by=order_by,
         )
 
         return {"results": [self._point_to_memory(p) for p in points]}
