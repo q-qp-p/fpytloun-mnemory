@@ -37,7 +37,7 @@ mnemory/
 │   ├── __init__.py        # Package marker
 │   ├── tailwind.config.js # Tailwind CSS config with brand colors
 │   ├── src/input.css      # Tailwind directives + component classes
-│   └── static/            # Pre-built UI assets (HTML, JS, CSS, vendored libs)
+│   └── static/            # Pre-built UI assets (HTML, JS modules: api/app/metrics/search/memories/graph, CSS, vendored libs)
 └── storage/
     ├── vector.py          # Direct Qdrant vector store (insert, search, update, delete)
     └── artifact.py        # Artifact store abstraction (S3 and filesystem backends)
@@ -54,7 +54,7 @@ mnemory/
 | **TTL** | `ttl.py` | Expiration calculation, decay detection, reinforcement metadata |
 | **Vector Storage** | `storage/vector.py` | Direct Qdrant client for all vector operations |
 | **Artifact Storage** | `storage/artifact.py` | S3/MinIO and filesystem backends for binary artifacts |
-| **Management UI** | `ui/`, `api/ui.py` | Built-in web UI (Alpine.js + Tailwind + Chart.js + D3.js) |
+| **Management UI** | `ui/`, `api/ui.py` | Built-in web UI — dashboard, search, browse/CRUD, graph (Alpine.js + Tailwind + Chart.js + D3.js) |
 | **Instructions** | `instructions.py` | Configurable MCP server instructions (passive/proactive/personality modes) |
 | **Sessions** | `session.py` | Server-side memory session tracking for recall/remember |
 | **Metrics** | `metrics.py` | Prometheus metrics collection, operation counters, Qdrant gauge aggregation |

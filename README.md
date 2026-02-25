@@ -623,12 +623,32 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 
 mnemory includes a built-in management UI at `/ui` on the main server port. No external dependencies, no build step required — it ships pre-built with the package.
 
+<p align="center">
+  <img src="files/screenshots/ui-dashboard.jpg" alt="Dashboard — memory totals, breakdowns, and operation counts" width="800" />
+  <br><em>Dashboard — memory totals, breakdowns by type/category/role, and operation counts</em>
+</p>
+
+<p align="center">
+  <img src="files/screenshots/ui-search.jpg" alt="Search — semantic and AI-powered search with filters" width="800" />
+  <br><em>Search — semantic and AI-powered find with type, role, agent, and category filters</em>
+</p>
+
+<p align="center">
+  <img src="files/screenshots/ui-memories.jpg" alt="Browse — memory list with full CRUD and artifact management" width="800" />
+  <br><em>Browse — full CRUD with server-side sorting, inline editing, and artifact management</em>
+</p>
+
+<p align="center">
+  <img src="files/screenshots/ui-graph.jpg" alt="Graph — D3.js force-directed memory relationship visualization" width="800" />
+  <br><em>Graph — D3.js force-directed visualization of memory relationships</em>
+</p>
+
 ### Features
 
-- **Dashboard** — Memory totals, breakdowns by type/category/role (Chart.js donut charts), operation counts, auto-refresh
-- **Search** — Semantic search (`search_memories`) and AI-powered find (`find_memories`) with filters
-- **Browse** — List all memories with inline expand, edit modal, delete confirmation
-- **Graph** — D3.js force-directed visualization of memory relationships (shared categories = edges, node size = importance, color = type)
+- **Dashboard** — Memory totals, breakdowns by type/category/role (Chart.js donut charts), operation counts, per-user filtering, server version display, auto-refresh with manual refresh button
+- **Search** — Semantic search (`search_memories`) and AI-powered find (`find_memories`) with filters: memory type, role, agent ID, categories multi-select, "has artifacts" toggle, include decayed, result limit. Sort results by score, newest, or oldest. Two-zone card layout with type/importance/category badges on the left, agent/artifacts/assistant/pinned indicators on the right
+- **Browse** — List all memories with server-side sorting (newest/oldest via Qdrant `order_by`). Full filter bar: memory type, role, agent ID, categories multi-select, "has artifacts" toggle, include decayed. Add Memory button with modal form. Inline expand with edit modal (content, type, categories, importance, pinned, TTL), delete with confirmation, and artifact management (upload, view with pagination, delete)
+- **Graph** — D3.js force-directed visualization of memory relationships (shared categories = edges, node size = importance, color = memory type). Type filter checkboxes, node limit slider, click-to-select detail panel
 
 ### Access
 
