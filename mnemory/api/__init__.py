@@ -116,11 +116,13 @@ def create_api_app() -> FastAPI:
     from mnemory.api.memories import router as memories_router
     from mnemory.api.recall import router as recall_router
     from mnemory.api.remember import router as remember_router
+    from mnemory.api.ui import router as ui_router
 
     app.include_router(memories_router, prefix="/memories", tags=["memories"])
     app.include_router(categories_router, prefix="/categories", tags=["categories"])
     app.include_router(recall_router, tags=["intelligence"])
     app.include_router(remember_router, tags=["intelligence"])
+    app.include_router(ui_router, tags=["ui"])
 
     # Override OpenAPI schema generation to sanitize for OpenAI compatibility.
     # Pydantic v2 / OpenAPI 3.1 emits "anyOf": [{"type": "X"}, {"type": "null"}]

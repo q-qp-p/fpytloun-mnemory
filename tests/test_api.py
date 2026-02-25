@@ -416,3 +416,179 @@ class TestInputLengthGuard:
                 if isinstance(msg.get("content"), str) and "B" * 50 in msg["content"]:
                     # Good — the truncated content (B's) is in the prompt
                     break
+
+
+class TestWhoamiEndpoint:
+    """Test /api/whoami endpoint."""
+
+    def test_whoami_bound_user(self):
+        """whoami with a bound user should return user_id and can_switch_user=False."""
+        import asyncio
+
+        from mnemory.api.ui import whoami
+        from mnemory.server import (
+            _session_agent_id,
+            _session_timezone,
+            _session_user_bound,
+            _session_user_id,
+        )
+
+        _session_user_id.set("filip")
+        _session_agent_id.set("claude-code")
+        _session_timezone.set("Europe/Prague")
+        _session_user_bound.set(True)
+        try:
+            result = asyncio.run(whoami())
+            assert result["user_id"] == "filip"
+            assert result["agent_id"] == "claude-code"
+            assert result["timezone"] == "Europe/Prague"
+            assert result["can_switch_user"] is False
+        finally:
+            _session_user_id.set(None)
+            _session_agent_id.set(None)
+            _session_timezone.set(None)
+            _session_user_bound.set(False)
+
+    def test_whoami_wildcard_key(self):
+        """whoami with a wildcard key should return user_id=None and can_switch_user=True."""
+        import asyncio
+
+        from mnemory.api.ui import whoami
+        from mnemory.server import (
+            _session_agent_id,
+            _session_timezone,
+            _session_user_bound,
+            _session_user_id,
+        )
+
+        _session_user_id.set(None)
+        _session_agent_id.set(None)
+        _session_timezone.set(None)
+        _session_user_bound.set(False)
+        try:
+            result = asyncio.run(whoami())
+            assert result["user_id"] is None
+            assert result["agent_id"] is None
+            assert result["can_switch_user"] is True
+        finally:
+            pass  # already default values
+
+    def test_whoami_wildcard_with_user_header(self):
+        """whoami with wildcard key + X-User-Id should return the header user."""
+        import asyncio
+
+        from mnemory.api.ui import whoami
+        from mnemory.server import _session_user_bound, _session_user_id
+
+        _session_user_id.set("bob")
+        _session_user_bound.set(False)
+        try:
+            result = asyncio.run(whoami())
+            assert result["user_id"] == "bob"
+            assert result["can_switch_user"] is True
+        finally:
+            _session_user_id.set(None)
+            _session_user_bound.set(False)
+
+
+class TestStatsEndpoint:
+    """Test /api/stats endpoint."""
+
+    def test_stats_returns_json(self):
+        """stats should return structured JSON from MetricsCollector."""
+        import asyncio
+        from unittest.mock import MagicMock, patch
+
+        from mnemory.api.ui import stats
+
+        mock_collector = MagicMock()
+        mock_collector.get_stats_json.return_value = {
+            "version": "1.0.0",
+            "vector_backend": "qdrant-local",
+            "artifact_backend": "filesystem",
+            "active_sessions": 2,
+            "users": ["filip", "bob"],
+            "totals": {"memories": 42, "pinned": 5, "decayed": 3, "with_artifacts": 1},
+            "by_type": {"fact": 20, "preference": 10, "episodic": 12},
+            "by_category": {"personal": 15, "work": 27},
+            "by_role": {"user": 35, "assistant": 7},
+            "by_user": {},
+            "operations": {},
+        }
+
+        with patch("mnemory.metrics.get_collector", return_value=mock_collector):
+            result = asyncio.run(stats())
+
+        assert result["version"] == "1.0.0"
+        assert result["totals"]["memories"] == 42
+        assert result["users"] == ["filip", "bob"]
+        assert result["active_sessions"] == 2
+        mock_collector.get_stats_json.assert_called_once()
+
+    def test_stats_metrics_disabled(self):
+        """stats should return 404 when metrics are disabled."""
+        import asyncio
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+
+        from mnemory.api.ui import stats
+
+        with patch("mnemory.metrics.get_collector", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(stats())
+            assert exc_info.value.status_code == 404
+            assert "Metrics disabled" in exc_info.value.detail
+
+
+class TestPrometheusMetricsInternalAPI:
+    """Validate that prometheus_client internal _metrics dict API works.
+
+    get_stats_json() reads gauge/counter values via the undocumented
+    ._metrics attribute. This test ensures the API contract holds for
+    the installed prometheus_client version, catching breakage early.
+    """
+
+    def test_gauge_metrics_dict_accessible(self):
+        """Gauge._metrics should be a dict of (labels_tuple) -> metric."""
+        from prometheus_client import CollectorRegistry, Gauge
+
+        registry = CollectorRegistry()
+        g = Gauge("test_gauge", "test", ["user_id", "role"], registry=registry)
+        g.labels(user_id="alice", role="user").set(5)
+        g.labels(user_id="bob", role="assistant").set(3)
+
+        assert hasattr(g, "_metrics"), (
+            "prometheus_client Gauge no longer has _metrics attribute — "
+            "get_stats_json() will silently return empty data"
+        )
+        assert isinstance(g._metrics, dict)
+        assert len(g._metrics) == 2
+
+        # Verify we can read values via _value.get()
+        for labels, metric in g._metrics.items():
+            assert isinstance(labels, tuple)
+            assert hasattr(metric, "_value")
+            val = metric._value.get()
+            assert val in (3.0, 5.0)
+
+    def test_counter_metrics_dict_accessible(self):
+        """Counter._metrics should be a dict of (labels_tuple) -> metric."""
+        from prometheus_client import CollectorRegistry, Counter
+
+        registry = CollectorRegistry()
+        c = Counter("test_counter", "test", ["operation", "user_id"], registry=registry)
+        c.labels(operation="add", user_id="alice").inc(10)
+        c.labels(operation="search", user_id="bob").inc(7)
+
+        assert hasattr(c, "_metrics"), (
+            "prometheus_client Counter no longer has _metrics attribute — "
+            "get_stats_json() will silently return empty data"
+        )
+        assert isinstance(c._metrics, dict)
+        assert len(c._metrics) == 2
+
+        for labels, metric in c._metrics.items():
+            assert isinstance(labels, tuple)
+            val = metric._value.get()
+            assert val in (10.0, 7.0)

@@ -60,6 +60,9 @@ _session_agent_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _session_timezone: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "session_timezone", default=None
 )
+_session_user_bound: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "session_user_bound", default=False
+)
 
 # ── Configuration ─────────────────────────────────────────────────────
 # Lazy initialization: config and service are created on first access
@@ -1328,6 +1331,18 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         cfg = _get_config().server
         has_auth = bool(cfg.api_keys or cfg.api_key)
 
+        # Skip auth for UI static files — no sensitive data.
+        # Auth is enforced on all /api/ calls from the browser.
+        if request.url.path.startswith("/ui"):
+            self._set_identity_from_headers(request)
+            try:
+                return await call_next(request)
+            finally:
+                _session_user_id.set(None)
+                _session_agent_id.set(None)
+                _session_timezone.set(None)
+                _session_user_bound.set(False)
+
         if not has_auth:
             # No auth configured — still check identity headers
             self._set_identity_from_headers(request)
@@ -1359,6 +1374,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             # Set session identity
             if mapped_user_id:
                 _session_user_id.set(mapped_user_id)
+                _session_user_bound.set(True)
             else:
                 # Fall back to identity headers (X-User-Id, then
                 # X-OpenWebUI-User-Email for Open WebUI integration)
@@ -1387,6 +1403,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             _session_user_id.set(None)
             _session_agent_id.set(None)
             _session_timezone.set(None)
+            _session_user_bound.set(False)
 
     def _extract_token(self, request: Request) -> str:
         """Extract API token from request headers."""
@@ -1396,13 +1413,18 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         return request.headers.get("x-api-key", "")
 
     def _set_identity_from_headers(self, request: Request) -> None:
-        """Set session identity from HTTP headers (no-auth mode)."""
+        """Set session identity from HTTP headers (no-auth mode).
+
+        User is never hard-bound when resolved from headers — switching
+        is always allowed.
+        """
         header_uid = (
             request.headers.get("x-user-id", "").strip()
             or request.headers.get("x-openwebui-user-email", "").strip()
         )
         if header_uid:
             _session_user_id.set(header_uid)
+        _session_user_bound.set(False)
         header_aid = request.headers.get("x-agent-id", "").strip()
         if header_aid:
             _session_agent_id.set(header_aid)
@@ -1521,7 +1543,14 @@ def create_app() -> Starlette:
     on the main port and go through standard API key authentication.
     When MGMT_PORT is set, management routes are excluded from the main
     app and served on the separate management port without auth.
+
+    The management UI is mounted at /ui when the static directory exists.
+    UI static files are exempt from API key auth (handled in middleware).
     """
+    from pathlib import Path
+
+    from starlette.staticfiles import StaticFiles
+
     from mnemory.api import create_api_app
 
     cfg = _get_config()
@@ -1532,6 +1561,11 @@ def create_app() -> Starlette:
     # Include management routes on main port only when no separate mgmt port
     if not cfg.server.has_mgmt_port:
         routes.extend(_build_mgmt_routes())
+
+    # Mount management UI if static directory exists (graceful degradation)
+    ui_static_dir = Path(__file__).parent / "ui" / "static"
+    if ui_static_dir.is_dir():
+        routes.append(Mount("/ui", app=StaticFiles(directory=ui_static_dir, html=True)))
 
     routes.extend(
         [

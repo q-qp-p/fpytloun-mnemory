@@ -229,6 +229,139 @@ class MetricsCollector:
         """Prometheus content type header value."""
         return CONTENT_TYPE_LATEST
 
+    def get_stats_json(self) -> dict:
+        """Return metrics as a JSON-serializable dict for the management UI.
+
+        Calls collect_gauges() to ensure freshness, then reads the internal
+        prometheus_client gauge/counter values to build a structured response.
+        Reuses the cached Qdrant aggregation — no extra scroll.
+        """
+        self.collect_gauges()
+
+        from mnemory import __version__
+
+        totals = {"memories": 0, "pinned": 0, "decayed": 0, "with_artifacts": 0}
+        by_type: dict[str, int] = defaultdict(int)
+        by_category: dict[str, int] = defaultdict(int)
+        by_role: dict[str, int] = defaultdict(int)
+        users: set[str] = set()
+        by_user: dict[str, dict] = {}
+
+        def _ensure_user(uid: str) -> dict:
+            if uid not in by_user:
+                by_user[uid] = {
+                    "total": 0,
+                    "pinned": 0,
+                    "decayed": 0,
+                    "with_artifacts": 0,
+                }
+            return by_user[uid]
+
+        # Read _memories_total gauge: labels are (user_id, agent_id, memory_type, role)
+        try:
+            for labels, metric in self._memories_total._metrics.items():
+                uid, aid, mtype, role = labels
+                count = int(metric._value.get())
+                totals["memories"] += count
+                by_type[mtype] += count
+                by_role[role] += count
+                users.add(uid)
+                _ensure_user(uid)["total"] += count
+        except Exception:
+            logger.debug("Failed to read _memories_total gauge", exc_info=True)
+
+        # Read pinned gauge: labels are (user_id, agent_id)
+        try:
+            for labels, metric in self._memories_pinned._metrics.items():
+                uid, aid = labels
+                count = int(metric._value.get())
+                totals["pinned"] += count
+                users.add(uid)
+                _ensure_user(uid)["pinned"] += count
+        except Exception:
+            logger.debug("Failed to read _memories_pinned gauge", exc_info=True)
+
+        # Read decayed gauge: labels are (user_id, agent_id)
+        try:
+            for labels, metric in self._memories_decayed._metrics.items():
+                uid, aid = labels
+                count = int(metric._value.get())
+                totals["decayed"] += count
+                users.add(uid)
+                _ensure_user(uid)["decayed"] += count
+        except Exception:
+            logger.debug("Failed to read _memories_decayed gauge", exc_info=True)
+
+        # Read with_artifacts gauge: labels are (user_id, agent_id)
+        try:
+            for labels, metric in self._memories_with_artifacts._metrics.items():
+                uid, aid = labels
+                count = int(metric._value.get())
+                totals["with_artifacts"] += count
+                users.add(uid)
+                _ensure_user(uid)["with_artifacts"] += count
+        except Exception:
+            logger.debug("Failed to read _memories_with_artifacts gauge", exc_info=True)
+
+        # Read by_category gauge: labels are (user_id, category)
+        try:
+            for labels, metric in self._memories_by_category._metrics.items():
+                uid, cat = labels
+                count = int(metric._value.get())
+                by_category[cat] += count
+                users.add(uid)
+        except Exception:
+            logger.debug("Failed to read _memories_by_category gauge", exc_info=True)
+
+        # Read operations counter: labels are (operation, user_id, agent_id)
+        operations: dict[str, dict] = {}
+        try:
+            for labels, metric in self._operations._metrics.items():
+                op, uid, aid = labels
+                count = int(metric._value.get())
+                if op not in operations:
+                    operations[op] = {"total": 0, "by_user": {}}
+                operations[op]["total"] += count
+                if uid:
+                    operations[op]["by_user"][uid] = (
+                        operations[op]["by_user"].get(uid, 0) + count
+                    )
+        except Exception:
+            logger.debug("Failed to read _operations counter", exc_info=True)
+
+        # Sort operations by total descending
+        operations = dict(
+            sorted(operations.items(), key=lambda x: x[1]["total"], reverse=True)
+        )
+
+        # Determine vector/artifact backend from info gauge
+        vector_backend = "unknown"
+        artifact_backend = "unknown"
+        try:
+            for labels, metric in self._info._metrics.items():
+                version_label, vb, ab = labels
+                vector_backend = vb
+                artifact_backend = ab
+                break
+        except Exception:
+            pass
+
+        return {
+            "version": __version__,
+            "vector_backend": vector_backend,
+            "artifact_backend": artifact_backend,
+            "active_sessions": self._session_store.active_count,
+            "users": sorted(users),
+            "totals": totals,
+            "by_type": dict(sorted(by_type.items(), key=lambda x: x[1], reverse=True)),
+            "by_category": dict(
+                sorted(by_category.items(), key=lambda x: x[1], reverse=True)
+            ),
+            "by_role": dict(by_role),
+            "by_user": dict(sorted(by_user.items())),
+            "operations": operations,
+        }
+
     # ── Internal ──────────────────────────────────────────────────
 
     def _refresh_gauges_from_qdrant(self) -> None:

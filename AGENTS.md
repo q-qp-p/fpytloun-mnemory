@@ -31,7 +31,13 @@ mnemory/
 │   ├── schemas.py         # Pydantic request/response models for all endpoints
 │   ├── memories.py        # Memory CRUD + artifact + category REST endpoints
 │   ├── recall.py          # POST /api/recall — combined initialize + search
-│   └── remember.py        # POST /api/remember — fire-and-forget memory storage
+│   ├── remember.py        # POST /api/remember — fire-and-forget memory storage
+│   └── ui.py              # GET /api/whoami + GET /api/stats — management UI endpoints
+├── ui/
+│   ├── __init__.py        # Package marker
+│   ├── tailwind.config.js # Tailwind CSS config with brand colors
+│   ├── src/input.css      # Tailwind directives + component classes
+│   └── static/            # Pre-built UI assets (HTML, JS, CSS, vendored libs)
 └── storage/
     ├── vector.py          # Direct Qdrant vector store (insert, search, update, delete)
     └── artifact.py        # Artifact store abstraction (S3 and filesystem backends)
@@ -48,6 +54,7 @@ mnemory/
 | **TTL** | `ttl.py` | Expiration calculation, decay detection, reinforcement metadata |
 | **Vector Storage** | `storage/vector.py` | Direct Qdrant client for all vector operations |
 | **Artifact Storage** | `storage/artifact.py` | S3/MinIO and filesystem backends for binary artifacts |
+| **Management UI** | `ui/`, `api/ui.py` | Built-in web UI (Alpine.js + Tailwind + Chart.js + D3.js) |
 | **Instructions** | `instructions.py` | Configurable MCP server instructions (passive/proactive/personality modes) |
 | **Sessions** | `session.py` | Server-side memory session tracking for recall/remember |
 | **Metrics** | `metrics.py` | Prometheus metrics collection, operation counters, Qdrant gauge aggregation |
@@ -94,8 +101,39 @@ docker push genunix/mnemory:latest
 ### Tests
 
 ```bash
+# Unit tests (fast, no API key needed, default pytest run)
 pytest tests/
+
+# E2e tests (require LLM_API_KEY or OPENAI_API_KEY, use real LLM + embedded Qdrant)
+pytest -m e2e -v
+
+# Both together
+pytest -m '' -v
 ```
+
+### E2e tests
+
+End-to-end tests in `tests/test_e2e.py` exercise the full pipeline (extraction → storage → search) with real LLM calls and embedded Qdrant. They are **excluded from the default `pytest` run** via `addopts = "-m 'not e2e'"` in `pyproject.toml`.
+
+**When to run e2e tests:**
+- After changing `prompts.py` (extraction prompts, dedup logic)
+- After changing `memory.py` (business logic, add/search/update/delete)
+- After changing `storage/vector.py` or `storage/artifact.py`
+- After changing `sanitize.py` (anti-injection, boundary tags)
+- Before releases
+
+**Requirements:**
+- `LLM_API_KEY` or `OPENAI_API_KEY` environment variable set (auto-skips if missing)
+- ~5 minutes runtime (LLM calls + embedding generation)
+- `pytest-timeout` installed (120s per test, 180s for `find_memories`)
+
+**Writing e2e tests:**
+- Each test class uses a unique `user_id` for isolation (shared session-scoped `MemoryService`)
+- Use fuzzy assertions (keyword presence, count ranges) — LLM output is non-deterministic
+- Use `infer=False` for deterministic setup data, `infer=True` for testing extraction
+- `role="assistant"` requires `infer=True` (anti-injection safeguard) — cannot bypass with `infer=False`
+- Use `time.sleep(0.5)` after writes before reads (Qdrant indexing)
+- Helper functions: `_mem_text()`, `_all_text()`, `_assert_count_between()`, `_assert_any_contains()`
 
 ### Linting
 

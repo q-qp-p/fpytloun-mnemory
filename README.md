@@ -22,6 +22,7 @@ Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://mo
 - [REST API](#rest-api)
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
+- [Management UI](#management-ui)
 - [Plugins](#plugins)
 - [Benchmark](#benchmark)
 - [Development](#development)
@@ -618,6 +619,38 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
      └────────────┘
 ```
 
+## Management UI
+
+mnemory includes a built-in management UI at `/ui` on the main server port. No external dependencies, no build step required — it ships pre-built with the package.
+
+### Features
+
+- **Dashboard** — Memory totals, breakdowns by type/category/role (Chart.js donut charts), operation counts, auto-refresh
+- **Search** — Semantic search (`search_memories`) and AI-powered find (`find_memories`) with filters
+- **Browse** — List all memories with inline expand, edit modal, delete confirmation
+- **Graph** — D3.js force-directed visualization of memory relationships (shared categories = edges, node size = importance, color = type)
+
+### Access
+
+The UI is served at `http://localhost:8050/ui/`. Static files are exempt from API key authentication — API calls from the browser use the API key entered on the login screen.
+
+**Login:** Enter your `MCP_API_KEY` or any key from `MCP_API_KEYS`. Wildcard keys (`*`) enable multi-user switching via a dropdown.
+
+### Tech Stack
+
+Alpine.js + Tailwind CSS + Chart.js + D3.js — all vendored as static files. Zero external requests at runtime, zero npm/node dependencies.
+
+### Development
+
+To modify the UI, edit files in `mnemory/ui/static/` (JS, HTML) or `mnemory/ui/src/input.css` (Tailwind). Rebuild CSS after changes:
+
+```bash
+# One-time: download Tailwind CLI (https://github.com/tailwindlabs/tailwindcss/releases)
+# Then:
+make ui-build    # Build minified CSS
+make ui-watch    # Watch mode for development
+```
+
 ## Monitoring
 
 mnemory exposes a `/metrics` endpoint in [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/), enabled by default (`ENABLE_METRICS=true`).
@@ -712,8 +745,14 @@ pip install -e ".[all,dev]"
 # Run locally (uses OPENAI_API_KEY, data in ~/.mnemory/)
 mnemory
 
-# Run tests
+# Run tests (unit only, fast, no API key needed)
 pytest
+
+# Run e2e tests (requires LLM_API_KEY or OPENAI_API_KEY, ~5 min)
+pytest -m e2e -v
+
+# Run all tests
+pytest -m '' -v
 
 # Lint
 ruff check mnemory/
