@@ -4,15 +4,19 @@ Pre-built Grafana dashboard for monitoring mnemory.
 
 ## What's Included
 
-**Overview row** — stat panels for total memories, pinned, decayed, with artifacts, active sessions, and server version.
+**Overview row** — 8 stat panels: total memories (with sparkline), pinned, decayed, with artifacts, active sessions (with sparkline), total users, total agents, and server version.
 
-**Operations row** — time series showing operation rates by type and by user, plus a stacked bar chart of all operations over time.
+**Operations row** — time series showing operation rates by type and by user, horizontal bar gauge of total operations by type, and operations rate by agent.
 
 **Memory Breakdown row** — donut charts for memories by type (fact, preference, episodic, ...), by category (personal, work, technical, ...), and by role (user vs assistant).
 
-**Details row** — tables showing per-user/agent/type breakdown and per-user/category breakdown, time series for total memories and active sessions over time.
+**Memory Lifecycle row** — time series of memories by type over time (composition trends) and stacked area chart of active vs decayed memories (memory pool health).
 
-**Template variables** — filter by User (`user_id`) and Agent (`agent_id`), both default to All. Datasource is selectable on import.
+**Agent Breakdown row** — donut chart of memories by agent and time series of memories by agent over time.
+
+**Details row** — tables showing per-user/agent/type breakdown, per-user/category breakdown, and pinned memories per user/agent. Time series for total memories and active sessions over time.
+
+**Template variables** — filter by User (`user_id`), Agent (`agent_id`), and Type (`memory_type`), all default to All. Datasource is selectable on import.
 
 ## Prerequisites
 
