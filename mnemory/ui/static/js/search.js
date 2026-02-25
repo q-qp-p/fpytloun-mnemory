@@ -54,6 +54,9 @@ function searchTab() {
     /** Client-side filter: only show results with artifacts */
     filterArtifactsOnly: false,
 
+    /** Client-side filter: agent_id */
+    filterAgentId: '',
+
     // ── Lifecycle ────────────────────────────────────────────────
 
     /**
@@ -194,7 +197,17 @@ function searchTab() {
       }
     },
 
-    // ── Sorting ──────────────────────────────────────────────────
+    // ── Sorting & Filtering ────────────────────────────────────
+
+    /** Unique agent IDs found in search results (for filter dropdown) */
+    get availableAgentIds() {
+      const ids = new Set();
+      for (const r of this.results) {
+        const aid = r.metadata?.agent_id;
+        if (aid) ids.add(aid);
+      }
+      return [...ids].sort();
+    },
 
     /**
      * Importance level to numeric weight for sorting.
@@ -214,6 +227,14 @@ function searchTab() {
       // Client-side filter: has artifacts only
       if (this.filterArtifactsOnly) {
         arr = arr.filter(r => r.has_artifacts);
+      }
+      // Client-side filter: agent_id
+      if (this.filterAgentId) {
+        if (this.filterAgentId === '_none_') {
+          arr = arr.filter(r => !r.metadata?.agent_id);
+        } else {
+          arr = arr.filter(r => r.metadata?.agent_id === this.filterAgentId);
+        }
       }
       switch (this.sortBy) {
         case 'relevance':

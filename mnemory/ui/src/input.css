@@ -134,6 +134,7 @@
   .badge-high { @apply bg-amber-500/15 text-amber-400; }
   .badge-critical { @apply bg-red-500/15 text-red-400; }
 
+  .badge-category { @apply bg-brand-elevated/80 text-muted border border-brand-border; }
   .badge-pinned { @apply bg-brand-accent/15 text-brand-accent; }
   .badge-score { @apply bg-brand-accent/15 text-brand-accent font-mono; }
 

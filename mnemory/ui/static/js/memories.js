@@ -23,6 +23,7 @@ function memoriesTab() {
 
     sortBy: 'newest',
     filterArtifactsOnly: false,
+    filterAgentId: '',
 
     expandedId: null,
     availableCategories: [],
@@ -125,7 +126,17 @@ function memoriesTab() {
       // Client-side sorts (importance, type, alpha) are handled by the getter
     },
 
-    // ── Sorting ───────────────────────────────────────────────
+    // ── Sorting & Filtering ──────────────────────────────────
+
+    /** Unique agent IDs found in loaded memories (for filter dropdown) */
+    get availableAgentIds() {
+      const ids = new Set();
+      for (const m of this.memories) {
+        const aid = m.metadata?.agent_id;
+        if (aid) ids.add(aid);
+      }
+      return [...ids].sort();
+    },
 
     _importanceWeight(importance) {
       return { critical: 4, high: 3, normal: 2, low: 1 }[importance] ?? 2;
@@ -136,6 +147,14 @@ function memoriesTab() {
       // Client-side filter: has artifacts only
       if (this.filterArtifactsOnly) {
         arr = arr.filter(m => m.has_artifacts);
+      }
+      // Client-side filter: agent_id
+      if (this.filterAgentId) {
+        if (this.filterAgentId === '_none_') {
+          arr = arr.filter(m => !m.metadata?.agent_id);
+        } else {
+          arr = arr.filter(m => m.metadata?.agent_id === this.filterAgentId);
+        }
       }
       switch (this.sortBy) {
         case 'newest':

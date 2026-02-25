@@ -391,8 +391,16 @@ def format_memory_item(item: dict) -> MemoryItem:
 
     Memory text is escaped to prevent markdown header forgery
     when results are injected into LLM context by plugins.
+
+    Note: _point_to_memory() promotes agent_id to a top-level field
+    and excludes it from metadata. We inject it back so the API
+    response (and UI) can access it via metadata.agent_id.
     """
-    metadata = item.get("metadata") or {}
+    metadata = dict(item.get("metadata") or {})  # copy to avoid mutation
+    # Inject agent_id into metadata if present at top level but missing
+    agent_id = item.get("agent_id")
+    if agent_id and "agent_id" not in metadata:
+        metadata["agent_id"] = agent_id
     has_artifacts = bool(metadata.get("artifacts"))
     raw_text = item.get("memory", item.get("text", ""))
     return MemoryItem(
