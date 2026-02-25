@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.3.0] — 2026-02-25
+
+### Management UI
+
+- **Built-in web UI**: Full management UI at `/ui` — dashboard, search, browse/CRUD, and graph visualization. Alpine.js + Tailwind CSS + Chart.js + D3.js, all vendored as static files with zero external dependencies ([`14d1546`](https://github.com/fpytloun/mnemory/commit/14d1546))
+- **Dashboard**: Memory totals, breakdowns by type/category/role (Chart.js donut charts), operation counts, per-user filtering, server version display, auto-refresh with manual refresh button ([`66dbf1e`](https://github.com/fpytloun/mnemory/commit/66dbf1e))
+- **Search tab**: Semantic search (`search_memories`) and AI-powered find (`find_memories`) with filters — memory type, role, agent ID, categories multi-select, "has artifacts" toggle, include decayed, result limit. Sort by score, newest, or oldest ([`66dbf1e`](https://github.com/fpytloun/mnemory/commit/66dbf1e), [`33d2a7f`](https://github.com/fpytloun/mnemory/commit/33d2a7f), [`7cb089f`](https://github.com/fpytloun/mnemory/commit/7cb089f))
+- **Browse tab**: Full CRUD with server-side sorting (newest/oldest via Qdrant `order_by`), Add Memory modal, inline edit modal (content, type, categories, importance, pinned, TTL), delete with confirmation, and artifact management (upload, view with pagination, delete) ([`bbeb69c`](https://github.com/fpytloun/mnemory/commit/bbeb69c), [`33d2a7f`](https://github.com/fpytloun/mnemory/commit/33d2a7f))
+- **Graph tab**: D3.js force-directed visualization of memory relationships (shared categories = edges, node size = importance, color = memory type). Type filter checkboxes, node limit slider, click-to-select detail panel ([`14d1546`](https://github.com/fpytloun/mnemory/commit/14d1546))
+- **Card layout**: Two-zone badge row — left: type + importance + `#category` tags; right: agent badge + artifacts indicator + assistant chip + pinned star ([`7cb089f`](https://github.com/fpytloun/mnemory/commit/7cb089f))
+- **Agent filtering**: Agent ID dropdown filter in both Search and Browse tabs, with agent badges (robot icon + name) visible on cards without expanding ([`7cb089f`](https://github.com/fpytloun/mnemory/commit/7cb089f))
+- **Session persistence**: API key and selected user stored in localStorage (persists across tab closes) ([`8171f02`](https://github.com/fpytloun/mnemory/commit/8171f02))
+
+### Backend Improvements
+
+- **Server-side sorting**: `GET /api/memories` accepts `sort` query param (newest/oldest). Uses Qdrant `order_by` with automatic datetime payload index creation on startup ([`33d2a7f`](https://github.com/fpytloun/mnemory/commit/33d2a7f), [`ff83be4`](https://github.com/fpytloun/mnemory/commit/ff83be4))
+- **Index management**: `_ensure_indexes()` extracted as separate method, runs on every startup (not just collection creation). Existing collections now get new indexes automatically ([`ff83be4`](https://github.com/fpytloun/mnemory/commit/ff83be4))
+- **Ordering fallback**: `get_all()` gracefully falls back to Python-side sorting if Qdrant `order_by` fails (e.g., missing index on older collections) ([`ff83be4`](https://github.com/fpytloun/mnemory/commit/ff83be4))
+- **agent_id metadata fix**: `format_memory_item()` now injects top-level `agent_id` back into metadata dict, fixing agent badges not appearing in API responses ([`7cb089f`](https://github.com/fpytloun/mnemory/commit/7cb089f))
+- **OpenAPI sanitization**: Schema cleanup for OpenAI function-calling compatibility ([`7ce33a9`](https://github.com/fpytloun/mnemory/commit/7ce33a9))
+- **Non-conversational message filtering**: `remember()` ignores tool calls, system messages, and other non-conversational content ([`9f08f38`](https://github.com/fpytloun/mnemory/commit/9f08f38))
+- **Runtime version loading**: Package version loaded via `importlib.metadata` at runtime with dev fallback ([`2640aad`](https://github.com/fpytloun/mnemory/commit/2640aad))
+
+### Extraction & Search
+
+- **English extraction**: Extraction prompts now require English output regardless of input language ([`a567984`](https://github.com/fpytloun/mnemory/commit/a567984))
+- **Third-party guidance**: Extraction prompts include guidance for handling third-party information mentioned in conversations ([`a567984`](https://github.com/fpytloun/mnemory/commit/a567984))
+
+### Testing
+
+- **End-to-end test suite**: Comprehensive e2e tests exercising the full pipeline (extraction → storage → search) with real LLM calls and embedded Qdrant. Excluded from default `pytest` run via `-m 'not e2e'` ([`4b7353e`](https://github.com/fpytloun/mnemory/commit/4b7353e))
+
+### Documentation
+
+- **Client setup guides**: Dedicated docs for Claude Code, ChatGPT, Claude Desktop, Open WebUI, OpenCode, Cursor, Windsurf, Cline, Continue.dev, and Codex CLI ([`e283c48`](https://github.com/fpytloun/mnemory/commit/e283c48))
+- **UI screenshots**: Dashboard, search, browse, and graph screenshots added to README ([`47defec`](https://github.com/fpytloun/mnemory/commit/47defec))
+
 ## [1.2.0] — 2026-02-24
 
 ### Monitoring
