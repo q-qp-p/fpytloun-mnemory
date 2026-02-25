@@ -1,7 +1,7 @@
 /**
  * mnemory API client — auth-aware fetch wrapper.
  *
- * Stores the API key in sessionStorage and sends it as X-API-Key
+ * Stores the API key in localStorage and sends it as X-API-Key
  * on every request. Supports X-User-Id for multi-user switching.
  * Auto-triggers logout on 401 responses.
  */
@@ -12,30 +12,30 @@ const MnemoryAPI = {
 
   /** Get stored API key */
   getKey() {
-    return sessionStorage.getItem('mnemory_api_key') || '';
+    return localStorage.getItem('mnemory_api_key') || '';
   },
 
   /** Store API key */
   setKey(key) {
-    sessionStorage.setItem('mnemory_api_key', key);
+    localStorage.setItem('mnemory_api_key', key);
   },
 
   /** Clear stored key */
   clearKey() {
-    sessionStorage.removeItem('mnemory_api_key');
+    localStorage.removeItem('mnemory_api_key');
   },
 
   /** Get the currently selected user_id for switching */
   getSelectedUser() {
-    return sessionStorage.getItem('mnemory_selected_user') || '';
+    return localStorage.getItem('mnemory_selected_user') || '';
   },
 
   /** Set the selected user_id for switching */
   setSelectedUser(userId) {
     if (userId) {
-      sessionStorage.setItem('mnemory_selected_user', userId);
+      localStorage.setItem('mnemory_selected_user', userId);
     } else {
-      sessionStorage.removeItem('mnemory_selected_user');
+      localStorage.removeItem('mnemory_selected_user');
     }
   },
 
