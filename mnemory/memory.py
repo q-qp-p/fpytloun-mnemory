@@ -501,8 +501,17 @@ class MemoryService:
             logger.exception("LLM extraction call failed")
             return {"error": True, "message": "Memory extraction failed"}
 
+        logger.debug("Extraction LLM response: %s", response_text)
+
         # 5. Parse response and execute actions
         actions, store_artifact = parse_extraction_response(response_text, id_mapping)
+
+        logger.debug(
+            "Parsed %d actions: %s (store_artifact=%s)",
+            len(actions),
+            [a["action"] for a in actions],
+            store_artifact,
+        )
 
         if not actions:
             return {"results": []}

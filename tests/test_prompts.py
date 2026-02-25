@@ -164,6 +164,32 @@ class TestBuildExtractionPrompt:
         # Agent prompt focuses on assistant identity, not conversation filtering
         assert "not facts to remember" not in system.lower()
 
+    def test_english_extraction_required(self):
+        """Both user and agent prompts should require English extraction."""
+        for role in ("user", "assistant"):
+            messages, _, _ = build_extraction_prompt("test", role=role)
+            system = messages[0]["content"]
+            assert "always write extracted facts in english" in system.lower(), (
+                f"role={role}: prompt should require English extraction"
+            )
+            # Should NOT contain the old same-language rule
+            assert "record facts in the same language" not in system.lower(), (
+                f"role={role}: prompt should not contain old same-language rule"
+            )
+
+    def test_third_party_extraction_guidance(self):
+        """User prompt should guide extraction of facts about people and
+        things the user mentions (family, pets, possessions, etc.)."""
+        messages, _, _ = build_extraction_prompt("test", role="user")
+        system = messages[0]["content"]
+        # Should mention extracting facts about family/friends/etc.
+        assert "family" in system.lower()
+        assert "pets" in system.lower()
+        # Should instruct relationship-based subjects
+        assert "User's mother" in system or "user's mother" in system.lower()
+        # Should have a conversation example with third-party extraction
+        assert "User's mother" in system
+
 
 # ── parse_extraction_response ────────────────────────────────────────
 
