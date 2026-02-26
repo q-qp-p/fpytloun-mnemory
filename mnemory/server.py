@@ -556,6 +556,8 @@ def search_memories(
     limit: int = 10,
     agent_id: str | None = None,
     include_decayed: bool = False,
+    date_start: str | None = None,
+    date_end: str | None = None,
 ) -> str:
     """Search memories by semantic similarity with filtering and importance reranking.
 
@@ -582,6 +584,12 @@ def search_memories(
                   X-Agent-Id header.
         include_decayed: If true, include expired/decayed memories in results.
                         Useful for browsing historical memories. Default false.
+        date_start: Filter by date range start (YYYY-MM-DD). Matches memories
+                    with event_date >= date_start, or created_at >= date_start
+                    when event_date is not set.
+        date_end: Filter by date range end (YYYY-MM-DD). Matches memories
+                  with event_date <= date_end, or created_at <= date_end
+                  when event_date is not set.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -602,6 +610,8 @@ def search_memories(
                 role=role,
                 limit=limit,
                 include_decayed=include_decayed,
+                date_start=date_start,
+                date_end=date_end,
             )
         else:
             # No session agent — use param for backward compat
@@ -615,6 +625,8 @@ def search_memories(
                 role=role,
                 limit=limit,
                 include_decayed=include_decayed,
+                date_start=date_start,
+                date_end=date_end,
             )
         return _format_memories(results)
     except ValueError as e:
@@ -648,6 +660,10 @@ def find_memories(
     generates multiple targeted searches covering different angles and
     associations, and uses AI to rank results by relevance to your
     question. Scores are on the same 0.0-1.0 scale as search_memories.
+
+    Temporal-aware: resolves time references like "last week", "in 2023",
+    "recently" into concrete date ranges for filtering. Uses event_date
+    metadata for temporal scoring during reranking.
 
     Use this for multi-faceted questions like "What do I think about dogs?
     Should I buy one?" where a single search query wouldn't capture all
@@ -931,6 +947,7 @@ def update_memory(
     importance: str | None = None,
     pinned: bool | None = None,
     ttl_days: int | None = None,
+    event_date: str | None = None,
 ) -> str:
     """Update an existing memory's content or metadata.
 
@@ -949,6 +966,8 @@ def update_memory(
         pinned: New pinned state (true/false).
         ttl_days: New TTL in days. Recalculates expires_at from now and
                   restores decayed memories. Pass null to make permanent.
+        event_date: New event date (ISO 8601, e.g., "2023-05-08" or
+                    "2023-05-08T13:56:00+02:00"). Pass null to clear.
     """
     try:
         # Verify ownership: must be own agent's memory or shared
@@ -972,6 +991,8 @@ def update_memory(
         }
         if ttl_days is not None:
             kwargs["ttl_days"] = ttl_days
+        if event_date is not None:
+            kwargs["event_date"] = event_date
 
         result = _get_service().update_memory(memory_id, **kwargs)
         return json.dumps(result, default=str)

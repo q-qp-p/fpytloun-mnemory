@@ -105,6 +105,20 @@ class SearchMemoriesRequest(BaseModel):
     role: str | None = Field(None, description="Filter by role: 'user' or 'assistant'")
     limit: int = Field(10, ge=1, le=100, description="Max results to return")
     include_decayed: bool = Field(False, description="Include expired/decayed memories")
+    date_start: str | None = Field(
+        None,
+        description=(
+            "Filter by date range start (YYYY-MM-DD). Matches event_date "
+            "or created_at when event_date is not set."
+        ),
+    )
+    date_end: str | None = Field(
+        None,
+        description=(
+            "Filter by date range end (YYYY-MM-DD). Matches event_date "
+            "or created_at when event_date is not set."
+        ),
+    )
 
 
 class FindMemoriesRequest(BaseModel):
@@ -168,6 +182,12 @@ class UpdateMemoryRequest(BaseModel):
     importance: str | None = Field(None, description="New importance level")
     pinned: bool | None = Field(None, description="New pinned state")
     ttl_days: int | None = Field(None, description="New TTL in days")
+    event_date: str | None = Field(
+        None,
+        description=(
+            "New event date (ISO 8601, e.g., '2023-05-08'). Pass null to clear."
+        ),
+    )
 
 
 class CoreMemoriesResponse(BaseModel):

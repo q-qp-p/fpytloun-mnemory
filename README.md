@@ -347,7 +347,7 @@ Dynamic subcategories via prefix: `project:myapp`, `project:domecek/k8s-manifest
 | `high` | 0.7 | Important facts, key decisions |
 | `critical` | 1.0 | Essential information, always-relevant |
 
-Search results are reranked: `combined_score = similarity * 0.9 + importance_weight * 0.1` (configurable via `SEARCH_SIMILARITY_WEIGHT`). A keyword boost is then blended in: `final = (1 - keyword_weight) * combined_score + keyword_weight * keyword_overlap` (configurable via `SEARCH_KEYWORD_WEIGHT`, default 0.2). Results below `SEARCH_SCORE_THRESHOLD` (default 0.30) are filtered out.
+Search results are reranked: `combined_score = similarity * 0.9 + importance_weight * 0.1` (configurable via `SEARCH_SIMILARITY_WEIGHT`). An additive keyword boost is then applied: `final = min(1.0, combined_score + keyword_weight * keyword_overlap)` (configurable via `SEARCH_KEYWORD_WEIGHT`, default 0.2). Keyword matching only boosts scores — memories without keyword overlap keep their original score. Results below `SEARCH_SCORE_THRESHOLD` (default 0.30) are filtered out.
 
 ### Pinned Memories
 
@@ -426,12 +426,12 @@ Sub-agents are fully independent — they have their own memories and do NOT inh
 |---|---|
 | `add_memory` | Store a memory with optional metadata, `infer` flag, `role`, and `event_date` |
 | `add_memories` | Batch-add multiple memories in a single call |
-| `search_memories` | Semantic search with type/category/role filters, importance reranking |
+| `search_memories` | Semantic search with type/category/role/date filters, importance reranking |
 | `find_memories` | AI-powered search: generates multiple queries, searches, and reranks by relevance to your question. Temporal-aware — resolves "last week", "in 2023", etc. |
 | `get_core_memories` | Load pinned + recent context at conversation start. Use for clients that inject MCP server instructions (e.g., Claude Code). |
 | `get_recent_memories` | Get recent activity from the last N days with scope filter (user/agent/all) |
 | `list_memories` | List all/filtered memories |
-| `update_memory` | Update content or metadata of existing memory |
+| `update_memory` | Update content or metadata of existing memory (including `event_date`) |
 | `delete_memory` | Delete a memory and its artifacts |
 | `delete_all_memories` | Delete all memories in scope |
 | `list_categories` | List categories with counts for discoverability |
@@ -536,7 +536,7 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 
 1. You call `search_memories(query="what car do I have")`
 2. Query is embedded, vector similarity search in Qdrant
-3. Results filtered by category/type if specified
+3. Results filtered by category/type/date range if specified
 4. Reranked by combined similarity + importance score, then keyword-boosted
 5. Results below score threshold (default 0.30) are filtered out
 6. Returns top N results with artifact indicators

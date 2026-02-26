@@ -1144,10 +1144,13 @@ class MemoryService:
     def _keyword_boost(self, query: str, memories: list[dict]) -> list[dict]:
         """Apply post-retrieval keyword boost to search results.
 
-        Blends a keyword overlap score into the Qdrant score:
-        final = (1 - weight) * qdrant_score + weight * keyword_score
+        Adds an additive bonus based on keyword overlap:
+        final = min(1.0, qdrant_score + weight * keyword_score)
 
         keyword_score = fraction of query tokens found in the memory text.
+        This is purely additive — memories without keyword matches keep
+        their original score (no penalty). Scores are capped at 1.0.
+
         If the query has no meaningful tokens (all stopwords), results are
         returned unchanged.
 
@@ -1172,7 +1175,7 @@ class MemoryService:
             mem_tokens = _tokenize(mem_text)
             overlap = len(query_tokens & mem_tokens) / len(query_tokens)
             original_score = mem.get("score", 0)
-            mem["score"] = round((1 - weight) * original_score + weight * overlap, 4)
+            mem["score"] = round(min(1.0, original_score + weight * overlap), 4)
 
         memories.sort(key=lambda m: m.get("score", 0), reverse=True)
         return memories
@@ -2181,6 +2184,7 @@ class MemoryService:
         importance: str | None = None,
         pinned: bool | None = None,
         ttl_days: int | None = ...,  # type: ignore[assignment]
+        event_date: str | None = ...,  # type: ignore[assignment]
     ) -> dict:
         """Update a memory's content and/or metadata.
 
@@ -2191,6 +2195,9 @@ class MemoryService:
         ttl_days: Set a new TTL (recalculates expires_at from now). Pass 0
                   or None to make permanent. Uses sentinel default (...) to
                   distinguish "not provided" from "explicitly set to None".
+        event_date: Set a new event date (ISO 8601). Pass None to clear.
+                    Uses sentinel default (...) to distinguish "not provided"
+                    from "explicitly set to None".
         """
         metadata_updates: dict[str, Any] = {}
 
@@ -2202,6 +2209,16 @@ class MemoryService:
             metadata_updates["importance"] = validate_importance(importance)
         if pinned is not None:
             metadata_updates["pinned"] = pinned
+
+        # event_date update: parse and normalize, or clear if None
+        if event_date is not ...:
+            if event_date is not None:
+                default_tz = self._config.memory.default_timezone
+                metadata_updates["event_date"] = _parse_event_date(
+                    event_date, default_tz
+                )
+            else:
+                metadata_updates["event_date"] = None
 
         # TTL update: recalculate expires_at, clear decayed_at (restore)
         if ttl_days is not ...:

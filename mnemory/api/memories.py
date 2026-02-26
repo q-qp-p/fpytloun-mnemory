@@ -139,6 +139,8 @@ def search_memories(
                 role=req.role,
                 limit=req.limit,
                 include_decayed=req.include_decayed,
+                date_start=req.date_start,
+                date_end=req.date_end,
             )
         else:
             results = service.search_memories(
@@ -150,6 +152,8 @@ def search_memories(
                 role=req.role,
                 limit=req.limit,
                 include_decayed=req.include_decayed,
+                date_start=req.date_start,
+                date_end=req.date_end,
             )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -287,16 +291,20 @@ def update_memory(
     try:
         # Verify ownership: must be own agent's memory or shared
         service.verify_memory_access(memory_id, session_agent_id=ctx.agent_id)
-        result = service.update_memory(
-            memory_id=memory_id,
-            user_id=ctx.user_id,
-            content=req.content,
-            memory_type=req.memory_type,
-            categories=req.categories,
-            importance=req.importance,
-            pinned=req.pinned,
-            ttl_days=req.ttl_days,
-        )
+        kwargs: dict = {
+            "memory_id": memory_id,
+            "user_id": ctx.user_id,
+            "content": req.content,
+            "memory_type": req.memory_type,
+            "categories": req.categories,
+            "importance": req.importance,
+            "pinned": req.pinned,
+        }
+        if req.ttl_days is not None:
+            kwargs["ttl_days"] = req.ttl_days
+        if req.event_date is not None:
+            kwargs["event_date"] = req.event_date
+        result = service.update_memory(**kwargs)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

@@ -106,23 +106,21 @@ class TestSearchScoreThreshold:
     def test_low_score_results_filtered_single_scope(self):
         """Single-scope search should filter results below threshold.
 
-        Note: keyword boost runs BEFORE threshold filtering, so scores
-        are adjusted by keyword overlap before the threshold is applied.
-        With no keyword overlap, scores are reduced by the keyword weight
-        factor (default 0.2): final = 0.8 * original_score.
+        Note: keyword boost runs BEFORE threshold filtering, but with
+        additive boost and no keyword overlap, scores are unchanged.
         """
         service = _make_service()
         service.vector.search.return_value = {
             "results": [
                 {"id": "high", "score": 0.8, "metadata": {"importance": "normal"}},
                 {"id": "low", "score": 0.1, "metadata": {"importance": "normal"}},
-                {"id": "edge", "score": 0.40, "metadata": {"importance": "normal"}},
+                {"id": "edge", "score": 0.35, "metadata": {"importance": "normal"}},
             ]
         }
         results = service.search_memories(query="test", user_id="filip")
         ids = [r["id"] for r in results]
         assert "high" in ids
-        assert "edge" in ids  # 0.8 * 0.40 = 0.32, above 0.30
+        assert "edge" in ids  # 0.35 unchanged (no keyword overlap), above 0.30
         assert "low" not in ids
 
     def test_all_below_threshold_returns_empty(self):
@@ -185,9 +183,10 @@ class TestSearchScoreThreshold:
     def test_threshold_configurable(self):
         """Custom threshold should be respected.
 
-        With keyword weight 0.2 and no keyword overlap:
-        - "above": 0.8 * 0.8 = 0.64, above 0.5 threshold
-        - "below": 0.8 * 0.4 = 0.32, below 0.5 threshold
+        With additive keyword boost and no keyword overlap, scores are
+        unchanged:
+        - "above": 0.8, above 0.5 threshold
+        - "below": 0.4, below 0.5 threshold
         """
         service = _make_service()
         service._config.memory.search_score_threshold = 0.5
@@ -2682,8 +2681,8 @@ class TestKeywordBoost:
         assert results[0]["id"] == "match"
         assert results[1]["id"] == "no-match"
 
-    def test_no_keyword_match_reduces_score(self):
-        """Memories without query keywords get reduced score."""
+    def test_no_keyword_match_keeps_score(self):
+        """Memories without query keywords keep their original score."""
         service = _make_service()
         service.vector.search.return_value = {
             "results": [
@@ -2696,8 +2695,8 @@ class TestKeywordBoost:
             ]
         }
         results = service.search_memories(query="family", user_id="filip")
-        # Score should be reduced: 0.8 * 0.50 + 0.2 * 0.0 = 0.40
-        assert results[0]["score"] == 0.4
+        # Additive boost with 0 overlap: min(1.0, 0.50 + 0.2 * 0) = 0.50
+        assert results[0]["score"] == 0.50
 
     def test_multi_word_partial_match(self):
         """Partial keyword matches should give proportional boost."""

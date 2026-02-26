@@ -147,6 +147,7 @@ document.addEventListener('alpine:init', () => {
         importance: meta.importance || 'normal',
         pinned: !!meta.pinned,
         ttl_days: meta.ttl_days ?? '',
+        event_date: meta.event_date ? meta.event_date.slice(0, 10) : '',
       };
       this.open = true;
     },
@@ -177,6 +178,11 @@ document.addEventListener('alpine:init', () => {
       if (form.ttl_days !== '' && form.ttl_days !== null) {
         const ttl = parseInt(form.ttl_days, 10);
         if (!isNaN(ttl) && ttl !== meta.ttl_days) payload.ttl_days = ttl;
+      }
+
+      const origDate = meta.event_date ? meta.event_date.slice(0, 10) : '';
+      if (form.event_date !== origDate) {
+        payload.event_date = form.event_date || null;
       }
 
       if (Object.keys(payload).length === 0) { this.close(); return; }
