@@ -58,6 +58,9 @@ function fsckTab() {
       categories: [],
     },
 
+    // Severity threshold filter for displayed issues
+    severityFilter: 'all',  // 'all', 'medium', 'high'
+
     // Selection state
     selectedIssues: {},  // issue_id -> boolean
 
@@ -73,10 +76,16 @@ function fsckTab() {
 
     init() {
       window.addEventListener('mnemory:tab-changed', (e) => {
-        if (e.detail.tab === 'check' && !this.initialized) {
-          this.initialized = true;
-          this.loadCategories();
-          this._loadAgentIds();
+        if (e.detail.tab === 'check') {
+          if (!this.initialized) {
+            this.initialized = true;
+            this.loadCategories();
+            this._loadAgentIds();
+          }
+          // On every tab visit, try to restore a previous check if none is active
+          if (!this.checkId) {
+            this._restoreLastCheck();
+          }
         }
       });
 
@@ -84,6 +93,7 @@ function fsckTab() {
         if (this.initialized) {
           this.reset();
           this._loadAgentIds();
+          sessionStorage.removeItem('mnemory_fsck_check_id');
         }
       });
     },
@@ -95,6 +105,10 @@ function fsckTab() {
       } catch (err) {
         console.warn('Failed to load categories:', err);
       }
+    },
+
+    selectAllCategories() {
+      this.filters.categories = [...this.availableCategories];
     },
 
     async _loadAgentIds() {
@@ -120,12 +134,44 @@ function fsckTab() {
 
         const data = await MnemoryAPI.startFsck(params);
         this.checkId = data.check_id;
+        sessionStorage.setItem('mnemory_fsck_check_id', this.checkId);
         this.startPolling();
       } catch (err) {
         this.status = 'failed';
         this.error = err.message;
         this.loading = false;
         Alpine.store('notify').error(`Failed to start check: ${err.message}`);
+      }
+    },
+
+    /** Attempt to restore the last check from sessionStorage on tab visit. */
+    async _restoreLastCheck() {
+      const savedId = sessionStorage.getItem('mnemory_fsck_check_id');
+      if (!savedId) return;
+
+      try {
+        const data = await MnemoryAPI.getFsckStatus(savedId);
+        // Restore state
+        this.checkId = savedId;
+        this.status = data.status;
+        this.progress = data.progress;
+        this.summary = data.summary;
+        this.error = data.error;
+        this.createdAt = data.created_at;
+        this.expiresAt = data.expires_at;
+
+        if (data.status === 'completed') {
+          this.issues = data.issues || [];
+          this.selectAll();
+        } else if (data.status === 'running') {
+          this.loading = true;
+          this.startPolling();
+        } else if (data.status === 'failed') {
+          // Keep the error visible but don't auto-clear
+        }
+      } catch {
+        // Check expired or not found — clear stored ID
+        sessionStorage.removeItem('mnemory_fsck_check_id');
       }
     },
 
@@ -225,6 +271,8 @@ function fsckTab() {
       this.expandedMemories = {};
       this.loading = false;
       this.applying = false;
+      this.severityFilter = 'all';
+      sessionStorage.removeItem('mnemory_fsck_check_id');
     },
 
     // ── Selection ─────────────────────────────────────────────
@@ -273,7 +321,7 @@ function fsckTab() {
       if (!this.progress) return '';
       const labels = {
         starting: 'Starting...',
-        security_scan: 'Phase 1/3 \u2014 Security scan',
+        security_scan: 'Phase 1/3 \u2014 Security scan (regex + LLM re-evaluation)',
         duplicate_search: 'Phase 2/3 \u2014 Duplicate detection (searching)',
         duplicate_eval: 'Phase 2/3 \u2014 Duplicate detection (evaluating clusters)',
         quality_check: 'Phase 3/3 \u2014 Quality check',
@@ -304,6 +352,10 @@ function fsckTab() {
     get groupedIssues() {
       const byType = {};
       for (const issue of this.issues) {
+        // Apply severity threshold filter
+        if (this.severityFilter === 'medium' && issue.severity === 'low') continue;
+        if (this.severityFilter === 'high' && issue.severity !== 'high') continue;
+
         if (!byType[issue.type]) byType[issue.type] = [];
         byType[issue.type].push(issue);
       }

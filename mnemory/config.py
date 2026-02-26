@@ -339,7 +339,7 @@ class MemoryConfig:
 
     # Fsck (memory check) settings — how long check results are cached (seconds)
     fsck_cache_ttl: int = field(
-        default_factory=lambda: _env_int("FSCK_CACHE_TTL", 1800)
+        default_factory=lambda: _env_int("FSCK_CACHE_TTL", 86400)
     )
 
     # Fsck — max concurrent LLM calls during check (1 = sequential)

@@ -443,6 +443,7 @@ class FsckAffectedMemory(BaseModel):
     id: str
     content: str
     metadata: dict | None = None
+    agent_id: str | None = None
 
 
 class FsckIssue(BaseModel):
@@ -454,6 +455,9 @@ class FsckIssue(BaseModel):
         description="Issue type: duplicate, quality, split, contradiction, reclassify, security",
     )
     severity: str = Field(..., description="Severity: low, medium, high")
+    confidence: float | None = Field(
+        None, description="LLM confidence score 0.0-1.0, null for regex-detected issues"
+    )
     reasoning: str = Field(
         ..., description="Explanation of the issue and suggested fix"
     )

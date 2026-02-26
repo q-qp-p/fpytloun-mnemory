@@ -26,6 +26,7 @@ from mnemory.llm import LLMClient, parse_json_response
 from mnemory.prompts import (
     build_fsck_duplicate_prompt,
     build_fsck_quality_prompt,
+    build_fsck_security_reeval_prompt,
 )
 from mnemory.sanitize import detect_injection_patterns
 from mnemory.storage.vector import VectorStore
@@ -72,6 +73,7 @@ class FsckAffectedMemory:
     id: str
     content: str
     metadata: dict | None = None
+    agent_id: str | None = None
 
 
 @dataclass
@@ -84,6 +86,7 @@ class FsckIssue:
     reasoning: str
     affected_memories: list[FsckAffectedMemory]
     actions: list[FsckAction]
+    confidence: float | None = None  # 0.0-1.0, LLM-reported confidence
 
 
 @dataclass
@@ -282,8 +285,9 @@ class FsckService:
         Updates the FsckCheck in-place with progress, issues, and status.
 
         Phase weight allocation for percent:
-          Phase 0 (security_scan):    0 –  5%  (instant, regex only)
-          Phase 1a (duplicate_search): 5 – 30%  (vector search per memory)
+          Phase 0a (security_scan):    0 –  3%  (instant, regex only)
+          Phase 0b (security_reeval):  3 –  8%  (LLM call per flagged memory)
+          Phase 1a (duplicate_search): 8 – 30%  (vector search per memory)
           Phase 1b (duplicate_eval):  30 – 55%  (LLM call per cluster)
           Phase 2 (quality_check):    55 – 100% (LLM call per batch)
         """
@@ -338,21 +342,31 @@ class FsckService:
             # Build lookup for quick access
             mem_by_id: dict[str, dict] = {m["id"]: m for m in memories}
 
-            # Phase 0: Security scan (regex, no LLM) — 0-5%
+            # Phase 0a: Security scan (regex, no LLM) — 0-3%
             check.progress.phase = "security_scan"
             check.progress.processed = 0
             logger.info(
-                "Fsck check %s phase 0: scanning %d memories for injection patterns",
+                "Fsck check %s phase 0a: scanning %d memories for injection patterns",
                 check_id,
                 total,
             )
-            security_issues = self._phase_security_scan(memories)
-            check.issues.extend(security_issues)
+            regex_flagged = self._phase_security_scan_regex(memories)
             check.progress.processed = total
-            check.progress.percent = 5
+            check.progress.percent = 3
+
+            # Phase 0b: Security re-evaluation (LLM) — 3-8%
+            # Re-evaluate regex hits to drop false positives before adding issues.
+            logger.info(
+                "Fsck check %s phase 0b: re-evaluating %d security flags with LLM",
+                check_id,
+                len(regex_flagged),
+            )
+            security_issues = self._phase_security_reeval(regex_flagged, mem_by_id)
+            check.issues.extend(security_issues)
+            check.progress.percent = 8
             check.progress.issues_found = len(check.issues)
 
-            # Phase 1: Duplicate detection (vector similarity + LLM) — 5-55%
+            # Phase 1: Duplicate detection (vector similarity + LLM) — 8-55%
             logger.info(
                 "Fsck check %s phase 1: duplicate detection on %d memories",
                 check_id,
@@ -470,52 +484,171 @@ class FsckService:
 
     # ── Phase 0: Security scan ───────────────────────────────────────
 
-    def _phase_security_scan(
+    def _phase_security_scan_regex(
         self,
         memories: list[dict],
-    ) -> list[FsckIssue]:
+    ) -> list[tuple[dict, list[str]]]:
         """Scan all memories for prompt injection patterns using regex.
 
         Fast, no LLM cost. Uses the existing detect_injection_patterns()
         from sanitize.py.
+
+        Returns a list of (memory, matched_patterns) tuples for flagged memories.
         """
-        issues: list[FsckIssue] = []
+        flagged: list[tuple[dict, list[str]]] = []
 
         for mem in memories:
             text = mem.get("memory", "")
             patterns = detect_injection_patterns(text)
-            if not patterns:
-                continue
+            if patterns:
+                flagged.append((mem, patterns))
 
-            issue = FsckIssue(
-                issue_id=str(uuid.uuid4()),
-                type="security",
-                severity="high",
-                reasoning=(
-                    f"Prompt injection patterns detected: {', '.join(patterns)}. "
-                    "This memory contains content that appears to be an attempt "
-                    "to manipulate AI behavior rather than a genuine memory."
-                ),
-                affected_memories=[
-                    FsckAffectedMemory(
-                        id=mem["id"],
-                        content=text,
-                        metadata=mem.get("metadata"),
-                    )
-                ],
-                actions=[
-                    FsckAction(action="delete", memory_id=mem["id"]),
-                ],
-            )
-            issues.append(issue)
-
-        if issues:
+        if flagged:
             logger.info(
-                "Fsck security scan: found %d memories with injection patterns",
-                len(issues),
+                "Fsck security scan: %d memories flagged by regex (pending LLM re-eval)",
+                len(flagged),
             )
 
+        return flagged
+
+    def _phase_security_reeval(
+        self,
+        flagged: list[tuple[dict, list[str]]],
+        mem_by_id: dict[str, dict],
+    ) -> list[FsckIssue]:
+        """Re-evaluate regex-flagged memories with LLM to drop false positives.
+
+        Runs in parallel using the configured concurrency. Only confirmed
+        threats become FsckIssue objects — false positives are silently dropped.
+        """
+        if not flagged:
+            return []
+
+        concurrency = max(1, self._config.memory.fsck_llm_concurrency)
+        issues: list[FsckIssue] = []
+        lock = threading.Lock()
+
+        def _reeval(mem: dict, patterns: list[str]) -> FsckIssue | None:
+            return self._evaluate_security_flag(mem, patterns)
+
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {
+                pool.submit(_reeval, mem, patterns): (mem, patterns)
+                for mem, patterns in flagged
+            }
+            for future in as_completed(futures):
+                mem, patterns = futures[future]
+                try:
+                    issue = future.result()
+                    if issue is not None:
+                        with lock:
+                            issues.append(issue)
+                except Exception:
+                    logger.warning(
+                        "Failed to re-evaluate security flag for memory %s",
+                        mem.get("id"),
+                        exc_info=True,
+                    )
+                    # On LLM failure, include the issue conservatively
+                    text = mem.get("memory", "")
+                    with lock:
+                        issues.append(
+                            FsckIssue(
+                                issue_id=str(uuid.uuid4()),
+                                type="security",
+                                severity="high",
+                                reasoning=(
+                                    f"Prompt injection patterns detected: {', '.join(patterns)}. "
+                                    "LLM re-evaluation failed — flagged conservatively."
+                                ),
+                                affected_memories=[
+                                    FsckAffectedMemory(
+                                        id=mem["id"],
+                                        content=text,
+                                        metadata=mem.get("metadata"),
+                                        agent_id=(mem.get("metadata") or {}).get(
+                                            "agent_id"
+                                        ),
+                                    )
+                                ],
+                                actions=[
+                                    FsckAction(action="delete", memory_id=mem["id"])
+                                ],
+                            )
+                        )
+
+        confirmed = len(issues)
+        dropped = len(flagged) - confirmed
+        logger.info(
+            "Fsck security re-eval: %d confirmed threats, %d false positives dropped",
+            confirmed,
+            dropped,
+        )
         return issues
+
+    def _evaluate_security_flag(
+        self,
+        mem: dict,
+        patterns: list[str],
+    ) -> FsckIssue | None:
+        """Ask the LLM whether a regex-flagged memory is a real threat.
+
+        Returns an FsckIssue if confirmed threat, None if false positive.
+        """
+        messages, schema = build_fsck_security_reeval_prompt(mem, patterns)
+
+        response = self._llm.generate(
+            messages,
+            json_schema=schema,
+            temperature=0.1,
+            max_tokens=500,
+        )
+
+        try:
+            parsed = parse_json_response(response)
+        except (ValueError, Exception):
+            parsed = None
+
+        if not parsed:
+            # Parsing failed — include conservatively
+            logger.warning(
+                "Security re-eval: failed to parse LLM response for memory %s",
+                mem.get("id"),
+            )
+            verdict = "threat"
+            reasoning = "LLM response could not be parsed — flagged conservatively."
+        else:
+            verdict = parsed.get("verdict", "threat")
+            reasoning = parsed.get("reasoning", "")
+
+        if verdict == "false_positive":
+            logger.debug(
+                "Security re-eval: memory %s is a false positive: %s",
+                mem.get("id"),
+                reasoning,
+            )
+            return None
+
+        # Confirmed threat
+        text = mem.get("memory", "")
+        return FsckIssue(
+            issue_id=str(uuid.uuid4()),
+            type="security",
+            severity="high",
+            reasoning=(
+                f"Prompt injection patterns detected: {', '.join(patterns)}. "
+                f"LLM confirmed: {reasoning}"
+            ),
+            affected_memories=[
+                FsckAffectedMemory(
+                    id=mem["id"],
+                    content=text,
+                    metadata=mem.get("metadata"),
+                    agent_id=(mem.get("metadata") or {}).get("agent_id"),
+                )
+            ],
+            actions=[FsckAction(action="delete", memory_id=mem["id"])],
+        )
 
     # ── Phase 1: Duplicate detection ─────────────────────────────────
 
@@ -557,8 +690,8 @@ class FsckService:
                         uf.union(mem["id"], sim["id"])
 
             check.progress.processed = idx + 1
-            # 5-30% range
-            check.progress.percent = 5 + int(25 * (idx + 1) / total) if total else 30
+            # 8-30% range
+            check.progress.percent = 8 + int(22 * (idx + 1) / total) if total else 30
 
         # Extract clusters with 2+ members
         clusters = {
@@ -681,6 +814,7 @@ class FsckService:
                             id=mid,
                             content=m.get("memory", ""),
                             metadata=m.get("metadata"),
+                            agent_id=(m.get("metadata") or {}).get("agent_id"),
                         )
                     )
 
@@ -699,6 +833,14 @@ class FsckService:
             if issue_type not in ("duplicate", "contradiction"):
                 issue_type = "duplicate"
 
+            raw_confidence = raw_issue.get("confidence")
+            confidence: float | None = None
+            if raw_confidence is not None:
+                try:
+                    confidence = max(0.0, min(1.0, float(raw_confidence)))
+                except (TypeError, ValueError):
+                    confidence = None
+
             issues.append(
                 FsckIssue(
                     issue_id=str(uuid.uuid4()),
@@ -707,6 +849,7 @@ class FsckService:
                     reasoning=raw_issue.get("reasoning", ""),
                     affected_memories=affected_mems,
                     actions=actions,
+                    confidence=confidence,
                 )
             )
 
@@ -818,6 +961,7 @@ class FsckService:
                             id=mid,
                             content=m.get("memory", ""),
                             metadata=m.get("metadata"),
+                            agent_id=(m.get("metadata") or {}).get("agent_id"),
                         )
                     )
 
@@ -845,6 +989,14 @@ class FsckService:
             if severity not in ("low", "medium", "high"):
                 severity = "medium"
 
+            raw_confidence = raw_issue.get("confidence")
+            confidence: float | None = None
+            if raw_confidence is not None:
+                try:
+                    confidence = max(0.0, min(1.0, float(raw_confidence)))
+                except (TypeError, ValueError):
+                    confidence = None
+
             issues.append(
                 FsckIssue(
                     issue_id=str(uuid.uuid4()),
@@ -853,6 +1005,7 @@ class FsckService:
                     reasoning=raw_issue.get("reasoning", ""),
                     affected_memories=affected_mems,
                     actions=actions,
+                    confidence=confidence,
                 )
             )
 

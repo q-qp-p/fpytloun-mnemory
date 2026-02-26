@@ -1192,6 +1192,11 @@
             </button>
             <div x-show="catOpen" x-transition
                  class="absolute z-20 mt-1 w-56 max-h-64 overflow-y-auto bg-brand-surface border border-brand-border rounded-lg shadow-xl py-1">
+              <button type="button"
+                      @click="selectAllCategories()"
+                      class="w-full text-left px-3 py-1.5 text-xs text-brand-accent hover:bg-brand-elevated">
+                Select all
+              </button>
               <button type="button" x-show="filters.categories.length > 0"
                       @click="filters.categories = []"
                       class="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-brand-elevated">
@@ -1277,6 +1282,12 @@
                   <button @click="deselectAll()" class="btn btn-ghost text-xs">Deselect all</button>
                   <span class="text-xs text-secondary" x-text="selectedCount + ' of ' + issues.length + ' selected'"></span>
                   <div class="flex-1"></div>
+                  <!-- Severity threshold filter -->
+                  <select class="select text-xs py-1" x-model="severityFilter">
+                    <option value="all">All severities</option>
+                    <option value="medium">Medium+</option>
+                    <option value="high">High only</option>
+                  </select>
                   <button @click="applySelected()" :disabled="applying || selectedCount === 0"
                           class="btn btn-primary text-sm"
                           x-text="applying ? 'Applying...' : 'Apply Selected (' + selectedCount + ')'"></button>
@@ -1324,6 +1335,10 @@
                             <div class="flex items-center gap-2 mb-2">
                               <span class="badge text-xs" :class="issueTypeBadgeClass(issue.type)" x-text="issue.type"></span>
                               <span class="badge text-xs" :class="severityBadgeClass(issue.severity)" x-text="issue.severity"></span>
+                              <template x-if="issue.confidence !== null && issue.confidence !== undefined">
+                                <span class="badge text-xs bg-slate-500/20 text-slate-300"
+                                      x-text="Math.round(issue.confidence * 100) + '% conf'"></span>
+                              </template>
                               <span class="text-xs text-muted"
                                     x-text="issue.affected_memories.length + ' memor' + (issue.affected_memories.length === 1 ? 'y' : 'ies')"></span>
                             </div>
@@ -1360,12 +1375,12 @@
                                     </template>
                                     <!-- Right: agent, artifacts, assistant, pinned -->
                                     <span class="flex-1"></span>
-                                    <template x-if="mem.metadata?.agent_id">
-                                      <span class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
-                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
-                                        <span x-text="mem.metadata.agent_id"></span>
-                                      </span>
-                                    </template>
+                                     <template x-if="mem.agent_id || mem.metadata?.agent_id">
+                                       <span class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
+                                         <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
+                                         <span x-text="mem.agent_id || mem.metadata?.agent_id"></span>
+                                       </span>
+                                     </template>
                                     <template x-if="mem.metadata?.role === 'assistant'">
                                       <span class="badge bg-sky-500/15 text-sky-400 inline-flex items-center gap-1">
                                         <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 004.5 8.25v9a2.25 2.25 0 002.25 2.25z"/></svg>
@@ -1387,7 +1402,7 @@
                                 <div class="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
                                   <div><span class="text-muted">ID:</span> <span class="font-mono text-xs text-secondary" x-text="mem.id"></span></div>
                                   <div><span class="text-muted">Role:</span> <span class="text-secondary" x-text="mem.metadata?.role || '\u2014'"></span></div>
-                                  <div><span class="text-muted">Agent:</span> <span class="text-secondary" x-text="mem.metadata?.agent_id || '\u2014'"></span></div>
+                                   <div><span class="text-muted">Agent:</span> <span class="text-secondary" x-text="mem.agent_id || mem.metadata?.agent_id || '\u2014'"></span></div>
                                   <div><span class="text-muted">Created:</span> <span class="text-secondary" x-text="formatDate(mem.metadata?.created_at_utc)"></span></div>
                                   <div><span class="text-muted">Event Date:</span> <span class="text-secondary" x-text="mem.metadata?.event_date || '\u2014'"></span></div>
                                   <div><span class="text-muted">TTL:</span> <span class="text-secondary" x-text="mem.metadata?.ttl_days ? mem.metadata.ttl_days + ' days' : 'permanent'"></span></div>

@@ -69,6 +69,7 @@ def _check_to_response(check) -> FsckStatusResponse:
                     id=am.id,
                     content=am.content,
                     metadata=am.metadata,
+                    agent_id=am.agent_id,
                 )
                 for am in issue.affected_memories
             ]
@@ -86,6 +87,7 @@ def _check_to_response(check) -> FsckStatusResponse:
                     issue_id=issue.issue_id,
                     type=issue.type,
                     severity=issue.severity,
+                    confidence=issue.confidence,
                     reasoning=issue.reasoning,
                     affected_memories=affected,
                     actions=actions,

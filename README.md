@@ -295,7 +295,7 @@ When `MGMT_PORT` is not set (default):
 | `MEMORY_SESSION_SWEEP_INTERVAL` | `300` | Interval in seconds between session cleanup sweeps (5 minutes) |
 | `RECALL_MAX_RESULTS` | `10` | Max search results returned by recall endpoint |
 | `REMEMBER_RATE_LIMIT` | `10` | Max remember requests per minute per user. 0 = no limit |
-| `FSCK_CACHE_TTL` | `1800` | How long memory check results are cached in seconds (30 min) |
+| `FSCK_CACHE_TTL` | `86400` | How long memory check results are cached in seconds (24 hours) |
 | `FSCK_LLM_CONCURRENCY` | `4` | Max concurrent LLM calls during memory check. Set to 1 for sequential |
 
 ## Memory Model
@@ -488,7 +488,7 @@ Built-in memory consistency checker. Runs a three-phase pipeline to detect quali
 2. **Duplicate detection** — vector similarity clustering + LLM evaluation of each cluster for duplicates and contradictions
 3. **Quality check** — LLM batch evaluation for spelling/grammar errors, meaningless memories, memories that should be split, and metadata misclassification
 
-Phases 2 and 3 run LLM calls in parallel (`FSCK_LLM_CONCURRENCY`, default 4 workers) for ~4x speedup on large memory sets. Results are cached with configurable TTL (`FSCK_CACHE_TTL`, default 30 minutes) so you can review issues in the UI and apply fixes without re-running the check.
+Phases 2 and 3 run LLM calls in parallel (`FSCK_LLM_CONCURRENCY`, default 4 workers) for ~4x speedup on large memory sets. Results are cached with configurable TTL (`FSCK_CACHE_TTL`, default 24 hours) so you can review issues in the UI and apply fixes without re-running the check.
 
 **Issue types:** `duplicate`, `quality`, `split`, `contradiction`, `reclassify`, `security`
 
