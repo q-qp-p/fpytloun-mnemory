@@ -541,7 +541,9 @@ class TestBuildQueryGenerationPrompt:
     def test_without_today_no_date_in_prompt(self):
         messages, _ = build_query_generation_prompt("What happened?")
         system = messages[0]["content"]
-        assert "Today's date" not in system
+        # The dynamic "Today's date is YYYY-MM-DD" line should not appear
+        # (static references to "Today's date" in examples are fine)
+        assert "Today's date is 20" not in system
 
     def test_with_today_date_in_prompt(self):
         messages, _ = build_query_generation_prompt(

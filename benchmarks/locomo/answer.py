@@ -44,15 +44,14 @@ Only say "I don't know" if the memories contain truly no relevant information.
 
 ## Temporal reasoning
 
-Some memories include a timestamp [DD Month YYYY] showing when the memory \
-was recorded. Use these timestamps to reason about time:
-- If a memory from 8 May 2023 mentions "yesterday", the event happened \
-on 7 May 2023.
-- If a memory from June 2023 mentions "last year", it refers to 2022.
-- If a memory from 3 July 2023 mentions "next month", it refers to August 2023.
-- When asked "when" something happened, calculate the actual date based on \
-the memory timestamp and any relative references in the memory text.
-- When asked about duration or "how long", calculate from the relevant dates.
+Some memories include a timestamp [DD Month YYYY] showing when the event \
+occurred. Use these timestamps to answer temporal questions:
+- The timestamp is the actual date of the event described in the memory.
+- When asked "when" something happened, use the timestamp directly.
+- When asked about duration or "how long", calculate from the relevant \
+timestamps.
+- If a memory has no timestamp, its date is unknown — rely on the memory \
+text for any temporal clues.
 
 ## Answer format
 

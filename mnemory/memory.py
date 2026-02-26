@@ -361,6 +361,7 @@ class MemoryService:
                 role=role,
                 ttl_days=ttl_days,
                 event_date=normalized_event_date,
+                session_timezone=session_timezone,
             )
         else:
             result = self._add_direct(
@@ -432,6 +433,7 @@ class MemoryService:
             ttl_days=None,
             event_date=None,
             artifact_threshold=artifact_threshold,
+            session_timezone=session_timezone,
         )
 
         # Invalidate caches
@@ -454,6 +456,7 @@ class MemoryService:
         ttl_days: int | None,
         event_date: str | None = None,
         artifact_threshold: int | None = None,
+        session_timezone: str | None = None,
     ) -> dict:
         """Add memory with LLM-driven extraction, classification, and dedup.
 
@@ -470,6 +473,9 @@ class MemoryService:
                 creation. Defaults to MAX_MEMORY_LENGTH. Pass a different
                 value for remember() which uses REMEMBER_ARTIFACT_THRESHOLD.
                 Pass 0 to disable auto-artifact entirely.
+            session_timezone: IANA timezone from X-Timezone header. When
+                event_date is None, used to compute "Today's date" in the
+                extraction prompt using the user's local date instead of UTC.
         """
         # 1. Embed the raw content for similarity search
         content_vector = self.vector.embedding.embed(content)
@@ -509,6 +515,7 @@ class MemoryService:
             explicit_fields=explicit_fields if explicit_fields else None,
             max_memory_length=max_len,
             event_date=event_date,
+            session_timezone=session_timezone,
         )
 
         # 4. Single LLM call
@@ -771,6 +778,13 @@ class MemoryService:
             text, mem_type, cats, imp, user_id
         )
 
+        # Resolve event_date: LLM-extracted per-fact date takes precedence
+        # over caller-provided date. The caller's event_date is primarily
+        # used to anchor "Today's date" in the extraction prompt; the LLM's
+        # per-fact event_date is more accurate (actual event date vs session
+        # timestamp). Falls back to caller's date when LLM returns null.
+        effective_event_date = action.get("event_date") or event_date
+
         if act == "ADD":
             vector = vector_map.get(text)
             if vector is None:
@@ -784,8 +798,8 @@ class MemoryService:
                 "artifacts": [],
                 "created_at_utc": datetime.now(timezone.utc).isoformat(),
             }
-            if event_date is not None:
-                metadata["event_date"] = event_date
+            if effective_event_date is not None:
+                metadata["event_date"] = effective_event_date
             ttl_meta = build_expiry_metadata(ttl_days, mem_type, self._config.memory)
             metadata.update(ttl_meta)
 
@@ -835,8 +849,9 @@ class MemoryService:
                 "pinned": pin,
             }
             # Preserve or update event_date
-            if event_date is not None:
-                metadata_update["event_date"] = event_date
+            # Priority: caller-provided > LLM-extracted > existing
+            if effective_event_date is not None:
+                metadata_update["event_date"] = effective_event_date
             elif existing_meta.get("event_date"):
                 metadata_update["event_date"] = existing_meta["event_date"]
             # Recalculate TTL based on new memory_type
@@ -1176,6 +1191,8 @@ class MemoryService:
         limit: int = 10,
         include_decayed: bool = False,
         query_vector: list[float] | None = None,
+        date_start: str | None = None,
+        date_end: str | None = None,
     ) -> list[dict]:
         """Search memories with semantic similarity, filtered and reranked.
 
@@ -1186,6 +1203,10 @@ class MemoryService:
             query_vector: Pre-computed embedding vector. If provided, skips
                 the embedding API call. Used by find_memories for batch
                 embedding optimization.
+            date_start: Optional start date (YYYY-MM-DD) for temporal
+                filtering. Passed to Qdrant for event_date/created_at
+                range filtering.
+            date_end: Optional end date (YYYY-MM-DD) for temporal filtering.
         """
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
@@ -1217,16 +1238,19 @@ class MemoryService:
             include_decayed=include_decayed,
             similarity_weight=self._config.memory.search_similarity_weight,
             query_vector=query_vector,
+            date_start=date_start,
+            date_end=date_end,
         )
 
         memories = result.get("results", [])
 
-        # Filter out low-relevance results
-        threshold = self._config.memory.search_score_threshold
-        memories = [m for m in memories if m.get("score", 0) >= threshold]
-
         # Post-retrieval keyword boost: blend keyword overlap into scores
         memories = self._keyword_boost(query, memories)
+
+        # Filter out low-relevance results (after keyword boost so that
+        # keyword-matching results aren't dropped before boosting)
+        threshold = self._config.memory.search_score_threshold
+        memories = [m for m in memories if m.get("score", 0) >= threshold]
 
         # Post-filtering for decayed memories (when include_decayed=True,
         # the search doesn't filter them, so we need to mark them)
@@ -1250,6 +1274,8 @@ class MemoryService:
         limit: int = 10,
         include_decayed: bool = False,
         query_vector: list[float] | None = None,
+        date_start: str | None = None,
+        date_end: str | None = None,
     ) -> list[dict]:
         """Search both agent-scoped and shared memories, merge and deduplicate.
 
@@ -1287,6 +1313,8 @@ class MemoryService:
             "include_decayed": include_decayed,
             "similarity_weight": self._config.memory.search_similarity_weight,
             "query_vector": query_vector,
+            "date_start": date_start,
+            "date_end": date_end,
         }
 
         # Search 1: agent-scoped memories
@@ -1320,12 +1348,13 @@ class MemoryService:
         # importance reranking, so the score already includes importance weight)
         memories.sort(key=lambda m: m.get("score", 0), reverse=True)
 
-        # Filter out low-relevance results
-        threshold = self._config.memory.search_score_threshold
-        memories = [m for m in memories if m.get("score", 0) >= threshold]
-
         # Post-retrieval keyword boost: blend keyword overlap into scores
         memories = self._keyword_boost(query, memories)
+
+        # Filter out low-relevance results (after keyword boost so that
+        # keyword-matching results aren't dropped before boosting)
+        threshold = self._config.memory.search_score_threshold
+        memories = [m for m in memories if m.get("score", 0) >= threshold]
 
         memories = memories[:limit]
 
@@ -1430,6 +1459,20 @@ class MemoryService:
         except (ValueError, KeyError) as e:
             raise ValueError(f"Failed to generate search queries: {e}") from e
 
+        # Extract date range for temporal filtering (if LLM provided one)
+        date_range = data.get("date_range")
+        date_start: str | None = None
+        date_end: str | None = None
+        if isinstance(date_range, dict):
+            date_start = date_range.get("start")
+            date_end = date_range.get("end")
+            if date_start or date_end:
+                logger.info(
+                    "find_memories: date range filter: %s to %s",
+                    date_start,
+                    date_end,
+                )
+
         # LLM may return 0 queries when the input doesn't need memory search
         if not queries:
             logger.info(
@@ -1488,6 +1531,8 @@ class MemoryService:
                         limit=per_query_limit,
                         include_decayed=include_decayed,
                         query_vector=qvec,
+                        date_start=date_start,
+                        date_end=date_end,
                     )
                 else:
                     results = self.search_memories(
@@ -1500,6 +1545,8 @@ class MemoryService:
                         limit=per_query_limit,
                         include_decayed=include_decayed,
                         query_vector=qvec,
+                        date_start=date_start,
+                        date_end=date_end,
                     )
             except Exception:
                 logger.warning("find_memories: search failed for query '%s'", q)

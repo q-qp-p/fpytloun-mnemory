@@ -49,6 +49,7 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
                         "categories",
                         "importance",
                         "pinned",
+                        "event_date",
                     ],
                     "additionalProperties": False,
                     "properties": {
@@ -87,6 +88,13 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
                             "enum": list(IMPORTANCE_WEIGHTS.keys()),
                         },
                         "pinned": {"type": "boolean"},
+                        "event_date": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "ISO 8601 date (YYYY-MM-DD) when the event "
+                                "occurred, or null if no temporal anchor"
+                            ),
+                        },
                     },
                 },
             },
@@ -117,7 +125,12 @@ Keep the same JSON schema as the original.
 
 Return a JSON object with a "memories" array and a "store_artifact"
 boolean (set to false). Each memory entry uses the same format:
-text, action, target_id, old_memory, memory_type, categories, importance, pinned.
+text, action, target_id, old_memory, memory_type, categories, importance,
+pinned, event_date.
+
+Do NOT append storage dates, creation timestamps, or "(stored ...)"
+annotations to extracted facts. Preserve the event_date from the
+original entry.
 
 Return ONLY the JSON object. No explanation, no markdown."""
 
@@ -212,59 +225,73 @@ You are a memory manager for an AI assistant. Your job is to:
   "Praha", "Škoda Octavia").
 - If no relevant facts can be extracted, return an empty list.
 - Today's date is {today}.
-- When dates, times, or temporal references are mentioned, preserve
-  them in the extracted fact. Convert relative references (yesterday,
-  last week, last year, recently, etc.) to absolute dates using
-  Today's date.
+- Each fact has an event_date field (YYYY-MM-DD or null). Use it to
+  record WHEN something happened or was mentioned:
+  - Set event_date when the fact has a temporal anchor — an event,
+    observation, or statement tied to a specific date.
+  - Convert relative references (yesterday, last week, last year,
+    recently, etc.) to absolute dates using Today's date.
+  - Set event_date to null when the fact is timeless (e.g., a name,
+    a preference, a permanent trait).
+- Do NOT embed dates in the fact text unless the date IS the core
+  fact (e.g., "User's birthday is August 13"). For episodic events,
+  the date goes in event_date only — keep the text clean.
+  Example: "User went to the doctor" with event_date "2026-02-25",
+  NOT "User went to the doctor on 25 February 2026".
 - Do NOT append storage dates, creation timestamps, or "(stored ...)"
-  annotations to extracted facts. Only include dates when the original
-  content contains temporal information (events, deadlines, etc.).
-  The storage timestamp is tracked separately in metadata.
+  annotations to extracted facts.
+- Do not extract the same fact twice. Each extracted fact must be
+  unique — if two pieces of information overlap, merge them into
+  a single fact.
 
 ### Examples
 
 Input: "Hi, how are you?"
-Output: {{"memories": []}}
+Output: {{"memories": [], "store_artifact": false}}
 
 Input: "My name is John and I'm a software engineer at Google"
 Output: {{"memories": [
   {{"text": "User's name is John", "action": "ADD",
     "target_id": null, "old_memory": null,
     "memory_type": "fact", "categories": ["personal"],
-    "importance": "normal", "pinned": true}},
+    "importance": "normal", "pinned": true, "event_date": null}},
   {{"text": "User is a software engineer at Google",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "fact", "categories": ["work"],
-    "importance": "normal", "pinned": true}}
-]}}
+    "importance": "normal", "pinned": true, "event_date": null}}
+], "store_artifact": false}}
 
 Input: "I switched from VS Code to Neovim last week"
 (Today's date: 2025-03-15)
 Output: {{"memories": [
-  {{"text": "User switched from VS Code to Neovim around 8 March 2025",
+  {{"text": "User switched from VS Code to Neovim",
     "action": "UPDATE", "target_id": "0",
     "old_memory": "User uses VS Code as primary editor",
     "memory_type": "preference",
     "categories": ["technical"],
-    "importance": "normal", "pinned": false}}
-]}}
+    "importance": "normal", "pinned": false,
+    "event_date": "2025-03-08"}}
+], "store_artifact": false}}
 
 Input: "Caroline: I went to a LGBTQ support group yesterday"
 (Today's date: 2023-05-08)
 Output: {{"memories": [
-  {{"text": "Caroline attended a LGBTQ support group on 7 May 2023",
+  {{"text": "Caroline attended a LGBTQ support group",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["personal"],
-    "importance": "normal", "pinned": false}}
-]}}
+    "importance": "normal", "pinned": false,
+    "event_date": "2023-05-07"}}
+], "store_artifact": false}}
 
 Input: "Caroline: I just got promoted to senior engineer at Google"
+(Today's date: 2025-03-15)
 Output: {{"memories": [
   {{"text": "Caroline was promoted to senior engineer at Google",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "fact", "categories": ["work"],
-    "importance": "normal", "pinned": false}}
-]}}
+    "importance": "normal", "pinned": false,
+    "event_date": "2025-03-15"}}
+], "store_artifact": false}}
 
 Input: "John: I think we should use Kubernetes. Sarah: I disagree, \
 ECS is better for our scale."
@@ -272,12 +299,12 @@ Output: {{"memories": [
   {{"text": "John proposed using Kubernetes",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical"],
-    "importance": "normal", "pinned": false}},
+    "importance": "normal", "pinned": false, "event_date": null}},
   {{"text": "Sarah prefers ECS over Kubernetes for their scale",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical"],
-    "importance": "normal", "pinned": false}}
-]}}
+    "importance": "normal", "pinned": false, "event_date": null}}
+], "store_artifact": false}}
 
 Input: "User: My mom likes sweet drinks, especially Malibu. She loves \
 Stephen King books and has a garden. I have a Kurilian Bobtail cat.\n\
@@ -286,20 +313,20 @@ Output: {{"memories": [
   {{"text": "User's mother likes sweet drinks, especially Malibu",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "fact", "categories": ["personal"],
-    "importance": "normal", "pinned": false}},
+    "importance": "normal", "pinned": false, "event_date": null}},
   {{"text": "User's mother loves Stephen King books",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "fact", "categories": ["personal", "entertainment"],
-    "importance": "normal", "pinned": false}},
+    "importance": "normal", "pinned": false, "event_date": null}},
   {{"text": "User's mother has a garden",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "fact", "categories": ["personal"],
-    "importance": "normal", "pinned": false}},
+    "importance": "normal", "pinned": false, "event_date": null}},
   {{"text": "User has a Kurilian Bobtail cat",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "fact", "categories": ["personal"],
-    "importance": "normal", "pinned": false}}
-]}}
+    "importance": "normal", "pinned": false, "event_date": null}}
+], "store_artifact": false}}
 
 ## Classification Rules
 
@@ -378,7 +405,8 @@ with genuine reference value beyond the extracted facts.
 
 Return a JSON object with a "memories" array and a "store_artifact"
 boolean. Each memory entry must have ALL fields: text, action,
-target_id, old_memory, memory_type, categories, importance, pinned.
+target_id, old_memory, memory_type, categories, importance, pinned,
+event_date.
 
 Return ONLY the JSON object. No explanation, no markdown."""
 
@@ -417,14 +445,22 @@ You are a memory manager for an AI assistant. Your job is to:
   in their original form.
 - If no relevant facts can be extracted, return an empty list.
 - Today's date is {today}.
-- When dates, times, or temporal references are mentioned, preserve
-  them in the extracted fact. Convert relative references (yesterday,
-  last week, last year, recently, etc.) to absolute dates using
-  Today's date.
+- Each fact has an event_date field (YYYY-MM-DD or null). Use it to
+  record WHEN something happened or was mentioned:
+  - Set event_date when the fact has a temporal anchor — an event,
+    observation, or statement tied to a specific date.
+  - Convert relative references (yesterday, last week, last year,
+    recently, etc.) to absolute dates using Today's date.
+  - Set event_date to null when the fact is timeless (e.g., a name,
+    a preference, a permanent trait).
+- Do NOT embed dates in the fact text unless the date IS the core
+  fact. For episodic events, the date goes in event_date only —
+  keep the text clean.
 - Do NOT append storage dates, creation timestamps, or "(stored ...)"
-  annotations to extracted facts. Only include dates when the original
-  content contains temporal information (events, deadlines, etc.).
-  The storage timestamp is tracked separately in metadata.
+  annotations to extracted facts.
+- Do not extract the same fact twice. Each extracted fact must be
+  unique — if two pieces of information overlap, merge them into
+  a single fact.
 
 ### Examples
 
@@ -434,18 +470,20 @@ Output: {{"memories": [
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "preference",
     "categories": ["preferences"],
-    "importance": "normal", "pinned": true}}
-]}}
+    "importance": "normal", "pinned": true, "event_date": null}}
+], "store_artifact": false}}
 
 Input: "assistant: I researched Kubernetes networking and \
 concluded Cilium is the best CNI for our use case."
+(Today's date: 2025-03-15)
 Output: {{"memories": [
   {{"text": "Assistant researched Kubernetes networking, \
 concluded Cilium is the best CNI",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical"],
-    "importance": "high", "pinned": false}}
-]}}
+    "importance": "high", "pinned": false,
+    "event_date": "2025-03-15"}}
+], "store_artifact": false}}
 
 ## Classification Rules
 
@@ -523,7 +561,8 @@ with genuine reference value beyond the extracted facts.
 
 Return a JSON object with a "memories" array and a "store_artifact"
 boolean. Each memory entry must have ALL fields: text, action,
-target_id, old_memory, memory_type, categories, importance, pinned.
+target_id, old_memory, memory_type, categories, importance, pinned,
+event_date.
 
 Return ONLY the JSON object. No explanation, no markdown."""
 
@@ -540,6 +579,7 @@ def build_extraction_prompt(
     explicit_fields: dict[str, Any] | None = None,
     max_memory_length: int = 1000,
     event_date: str | None = None,
+    session_timezone: str | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any], dict[str, str]]:
     """Build the unified extraction+classification+dedup prompt.
 
@@ -561,6 +601,9 @@ def build_extraction_prompt(
             in the extraction prompt instead of the current date. This allows
             the LLM to resolve relative time references (e.g., "yesterday",
             "last week") to the correct absolute dates.
+        session_timezone: IANA timezone from X-Timezone header. When
+            event_date is None, used to compute "Today's date" using the
+            user's local date instead of UTC.
 
     Returns:
         Tuple of (messages, json_schema, id_mapping) for the LLM call.
@@ -574,10 +617,18 @@ def build_extraction_prompt(
     # Use event_date's date portion as "Today's date" when provided,
     # so the LLM resolves relative references (yesterday, last week)
     # against the event's actual date rather than the current date.
+    # When no event_date, use session timezone for accurate local date.
     if event_date:
         try:
             today = datetime.fromisoformat(event_date).strftime("%Y-%m-%d")
         except (ValueError, TypeError):
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    elif session_timezone:
+        try:
+            from zoneinfo import ZoneInfo
+
+            today = datetime.now(ZoneInfo(session_timezone)).strftime("%Y-%m-%d")
+        except (KeyError, Exception):
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     else:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -744,6 +795,12 @@ def parse_extraction_response(
         importance = _validate_importance(entry.get("importance"))
         pinned = bool(entry.get("pinned", False))
 
+        # Extract event_date (YYYY-MM-DD string or None)
+        raw_event_date = entry.get("event_date")
+        event_date: str | None = None
+        if isinstance(raw_event_date, str) and raw_event_date.strip():
+            event_date = raw_event_date.strip()
+
         results.append(
             {
                 "text": text,
@@ -754,6 +811,7 @@ def parse_extraction_response(
                 "categories": categories,
                 "importance": importance,
                 "pinned": pinned,
+                "event_date": event_date,
             }
         )
 
@@ -940,25 +998,58 @@ lifestyle, partner)
 - Past decisions, opinions, or preferences on the topic
 - Practical considerations and context
 - When the question involves time (last week, recently, in 2023, etc.), \
-include date-specific queries
+include date-specific queries AND set a date_range to filter results
 
 Each query should target a different angle or aspect. Keep queries short \
 (2-5 words each). Do not repeat the same angle. Use fewer queries for \
 simple lookups, more for complex multi-faceted questions.
 
-Return ONLY a JSON object: {{"queries": ["query1", "query2", ...]}}"""
+## Date range filtering
+
+When the question has a temporal component, set date_range to narrow \
+results to the relevant time period. Convert relative references to \
+absolute dates using Today's date.
+
+Examples:
+- "What happened last week?" → date_range: {{"start": "2026-02-19", "end": "2026-02-26"}}
+- "What did I do in January?" → date_range: {{"start": "2026-01-01", "end": "2026-01-31"}}
+- "Recent events" → date_range: {{"start": "2026-02-12", "end": "2026-02-26"}} (last 2 weeks)
+
+Set date_range to null when the question has no temporal component \
+(e.g., "What car do I have?", "What are my preferences?").
+
+Return ONLY a JSON object: {{"queries": [...], "date_range": {{"start": "...", "end": "..."}} | null}}"""
 
 QUERY_GENERATION_SCHEMA: dict[str, Any] = {
     "name": "query_generation",
     "strict": True,
     "schema": {
         "type": "object",
-        "required": ["queries"],
+        "required": ["queries", "date_range"],
         "additionalProperties": False,
         "properties": {
             "queries": {
                 "type": "array",
                 "items": {"type": "string"},
+            },
+            "date_range": {
+                "type": ["object", "null"],
+                "description": (
+                    "Date range filter for temporal queries. "
+                    "Set to null for non-temporal questions."
+                ),
+                "properties": {
+                    "start": {
+                        "type": "string",
+                        "description": "Start date (YYYY-MM-DD), inclusive",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "End date (YYYY-MM-DD), inclusive",
+                    },
+                },
+                "required": ["start", "end"],
+                "additionalProperties": False,
             },
         },
     },

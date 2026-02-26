@@ -146,6 +146,16 @@ class VectorStore:
                 )
             except Exception:
                 pass  # Index may already exist
+        # Keyword index for event_date (stored as YYYY-MM-DD string,
+        # supports lexicographic Range filtering for date queries)
+        try:
+            self._client.create_payload_index(
+                collection_name=name,
+                field_name="event_date",
+                field_schema="keyword",
+            )
+        except Exception:
+            pass  # Index may already exist
 
     @property
     def collection_name(self) -> str:
@@ -262,6 +272,8 @@ class VectorStore:
         include_decayed: bool = False,
         similarity_weight: float = 0.9,
         query_vector: list[float] | None = None,
+        date_start: str | None = None,
+        date_end: str | None = None,
     ) -> dict:
         """Semantic search with TTL, category, and importance filtering.
 
@@ -286,6 +298,12 @@ class VectorStore:
             query_vector: Pre-computed embedding vector. If provided, skips
                 the embedding API call. Used by find_memories for batch
                 embedding optimization.
+            date_start: Optional start date (YYYY-MM-DD) for temporal
+                filtering. Matches memories where event_date >= start OR
+                (event_date is missing AND created_at >= start).
+            date_end: Optional end date (YYYY-MM-DD) for temporal filtering.
+                Matches memories where event_date <= end OR (event_date is
+                missing AND created_at <= end).
 
         Returns:
             Dict with "results" key containing list of memory dicts.
@@ -345,6 +363,15 @@ class VectorStore:
                 ]
             )
             must_conditions.append(ttl_filter)
+
+        # Date range filter: match memories by event_date OR created_at.
+        # Uses OR logic: event_date in range, OR (no event_date AND
+        # created_at in range). This ensures memories without event_date
+        # are still found based on when they were stored.
+        if date_start or date_end:
+            date_conditions = self._build_date_range_filter(date_start, date_end)
+            if date_conditions:
+                must_conditions.append(date_conditions)
 
         query_filter = Filter(must=must_conditions)
 
@@ -808,6 +835,78 @@ class VectorStore:
             filtered.append(mem)
 
         return filtered
+
+    # ── Date range filtering ────────────────────────────────────────
+
+    @staticmethod
+    def _build_date_range_filter(
+        date_start: str | None,
+        date_end: str | None,
+    ) -> Filter | None:
+        """Build a Qdrant filter for date range queries.
+
+        Matches memories where:
+        - event_date is in the range, OR
+        - event_date is missing AND created_at is in the range
+
+        This ensures memories without event_date metadata (legacy or
+        timeless facts) are still found based on their creation date.
+
+        Args:
+            date_start: Start date (YYYY-MM-DD), inclusive.
+            date_end: End date (YYYY-MM-DD), inclusive. The end date
+                is extended to end-of-day (23:59:59) for created_at
+                comparison.
+
+        Returns:
+            A Qdrant Filter with OR logic, or None if no dates provided.
+        """
+        from qdrant_client.models import (
+            DatetimeRange,
+            IsEmptyCondition,
+        )
+
+        if not date_start and not date_end:
+            return None
+
+        # Build range for event_date (YYYY-MM-DD string comparison)
+        event_date_range: dict[str, Any] = {}
+        created_at_range: dict[str, Any] = {}
+
+        if date_start:
+            # event_date is stored as YYYY-MM-DD string
+            event_date_range["gte"] = date_start
+            # created_at is stored as ISO 8601 datetime
+            created_at_range["gte"] = datetime.fromisoformat(
+                f"{date_start}T00:00:00+00:00"
+            )
+        if date_end:
+            event_date_range["lte"] = date_end
+            # End of day for created_at
+            created_at_range["lte"] = datetime.fromisoformat(
+                f"{date_end}T23:59:59+00:00"
+            )
+
+        # Branch 1: event_date exists and is in range
+        event_date_conditions: list = []
+        from qdrant_client.models import Range
+
+        event_date_conditions.append(
+            FieldCondition(key="event_date", range=Range(**event_date_range))
+        )
+
+        # Branch 2: event_date is missing AND created_at is in range
+        no_event_date_conditions: list = [
+            IsEmptyCondition(is_empty=PayloadField(key="event_date")),
+            FieldCondition(key="created_at", range=DatetimeRange(**created_at_range)),
+        ]
+
+        return Filter(
+            should=[
+                Filter(must=event_date_conditions),
+                Filter(must=no_event_date_conditions),
+            ]
+        )
 
     # ── Result formatting ────────────────────────────────────────────
 

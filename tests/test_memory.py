@@ -104,19 +104,25 @@ class TestSearchScoreThreshold:
     """Test that search results below the score threshold are filtered out."""
 
     def test_low_score_results_filtered_single_scope(self):
-        """Single-scope search should filter results below threshold."""
+        """Single-scope search should filter results below threshold.
+
+        Note: keyword boost runs BEFORE threshold filtering, so scores
+        are adjusted by keyword overlap before the threshold is applied.
+        With no keyword overlap, scores are reduced by the keyword weight
+        factor (default 0.2): final = 0.8 * original_score.
+        """
         service = _make_service()
         service.vector.search.return_value = {
             "results": [
                 {"id": "high", "score": 0.8, "metadata": {"importance": "normal"}},
                 {"id": "low", "score": 0.1, "metadata": {"importance": "normal"}},
-                {"id": "edge", "score": 0.30, "metadata": {"importance": "normal"}},
+                {"id": "edge", "score": 0.40, "metadata": {"importance": "normal"}},
             ]
         }
         results = service.search_memories(query="test", user_id="filip")
         ids = [r["id"] for r in results]
         assert "high" in ids
-        assert "edge" in ids
+        assert "edge" in ids  # 0.8 * 0.40 = 0.32, above 0.30
         assert "low" not in ids
 
     def test_all_below_threshold_returns_empty(self):
@@ -177,12 +183,17 @@ class TestSearchScoreThreshold:
         assert "shared-low" not in ids
 
     def test_threshold_configurable(self):
-        """Custom threshold should be respected."""
+        """Custom threshold should be respected.
+
+        With keyword weight 0.2 and no keyword overlap:
+        - "above": 0.8 * 0.8 = 0.64, above 0.5 threshold
+        - "below": 0.8 * 0.4 = 0.32, below 0.5 threshold
+        """
         service = _make_service()
         service._config.memory.search_score_threshold = 0.5
         service.vector.search.return_value = {
             "results": [
-                {"id": "above", "score": 0.6, "metadata": {"importance": "normal"}},
+                {"id": "above", "score": 0.8, "metadata": {"importance": "normal"}},
                 {"id": "below", "score": 0.4, "metadata": {"importance": "normal"}},
             ]
         }
