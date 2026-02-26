@@ -148,6 +148,7 @@ document.addEventListener('alpine:init', () => {
         pinned: !!meta.pinned,
         ttl_days: meta.ttl_days ?? '',
         event_date: meta.event_date ? meta.event_date.slice(0, 10) : '',
+        agent_id: meta.agent_id || '',
       };
       this.open = true;
     },
@@ -183,6 +184,12 @@ document.addEventListener('alpine:init', () => {
       const origDate = meta.event_date ? meta.event_date.slice(0, 10) : '';
       if (form.event_date !== origDate) {
         payload.event_date = form.event_date || null;
+      }
+
+      // agent_id: empty string = clear, non-empty = set, unchanged = omit
+      const origAgent = meta.agent_id || '';
+      if (form.agent_id !== origAgent) {
+        payload.agent_id = form.agent_id || '';  // '' signals "clear" to the API
       }
 
       if (Object.keys(payload).length === 0) { this.close(); return; }

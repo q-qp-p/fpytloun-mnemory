@@ -304,6 +304,19 @@ def update_memory(
             kwargs["ttl_days"] = req.ttl_days
         if req.event_date is not None:
             kwargs["event_date"] = req.event_date
+        # agent_id: non-None means caller wants to change it
+        if req.agent_id is not None:
+            if req.agent_id == "":
+                # Clear agent_id
+                kwargs["agent_id"] = None
+            else:
+                # Security: session with agent_id can only set own or clear
+                if ctx.agent_id and req.agent_id != ctx.agent_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Cannot set agent_id to a different agent",
+                    )
+                kwargs["agent_id"] = req.agent_id
         result = service.update_memory(**kwargs)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

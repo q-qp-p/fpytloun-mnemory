@@ -188,6 +188,14 @@ class UpdateMemoryRequest(BaseModel):
             "New event date (ISO 8601, e.g., '2023-05-08'). Pass null to clear."
         ),
     )
+    agent_id: str | None = Field(
+        None,
+        description=(
+            "New agent_id. Non-empty string to set, empty string to clear. "
+            "Null (omitted) means no change. When session has an agent_id, "
+            "only own agent_id or clearing is allowed."
+        ),
+    )
 
 
 class CoreMemoriesResponse(BaseModel):

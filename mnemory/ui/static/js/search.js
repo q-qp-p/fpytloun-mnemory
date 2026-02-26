@@ -178,6 +178,7 @@ function searchTab() {
           if (payload.importance) r.metadata.importance = payload.importance;
           if (payload.pinned !== undefined) r.metadata.pinned = payload.pinned;
           if (payload.ttl_days !== undefined) r.metadata.ttl_days = payload.ttl_days;
+          if (payload.agent_id !== undefined) r.metadata.agent_id = payload.agent_id || null;
         }
       });
     },

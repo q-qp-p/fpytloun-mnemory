@@ -1208,9 +1208,16 @@
                    placeholder="empty = permanent">
           </div>
         </div>
-        <div>
-          <label class="block text-sm text-secondary mb-1">Event Date <span class="text-xs text-muted">(empty = clear)</span></label>
-          <input type="date" x-model="$store.memoryEdit.form.event_date" class="input text-sm">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm text-secondary mb-1">Event Date <span class="text-xs text-muted">(empty = clear)</span></label>
+            <input type="date" x-model="$store.memoryEdit.form.event_date" class="input text-sm">
+          </div>
+          <div>
+            <label class="block text-sm text-secondary mb-1">Agent ID <span class="text-xs text-muted">(empty = clear)</span></label>
+            <input type="text" x-model="$store.memoryEdit.form.agent_id" class="input text-sm"
+                   placeholder="e.g. claude-code">
+          </div>
         </div>
       </div>
       <div class="flex justify-end gap-3 mt-6">

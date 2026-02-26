@@ -2185,6 +2185,7 @@ class MemoryService:
         pinned: bool | None = None,
         ttl_days: int | None = ...,  # type: ignore[assignment]
         event_date: str | None = ...,  # type: ignore[assignment]
+        agent_id: str | None = ...,  # type: ignore[assignment]
     ) -> dict:
         """Update a memory's content and/or metadata.
 
@@ -2198,6 +2199,10 @@ class MemoryService:
         event_date: Set a new event date (ISO 8601). Pass None to clear.
                     Uses sentinel default (...) to distinguish "not provided"
                     from "explicitly set to None".
+        agent_id: Set or clear the agent_id. Pass None to clear. Uses
+                  sentinel default (...) to distinguish "not provided"
+                  from "explicitly set to None". Caller is responsible
+                  for authorization checks.
         """
         metadata_updates: dict[str, Any] = {}
 
@@ -2209,6 +2214,12 @@ class MemoryService:
             metadata_updates["importance"] = validate_importance(importance)
         if pinned is not None:
             metadata_updates["pinned"] = pinned
+
+        # agent_id update: set or clear
+        if agent_id is not ...:
+            if agent_id is not None:
+                agent_id = _validate_id(agent_id, "agent_id")
+            metadata_updates["agent_id"] = agent_id
 
         # event_date update: parse and normalize, or clear if None
         if event_date is not ...:

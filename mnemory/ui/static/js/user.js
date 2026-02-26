@@ -174,6 +174,7 @@ function userTab() {
           if (payload.importance) m.metadata.importance = payload.importance;
           if (payload.pinned !== undefined) m.metadata.pinned = payload.pinned;
           if (payload.ttl_days !== undefined) m.metadata.ttl_days = payload.ttl_days;
+          if (payload.agent_id !== undefined) m.metadata.agent_id = payload.agent_id || null;
         }
       });
     },
