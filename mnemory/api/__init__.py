@@ -112,6 +112,7 @@ def create_api_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
 
+    from mnemory.api.fsck import router as fsck_router
     from mnemory.api.memories import categories_router
     from mnemory.api.memories import router as memories_router
     from mnemory.api.recall import router as recall_router
@@ -122,6 +123,7 @@ def create_api_app() -> FastAPI:
     app.include_router(categories_router, prefix="/categories", tags=["categories"])
     app.include_router(recall_router, tags=["intelligence"])
     app.include_router(remember_router, tags=["intelligence"])
+    app.include_router(fsck_router, prefix="/fsck", tags=["fsck"])
     app.include_router(ui_router, tags=["ui"])
 
     # Override OpenAPI schema generation to sanitize for OpenAI compatibility.

@@ -86,6 +86,26 @@ def _get_service():
     return _service
 
 
+_fsck_service = None
+
+
+def _get_fsck_service():
+    """Get or create the FsckService singleton."""
+    global _fsck_service
+    if _fsck_service is None:
+        from mnemory.fsck import FsckService, FsckStore
+
+        cfg = _get_config()
+        service = _get_service()
+        _fsck_service = FsckService(
+            config=cfg,
+            vector=service.vector,
+            llm=service._llm,
+            store=FsckStore(default_ttl=cfg.memory.fsck_cache_ttl),
+        )
+    return _fsck_service
+
+
 # ── Identity Resolution ───────────────────────────────────────────────
 
 

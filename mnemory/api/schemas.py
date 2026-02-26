@@ -398,6 +398,133 @@ class RememberResponse(BaseModel):
     accepted: bool = True
 
 
+# ── Fsck (Memory Check) ───────────────────────────────────────────────
+
+
+class FsckRequest(BaseModel):
+    """Request to start a memory consistency check."""
+
+    agent_id: str | None = Field(
+        None, description="Optional: scope check to specific agent"
+    )
+    categories: list[str] | None = Field(
+        None, description="Optional: scope check to specific categories"
+    )
+    memory_type: str | None = Field(
+        None, description="Optional: scope check to specific memory type"
+    )
+
+
+class FsckStartResponse(BaseModel):
+    """Response from starting a memory check."""
+
+    check_id: str
+    status: str = "running"
+
+
+class FsckAction(BaseModel):
+    """A single action to fix an issue."""
+
+    action: str = Field(..., description="Action type: update, delete, add")
+    memory_id: str | None = Field(
+        None, description="ID of memory to update/delete, null for add"
+    )
+    new_content: str | None = Field(
+        None, description="New text for update/add, null for delete"
+    )
+    new_metadata: dict | None = Field(
+        None, description="Metadata corrections, null if no metadata changes"
+    )
+
+
+class FsckAffectedMemory(BaseModel):
+    """A memory affected by an issue."""
+
+    id: str
+    content: str
+    metadata: dict | None = None
+
+
+class FsckIssue(BaseModel):
+    """A single issue found during memory check."""
+
+    issue_id: str
+    type: str = Field(
+        ...,
+        description="Issue type: duplicate, quality, split, contradiction, reclassify, security",
+    )
+    severity: str = Field(..., description="Severity: low, medium, high")
+    reasoning: str = Field(
+        ..., description="Explanation of the issue and suggested fix"
+    )
+    affected_memories: list[FsckAffectedMemory]
+    actions: list[FsckAction]
+
+
+class FsckProgress(BaseModel):
+    """Progress of a running memory check."""
+
+    phase: str = Field(
+        ...,
+        description="Current phase: security_scan, duplicate_search, duplicate_eval, quality_check, done",
+    )
+    total_memories: int = 0
+    processed: int = 0
+    percent: int = 0
+    issues_found: int = Field(0, description="Number of issues found so far")
+
+
+class FsckSummary(BaseModel):
+    """Summary of issues found."""
+
+    duplicate: int = 0
+    quality: int = 0
+    split: int = 0
+    contradiction: int = 0
+    reclassify: int = 0
+    security: int = 0
+    total: int = 0
+
+
+class FsckStatusResponse(BaseModel):
+    """Response from polling a memory check status."""
+
+    check_id: str
+    status: str = Field(..., description="Status: running, completed, failed")
+    progress: FsckProgress
+    summary: FsckSummary | None = None
+    issues: list[FsckIssue] | None = None
+    error: str | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+
+
+class FsckApplyRequest(BaseModel):
+    """Request to apply fixes from a completed check."""
+
+    issue_ids: list[str] | None = Field(
+        None, description="IDs of issues to apply. Null or empty = apply all."
+    )
+
+
+class FsckApplyDetail(BaseModel):
+    """Result of applying a single issue."""
+
+    issue_id: str
+    status: str = Field(..., description="Status: applied, skipped, failed")
+    actions_executed: int = 0
+    error: str | None = None
+
+
+class FsckApplyResponse(BaseModel):
+    """Response from applying fixes."""
+
+    applied: int = 0
+    skipped: int = 0
+    failed: int = 0
+    details: list[FsckApplyDetail] = Field(default_factory=list)
+
+
 # ── Common ────────────────────────────────────────────────────────────
 
 

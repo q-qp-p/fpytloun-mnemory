@@ -295,6 +295,8 @@ When `MGMT_PORT` is not set (default):
 | `MEMORY_SESSION_SWEEP_INTERVAL` | `300` | Interval in seconds between session cleanup sweeps (5 minutes) |
 | `RECALL_MAX_RESULTS` | `10` | Max search results returned by recall endpoint |
 | `REMEMBER_RATE_LIMIT` | `10` | Max remember requests per minute per user. 0 = no limit |
+| `FSCK_CACHE_TTL` | `1800` | How long memory check results are cached in seconds (30 min) |
+| `FSCK_LLM_CONCURRENCY` | `4` | Max concurrent LLM calls during memory check. Set to 1 for sequential |
 
 ## Memory Model
 
@@ -469,6 +471,28 @@ Both MCP and REST share the same `MemoryService` backend and authentication midd
 | `/api/memories/{id}/artifacts/{aid}` | GET | Get artifact |
 | `/api/memories/{id}/artifacts/{aid}` | DELETE | Delete artifact |
 | `/api/categories` | GET | List categories |
+
+### Memory Check (fsck)
+
+Built-in memory consistency checker. Runs a three-phase pipeline to detect quality issues and suggest fixes:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/fsck` | POST | Start a memory check (runs in background) |
+| `/api/fsck/{id}` | GET | Poll check status, progress, and results |
+| `/api/fsck/{id}/apply` | POST | Apply selected fixes from a completed check |
+
+**Three-phase pipeline:**
+
+1. **Security scan** (instant) — regex-based detection of prompt injection patterns
+2. **Duplicate detection** — vector similarity clustering + LLM evaluation of each cluster for duplicates and contradictions
+3. **Quality check** — LLM batch evaluation for spelling/grammar errors, meaningless memories, memories that should be split, and metadata misclassification
+
+Phases 2 and 3 run LLM calls in parallel (`FSCK_LLM_CONCURRENCY`, default 4 workers) for ~4x speedup on large memory sets. Results are cached with configurable TTL (`FSCK_CACHE_TTL`, default 30 minutes) so you can review issues in the UI and apply fixes without re-running the check.
+
+**Issue types:** `duplicate`, `quality`, `split`, `contradiction`, `reclassify`, `security`
+
+**Workflow:** Start check -> poll until completed -> review issues in UI -> select and apply fixes. Each fix is a set of actions (update content, update metadata, delete memory, or add new memory).
 
 ### Intelligence Layer
 
@@ -649,6 +673,7 @@ mnemory includes a built-in management UI at `/ui` on the main server port. No e
 - **Search** — Semantic search (`search_memories`) and AI-powered find (`find_memories`) with filters: memory type, role, agent ID, categories multi-select, "has artifacts" toggle, include decayed, result limit. Sort results by score, newest, or oldest. Two-zone card layout with type/importance/category badges on the left, agent/artifacts/assistant/pinned indicators on the right
 - **Browse** — List all memories with server-side sorting (newest/oldest via Qdrant `order_by`). Full filter bar: memory type, role, agent ID, categories multi-select, "has artifacts" toggle, include decayed. Add Memory button with modal form. Inline expand with edit modal (content, type, categories, importance, pinned, TTL), delete with confirmation, and artifact management (upload, view with pagination, delete)
 - **Graph** — D3.js force-directed visualization of memory relationships (shared categories = edges, node size = importance, color = memory type). Type filter checkboxes, node limit slider, click-to-select detail panel
+- **Check** — Memory consistency checker (fsck). Run a three-phase scan (security, duplicates, quality), review issues grouped by type with full reasoning and affected memory cards, select and apply fixes. Parallel LLM evaluation with live progress tracking
 
 ### Access
 

@@ -1,0 +1,233 @@
+"""Memory consistency check (fsck) REST API endpoints.
+
+POST /api/fsck           — Start a memory check (background task)
+GET  /api/fsck/{id}      — Poll check status and results
+POST /api/fsck/{id}/apply — Apply selected fixes from a completed check
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+
+from mnemory.api.deps import SessionContext, get_session_context
+from mnemory.api.schemas import (
+    FsckAction as FsckActionSchema,
+)
+from mnemory.api.schemas import (
+    FsckAffectedMemory as FsckAffectedMemorySchema,
+)
+from mnemory.api.schemas import (
+    FsckApplyDetail,
+    FsckApplyRequest,
+    FsckApplyResponse,
+    FsckRequest,
+    FsckStartResponse,
+    FsckStatusResponse,
+)
+from mnemory.api.schemas import (
+    FsckIssue as FsckIssueSchema,
+)
+from mnemory.api.schemas import (
+    FsckProgress as FsckProgressSchema,
+)
+from mnemory.api.schemas import (
+    FsckSummary as FsckSummarySchema,
+)
+
+logger = logging.getLogger("mnemory")
+
+router = APIRouter()
+
+
+def _get_fsck_service():
+    """Lazy import to avoid circular dependencies."""
+    from mnemory.server import _get_fsck_service
+
+    return _get_fsck_service()
+
+
+def _record(operation: str, ctx: SessionContext) -> None:
+    """Record a metrics operation."""
+    from mnemory.metrics import get_collector
+
+    collector = get_collector()
+    if collector:
+        collector.record_operation(operation, ctx.user_id, ctx.agent_id)
+
+
+def _check_to_response(check) -> FsckStatusResponse:
+    """Convert an FsckCheck dataclass to the API response model."""
+
+    issues = None
+    if check.status == "completed" and check.issues is not None:
+        issues = []
+        for issue in check.issues:
+            affected = [
+                FsckAffectedMemorySchema(
+                    id=am.id,
+                    content=am.content,
+                    metadata=am.metadata,
+                )
+                for am in issue.affected_memories
+            ]
+            actions = [
+                FsckActionSchema(
+                    action=a.action,
+                    memory_id=a.memory_id,
+                    new_content=a.new_content,
+                    new_metadata=a.new_metadata,
+                )
+                for a in issue.actions
+            ]
+            issues.append(
+                FsckIssueSchema(
+                    issue_id=issue.issue_id,
+                    type=issue.type,
+                    severity=issue.severity,
+                    reasoning=issue.reasoning,
+                    affected_memories=affected,
+                    actions=actions,
+                )
+            )
+
+    summary = None
+    if check.summary:
+        summary = FsckSummarySchema(
+            duplicate=check.summary.duplicate,
+            quality=check.summary.quality,
+            split=check.summary.split,
+            contradiction=check.summary.contradiction,
+            reclassify=check.summary.reclassify,
+            security=check.summary.security,
+            total=check.summary.total,
+        )
+
+    progress = FsckProgressSchema(
+        phase=check.progress.phase,
+        total_memories=check.progress.total_memories,
+        processed=check.progress.processed,
+        percent=check.progress.percent,
+        issues_found=check.progress.issues_found,
+    )
+
+    return FsckStatusResponse(
+        check_id=check.check_id,
+        status=check.status,
+        progress=progress,
+        summary=summary,
+        issues=issues,
+        error=check.error,
+        created_at=check.created_at_utc,
+        expires_at=check.expires_at_utc,
+    )
+
+
+@router.post("", response_model=FsckStartResponse)
+def start_fsck(
+    req: FsckRequest,
+    background_tasks: BackgroundTasks,
+    ctx: SessionContext = Depends(get_session_context),
+):
+    """Start a memory consistency check.
+
+    Runs in the background. Returns a check_id to poll for results.
+    """
+    _record("fsck_check", ctx)
+
+    fsck = _get_fsck_service()
+
+    # Use request agent_id or fall back to session agent_id
+    agent_id = req.agent_id or ctx.agent_id
+
+    check = fsck.start_check(
+        user_id=ctx.user_id,
+        agent_id=agent_id,
+    )
+
+    # Run the check in background
+    background_tasks.add_task(
+        fsck.run_check,
+        check.check_id,
+        categories=req.categories,
+        memory_type=req.memory_type,
+    )
+
+    return FsckStartResponse(check_id=check.check_id, status="running")
+
+
+@router.get("/{check_id}", response_model=FsckStatusResponse)
+def get_fsck_status(
+    check_id: str,
+    ctx: SessionContext = Depends(get_session_context),
+):
+    """Get the status and results of a memory check."""
+    fsck = _get_fsck_service()
+    check = fsck.get_check(check_id)
+
+    if check is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Check not found or expired. Please start a new check.",
+        )
+
+    # Verify ownership
+    if check.user_id != ctx.user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return _check_to_response(check)
+
+
+@router.post("/{check_id}/apply", response_model=FsckApplyResponse)
+def apply_fsck(
+    check_id: str,
+    req: FsckApplyRequest,
+    ctx: SessionContext = Depends(get_session_context),
+):
+    """Apply selected fixes from a completed memory check."""
+    _record("fsck_apply", ctx)
+
+    fsck = _get_fsck_service()
+    check = fsck.get_check(check_id)
+
+    if check is None:
+        raise HTTPException(
+            status_code=410,
+            detail="Check not found or expired. Please re-run the check.",
+        )
+
+    # Verify ownership
+    if check.user_id != ctx.user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if check.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Check is not completed (status: {check.status})",
+        )
+
+    result = fsck.apply_check(check_id, issue_ids=req.issue_ids)
+
+    if result.get("error"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("message", "Apply failed"),
+        )
+
+    details = [
+        FsckApplyDetail(
+            issue_id=d["issue_id"],
+            status=d["status"],
+            actions_executed=d.get("actions_executed", 0),
+            error=d.get("error"),
+        )
+        for d in result.get("details", [])
+    ]
+
+    return FsckApplyResponse(
+        applied=result.get("applied", 0),
+        skipped=result.get("skipped", 0),
+        failed=result.get("failed", 0),
+        details=details,
+    )

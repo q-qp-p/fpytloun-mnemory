@@ -184,6 +184,20 @@ const MnemoryAPI = {
   deleteArtifact(memoryId, artifactId) {
     return this.del(`/memories/${memoryId}/artifacts/${artifactId}`);
   },
+
+  // ── Fsck (Memory Check) ───────────────────────────────────────
+
+  startFsck(params = {}) {
+    return this.post('/fsck', params);
+  },
+
+  getFsckStatus(checkId) {
+    return this.get(`/fsck/${checkId}`);
+  },
+
+  applyFsck(checkId, issueIds = null) {
+    return this.post(`/fsck/${checkId}/apply`, { issue_ids: issueIds });
+  },
 };
 
 // ── Color helpers ──────────────────────────────────────────────────

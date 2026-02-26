@@ -728,6 +728,109 @@ class VectorStore:
 
         return len(results) > 0
 
+    # ── Fsck helpers ───────────────────────────────────────────────────
+
+    def scroll_with_vectors(
+        self,
+        *,
+        user_id: str,
+        agent_id: str | None = None,
+        filters: dict | None = None,
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Scroll all memories for a user, including stored embedding vectors.
+
+        Used by the fsck (memory check) feature to retrieve stored vectors
+        for similarity comparison without re-embedding.
+
+        Returns list of memory dicts with an extra "vector" key containing
+        the stored embedding.
+        """
+        from qdrant_client.models import MatchAny
+
+        must_conditions: list = [
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        ]
+        if agent_id:
+            must_conditions.append(
+                FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+        if filters:
+            for key, value in filters.items():
+                if isinstance(value, list):
+                    must_conditions.append(
+                        FieldCondition(key=key, match=MatchAny(any=value))
+                    )
+                else:
+                    must_conditions.append(
+                        FieldCondition(key=key, match=MatchValue(value=value))
+                    )
+
+        points, _ = self._client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=Filter(must=must_conditions),
+            limit=limit,
+            with_payload=True,
+            with_vectors=True,
+        )
+
+        results = []
+        for p in points:
+            mem = self._point_to_memory(p)
+            mem["vector"] = p.vector
+            results.append(mem)
+        return results
+
+    def search_by_vector(
+        self,
+        vector: list[float],
+        *,
+        user_id: str,
+        agent_id: str | None = None,
+        limit: int = 5,
+        exclude_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search for similar memories using a pre-computed vector.
+
+        Returns full memory dicts (not just id/text like search_similar).
+        Used by fsck for duplicate detection with stored vectors.
+
+        Args:
+            vector: Pre-computed embedding vector.
+            user_id: Required user scope.
+            agent_id: Optional agent scope.
+            limit: Maximum results.
+            exclude_ids: Point IDs to exclude from results.
+        """
+        from qdrant_client.models import HasIdCondition
+
+        must_conditions: list = [
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        ]
+        if agent_id:
+            must_conditions.append(
+                FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+
+        must_not: list = []
+        if exclude_ids:
+            must_not.append(HasIdCondition(has_id=exclude_ids))
+
+        result = self._client.query_points(
+            collection_name=self.collection_name,
+            query=vector,
+            query_filter=Filter(must=must_conditions, must_not=must_not or None),
+            limit=limit,
+            with_payload=True,
+        )
+
+        memories = []
+        for point in result.points:
+            mem = self._point_to_memory(point)
+            mem["score"] = point.score
+            memories.append(mem)
+        return memories
+
     # ── Specialized queries ──────────────────────────────────────────
 
     def get_recent_memories(
