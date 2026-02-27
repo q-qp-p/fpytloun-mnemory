@@ -370,36 +370,44 @@ function fsckTab() {
       this.selectedIssues[issueId] = !this.selectedIssues[issueId];
     },
 
-    /** Select/deselect all issues within a specific group type. */
+    /** Visible issue IDs for a specific group type (respects filters). */
+    _visibleGroupIssueIds(type) {
+      const group = this.groupedIssues.find((g) => g.type === type);
+      return group ? group.issues.map((i) => i.issue_id) : [];
+    },
+
+    /** Select/deselect all visible issues within a specific group type. */
     toggleGroupSelection(type, select) {
-      for (const issue of this.issues) {
-        if (issue.type === type) {
-          this.selectedIssues[issue.issue_id] = select;
+      for (const id of this._visibleGroupIssueIds(type)) {
+        if (select) {
+          this.selectedIssues[id] = true;
+        } else {
+          delete this.selectedIssues[id];
         }
       }
     },
 
-    /** Count selected issues within a group type. */
+    /** Count selected issues within a visible group type. */
     groupSelectedCount(type) {
-      return this.issues
-        .filter((i) => i.type === type && this.selectedIssues[i.issue_id])
+      return this._visibleGroupIssueIds(type)
+        .filter((id) => this.selectedIssues[id])
         .length;
     },
 
-    /** True when every issue in the group is selected. */
+    /** True when every visible issue in the group is selected. */
     isGroupFullySelected(type) {
-      const groupIssues = this.issues.filter((i) => i.type === type);
-      return groupIssues.length > 0 && groupIssues.every((i) => this.selectedIssues[i.issue_id]);
+      const ids = this._visibleGroupIssueIds(type);
+      return ids.length > 0 && ids.every((id) => this.selectedIssues[id]);
     },
 
-    /** True when some (but not all) issues in the group are selected. */
+    /** True when some (but not all) visible issues in the group are selected. */
     isGroupPartiallySelected(type) {
-      const groupIssues = this.issues.filter((i) => i.type === type);
-      const selectedCount = groupIssues.filter((i) => this.selectedIssues[i.issue_id]).length;
-      return selectedCount > 0 && selectedCount < groupIssues.length;
+      const ids = this._visibleGroupIssueIds(type);
+      const selectedCount = ids.filter((id) => this.selectedIssues[id]).length;
+      return selectedCount > 0 && selectedCount < ids.length;
     },
 
-    /** Toggle all issues in a group: select all if not fully selected, else deselect all. */
+    /** Toggle all visible issues in a group: select all if not fully selected, else deselect all. */
     toggleGroupAll(type) {
       const select = !this.isGroupFullySelected(type);
       this.toggleGroupSelection(type, select);
