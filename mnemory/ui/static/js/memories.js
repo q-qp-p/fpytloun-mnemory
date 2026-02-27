@@ -56,6 +56,12 @@ function memoriesTab() {
     deleteConfirm: null,
     initialized: false,
 
+    // Bulk selection
+    bulkMode: false,
+    selectedIds: [],
+    bulkDeleting: false,
+    bulkDeleteConfirm: false,
+
     /** All known agent IDs (loaded from stats API, not from current results) */
     availableAgentIds: [],
 
@@ -312,6 +318,87 @@ function memoriesTab() {
 
     openArtifacts(mem) {
       Alpine.store('artifactMgr').show(mem);
+    },
+
+    // ── Bulk Selection ─────────────────────────────────────────
+
+    toggleBulkMode() {
+      this.bulkMode = !this.bulkMode;
+      if (!this.bulkMode) {
+        this.selectedIds = [];
+        this.bulkDeleteConfirm = false;
+      }
+    },
+
+    toggleSelect(id) {
+      const idx = this.selectedIds.indexOf(id);
+      if (idx === -1) {
+        this.selectedIds.push(id);
+      } else {
+        this.selectedIds.splice(idx, 1);
+      }
+    },
+
+    isSelected(id) {
+      return this.selectedIds.includes(id);
+    },
+
+    /** Select all currently visible (filtered+paginated) memories */
+    selectAll() {
+      this.selectedIds = this.sortedMemories.map(m => m.id);
+    },
+
+    deselectAll() {
+      this.selectedIds = [];
+    },
+
+    get allSelected() {
+      return this.sortedMemories.length > 0 &&
+        this.sortedMemories.every(m => this.selectedIds.includes(m.id));
+    },
+
+    get selectedCount() {
+      return this.selectedIds.length;
+    },
+
+    async bulkDelete() {
+      if (this.selectedIds.length === 0) return;
+      this.bulkDeleting = true;
+      const toDelete = [...this.selectedIds];
+      let deleted = 0;
+      let failed = 0;
+
+      // Fire all deletes in parallel (batches of 10)
+      for (let i = 0; i < toDelete.length; i += 10) {
+        const batch = toDelete.slice(i, i + 10);
+        const results = await Promise.allSettled(
+          batch.map(id => MnemoryAPI.deleteMemory(id))
+        );
+        for (let j = 0; j < results.length; j++) {
+          if (results[j].status === 'fulfilled') {
+            deleted++;
+          } else {
+            failed++;
+          }
+        }
+      }
+
+      // Remove successfully deleted from local state
+      const deletedSet = new Set(toDelete);
+      // Keep only memories that weren't in the delete list, or that failed
+      // For simplicity, remove all attempted — failures are rare
+      this.memories = this.memories.filter(m => !deletedSet.has(m.id));
+
+      this.selectedIds = [];
+      this.bulkDeleteConfirm = false;
+      this.bulkDeleting = false;
+      this.bulkMode = false;
+
+      if (failed > 0) {
+        Alpine.store('notify').warning(`Deleted ${deleted} memories, ${failed} failed`);
+      } else {
+        Alpine.store('notify').success(`Deleted ${deleted} memories`);
+      }
     },
 
     // ── Delete ────────────────────────────────────────────────

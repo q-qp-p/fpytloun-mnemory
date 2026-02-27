@@ -528,16 +528,50 @@
           </div>
           <div class="ml-auto flex items-center gap-3">
             <span class="text-sm text-muted">Showing <span class="text-secondary" x-text="sortedMemories.length"></span> of <span class="text-secondary" x-text="totalFiltered"></span><span x-show="hasMoreOnServer">+</span> memories</span>
-            <button @click="openAdd()" class="btn-primary text-sm">+ Add Memory</button>
+            <button @click="toggleBulkMode()" class="btn-secondary text-sm"
+                    :class="bulkMode && 'ring-1 ring-brand-accent/50'"
+                    x-text="bulkMode ? 'Cancel Select' : 'Select'"></button>
+            <button x-show="!bulkMode" @click="openAdd()" class="btn-primary text-sm">+ Add Memory</button>
           </div>
+        </div>
+
+        <!-- Bulk Action Bar -->
+        <div x-show="bulkMode" x-transition class="flex items-center gap-3 mb-4 px-4 py-3 rounded-lg bg-brand-elevated border border-brand-border">
+          <button @click="allSelected ? deselectAll() : selectAll()" class="btn-secondary text-sm"
+                  x-text="allSelected ? 'Deselect All' : 'Select All'"></button>
+          <span class="text-sm text-secondary"><span class="text-[#E6EDF3] font-medium" x-text="selectedCount"></span> selected</span>
+          <span class="flex-1"></span>
+          <template x-if="!bulkDeleteConfirm">
+            <button @click="bulkDeleteConfirm = true" class="btn-danger text-sm" :disabled="selectedCount === 0">
+              Delete Selected
+            </button>
+          </template>
+          <template x-if="bulkDeleteConfirm">
+            <div class="flex items-center gap-2">
+              <span class="text-sm text-red-400">Delete <span x-text="selectedCount"></span> memories?</span>
+              <button @click="bulkDelete()" class="btn-danger text-sm" :disabled="bulkDeleting">
+                <span x-show="!bulkDeleting">Confirm</span>
+                <span x-show="bulkDeleting">Deleting...</span>
+              </button>
+              <button @click="bulkDeleteConfirm = false" class="btn-ghost text-sm">Cancel</button>
+            </div>
+          </template>
         </div>
 
         <!-- Memory List -->
         <div class="space-y-3">
           <template x-for="mem in sortedMemories" :key="mem.id">
-            <div class="memory-card" :class="expandedId === mem.id && 'memory-card-expanded'"
-                 @click="toggleExpand(mem.id)">
+            <div class="memory-card" :class="{
+                   'memory-card-expanded': expandedId === mem.id,
+                   'ring-1 ring-brand-accent/40': bulkMode && isSelected(mem.id),
+                 }"
+                 @click="bulkMode ? toggleSelect(mem.id) : toggleExpand(mem.id)">
               <div class="flex items-start gap-3">
+                <div x-show="bulkMode" class="pt-0.5 shrink-0" @click.stop>
+                  <input type="checkbox" :checked="isSelected(mem.id)"
+                         @change="toggleSelect(mem.id)"
+                         class="rounded border-brand-border bg-brand-elevated text-brand-accent focus:ring-brand-accent/30">
+                </div>
                 <div class="flex-1 min-w-0">
                   <p class="text-[#E6EDF3] text-sm" x-text="expandedId === mem.id ? mem.memory : truncate(mem.memory, 200)"></p>
                   <!-- Badge row: left = type + importance + categories, right = agent + status -->
