@@ -674,6 +674,21 @@ mnemory includes a built-in management UI at `/ui` on the main server port. No e
   <br><em>Graph — D3.js force-directed visualization of memory relationships</em>
 </p>
 
+<p align="center">
+  <img src="files/screenshots/ui-check-progress.jpg" alt="Check — three-phase memory consistency scan with live progress" width="800" />
+  <br><em>Check — three-phase memory consistency scan with live progress tracking</em>
+</p>
+
+<p align="center">
+  <img src="files/screenshots/ui-check-results.jpg" alt="Check — issue summary cards with severity and confidence filters" width="800" />
+  <br><em>Check — issue summary with severity/confidence filters, grouped by type</em>
+</p>
+
+<p align="center">
+  <img src="files/screenshots/ui-check-detail.jpg" alt="Check — issue detail with affected memories and proposed actions" width="800" />
+  <br><em>Check — issue detail with affected memories, metadata, and proposed fix actions</em>
+</p>
+
 ### Features
 
 - **Dashboard** — Memory totals, breakdowns by type/category/role (Chart.js donut charts), operation counts, per-user filtering, server version display, auto-refresh with manual refresh button
