@@ -68,6 +68,14 @@ class AddMemoriesBatchRequest(BaseModel):
     memories: list[BatchMemoryItem] = Field(..., description="List of memories to add")
 
 
+class DeleteMemoriesBatchRequest(BaseModel):
+    """Request to batch-delete multiple memories."""
+
+    memory_ids: list[str] = Field(
+        ..., min_length=1, max_length=20, description="List of memory IDs to delete"
+    )
+
+
 class MemoryActionResult(BaseModel):
     """Result of a single memory action (ADD, UPDATE, DELETE)."""
 

@@ -16,6 +16,7 @@ from mnemory.api.schemas import (
     AddMemoryRequest,
     AddMemoryResponse,
     CoreMemoriesResponse,
+    DeleteMemoriesBatchRequest,
     FindMemoriesRequest,
     ListMemoriesResponse,
     RecentMemoriesResponse,
@@ -116,6 +117,39 @@ def add_memories_batch(
                 {"results": [], "error": True, "message": "Failed to add memory"}
             )
     return results
+
+
+@router.post("/batch/delete")
+def delete_memories_batch(
+    req: DeleteMemoriesBatchRequest,
+    ctx: SessionContext = Depends(get_session_context),
+):
+    """Batch-delete multiple memories."""
+    _record("delete_memories", ctx)
+    service = _get_service()
+    results = []
+    errors = []
+
+    for mid in req.memory_ids:
+        try:
+            service.verify_memory_access(mid, session_agent_id=ctx.agent_id)
+            result = service.delete_memory(memory_id=mid, user_id=ctx.user_id)
+            results.append(result)
+        except ValueError as e:
+            errors.append({"memory_id": mid, "error": True, "message": str(e)})
+        except Exception:
+            logger.exception("Failed to delete memory %s in batch", mid)
+            errors.append(
+                {"memory_id": mid, "error": True, "message": "Failed to delete memory"}
+            )
+
+    return {
+        "results": results,
+        "errors": errors,
+        "total": len(req.memory_ids),
+        "succeeded": len(results),
+        "failed": len(errors),
+    }
 
 
 @router.post("/search", response_model=SearchMemoriesResponse)

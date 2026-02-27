@@ -1093,6 +1093,84 @@ def delete_memory(memory_id: str, user_id: str | None = None) -> str:
         )
 
 
+# ── Tool 6b: delete_memories (batch) ────────────────────────────────
+
+
+@mcp.tool()
+def delete_memories(
+    memory_ids: list[str],
+    user_id: str | None = None,
+) -> str:
+    """Delete multiple memories in a single call (batch operation).
+
+    Use this instead of calling delete_memory repeatedly when you need to
+    remove several memories at once. Each deletion is processed independently
+    — failures on individual items do not block the rest.
+
+    You can only delete your own agent-scoped memories and shared memories.
+    Deleting another agent's memory will be blocked.
+
+    Args:
+        memory_ids: List of memory IDs to delete.
+        user_id: User identifier (shared for all items). Optional if
+                 pre-configured via API key mapping.
+    """
+    try:
+        uid = _resolve_user_id(user_id)
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
+
+    session_aid = _get_session_agent_id()
+    collector = get_collector()
+    if collector:
+        collector.record_operation("delete_memories", uid, session_aid)
+
+    if not memory_ids:
+        return json.dumps({"error": True, "message": "memory_ids list is empty"})
+
+    if len(memory_ids) > MAX_BATCH_SIZE:
+        return json.dumps(
+            {
+                "error": True,
+                "message": (
+                    f"Too many memory IDs: {len(memory_ids)} (max {MAX_BATCH_SIZE})"
+                ),
+            }
+        )
+
+    service = _get_service()
+    results = []
+    errors = []
+
+    for i, mid in enumerate(memory_ids):
+        try:
+            service.verify_memory_access(mid, session_agent_id=session_aid)
+            result = service.delete_memory(mid, user_id=uid)
+            results.append({"index": i, **result})
+        except ValueError as e:
+            errors.append({"index": i, "error": True, "message": str(e)})
+        except Exception:
+            logger.exception("Error in delete_memories item %d", i)
+            errors.append(
+                {
+                    "index": i,
+                    "error": True,
+                    "message": f"Internal error processing item {i}",
+                }
+            )
+
+    return json.dumps(
+        {
+            "results": results,
+            "errors": errors,
+            "total": len(memory_ids),
+            "succeeded": len(results),
+            "failed": len(errors),
+        },
+        default=str,
+    )
+
+
 # ── Tool 7: delete_all_memories ──────────────────────────────────────
 
 
