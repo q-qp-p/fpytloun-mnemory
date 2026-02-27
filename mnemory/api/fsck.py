@@ -140,8 +140,25 @@ def start_fsck(
 
     fsck = _get_fsck_service()
 
-    # Use request agent_id or fall back to session agent_id
-    agent_id = req.agent_id or ctx.agent_id
+    # Validate and resolve agent_id — enforce session agent boundary.
+    # If the request specifies an agent_id, it must be the session agent
+    # itself or a valid sub-agent (colon-prefixed). This mirrors the
+    # protection in server.py::_resolve_agent_id().
+    if req.agent_id is not None:
+        if ctx.agent_id is not None:
+            is_same = req.agent_id == ctx.agent_id
+            is_sub = req.agent_id.startswith(ctx.agent_id + ":")
+            if not is_same and not is_sub:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Cannot run fsck for agent '{req.agent_id}' — "
+                        f"session is bound to agent '{ctx.agent_id}'"
+                    ),
+                )
+        agent_id = req.agent_id
+    else:
+        agent_id = ctx.agent_id
 
     check = fsck.start_check(
         user_id=ctx.user_id,

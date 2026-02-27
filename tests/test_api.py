@@ -198,14 +198,14 @@ class TestFormatMessages:
         assert "User: Hello" in text
         assert "Tool:" not in text
 
-    def test_format_system_message(self):
-        """System messages should be formatted with 'System' label."""
+    def test_format_system_message_skipped(self):
+        """System messages should be skipped (contain recalled memories)."""
         messages = [
             MessageParam(role="system", content="You are helpful"),
             MessageParam(role="user", content="Hi"),
         ]
         text = _format_messages(messages)
-        assert "System: You are helpful" in text
+        assert "System:" not in text
         assert "User: Hi" in text
 
 

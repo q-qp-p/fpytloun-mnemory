@@ -75,16 +75,19 @@ def _check_rate_limit(user_id: str) -> bool:
 
 
 # Valid message roles for the remember endpoint.
-# Only these roles are accepted; others are silently skipped.
-_VALID_MESSAGE_ROLES = {"user", "assistant", "system", "tool"}
+# Only user and assistant are accepted — system and tool messages contain
+# raw injected content (recalled memories, tool outputs) that should never
+# be re-stored as new memories.
+_VALID_MESSAGE_ROLES = {"user", "assistant"}
 
 
 def _format_messages(messages: list[MessageParam]) -> str:
     """Format OpenAI-style messages into text for extraction.
 
-    Only messages with valid roles (user, assistant, system, tool) are
-    included. Messages with unknown roles are silently skipped to prevent
-    role spoofing in the extraction pipeline.
+    Only user and assistant messages are included. System and tool messages
+    are silently skipped — system messages may contain already-recalled
+    memories (causing duplicates) and tool messages contain raw data rather
+    than conversational content.
 
     Example output:
         User: I just moved to Berlin

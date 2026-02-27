@@ -256,6 +256,65 @@ function fsckTab() {
       await this.applySelected();
     },
 
+    // ── Per-Memory Actions (delete / edit) ────────────────────
+
+    /**
+     * Delete an affected memory directly (bypassing the LLM-suggested fix).
+     * After deletion, removes the memory from the issue. If the issue has
+     * no remaining affected memories, removes the entire issue.
+     */
+    async deleteAffectedMemory(memId, issueId) {
+      if (!confirm('Delete this memory permanently?')) return;
+
+      try {
+        await MnemoryAPI.deleteMemory(memId);
+        Alpine.store('notify').success('Memory deleted');
+
+        // Remove the memory from the issue's affected_memories
+        const issue = this.issues.find((i) => i.issue_id === issueId);
+        if (issue) {
+          issue.affected_memories = issue.affected_memories.filter((m) => m.id !== memId);
+          // If no affected memories remain, remove the entire issue
+          if (issue.affected_memories.length === 0) {
+            this.issues = this.issues.filter((i) => i.issue_id !== issueId);
+            delete this.selectedIssues[issueId];
+            this._recalcSummary();
+          }
+        }
+      } catch (err) {
+        Alpine.store('notify').error(`Delete failed: ${err.message}`);
+      }
+    },
+
+    /**
+     * Open the global edit modal for an affected memory.
+     * After saving, updates the memory content/metadata in-place within the
+     * issue's affected_memories list.
+     */
+    openEditMemory(mem, issue) {
+      // Build a memory-like object that the global memoryEdit store expects.
+      // The store needs { id, memory, metadata }.
+      const memoryObj = {
+        id: mem.id,
+        memory: mem.content,
+        metadata: mem.metadata || {},
+      };
+
+      Alpine.store('memoryEdit').show(memoryObj, (updatedFields) => {
+        // After save, update the affected memory in-place
+        if (updatedFields.content !== undefined) {
+          mem.content = updatedFields.content;
+        }
+        // Update metadata fields that were changed
+        if (!mem.metadata) mem.metadata = {};
+        for (const key of ['memory_type', 'categories', 'importance', 'pinned', 'event_date', 'agent_id']) {
+          if (updatedFields[key] !== undefined) {
+            mem.metadata[key] = updatedFields[key];
+          }
+        }
+      });
+    },
+
     reset() {
       this.stopPolling();
       this.checkId = null;
@@ -277,14 +336,27 @@ function fsckTab() {
 
     // ── Selection ─────────────────────────────────────────────
 
+    /** IDs of issues currently visible after applying the severity filter. */
+    get _visibleIssueIds() {
+      const ids = new Set();
+      for (const group of this.groupedIssues) {
+        for (const issue of group.issues) ids.add(issue.issue_id);
+      }
+      return ids;
+    },
+
+    /** Select all currently visible (filtered) issues. */
     selectAll() {
-      for (const issue of this.issues) {
-        this.selectedIssues[issue.issue_id] = true;
+      for (const id of this._visibleIssueIds) {
+        this.selectedIssues[id] = true;
       }
     },
 
+    /** Deselect all currently visible (filtered) issues. */
     deselectAll() {
-      this.selectedIssues = {};
+      for (const id of this._visibleIssueIds) {
+        delete this.selectedIssues[id];
+      }
     },
 
     get selectedCount() {
@@ -309,6 +381,25 @@ function fsckTab() {
       return this.issues
         .filter((i) => i.type === type && this.selectedIssues[i.issue_id])
         .length;
+    },
+
+    /** True when every issue in the group is selected. */
+    isGroupFullySelected(type) {
+      const groupIssues = this.issues.filter((i) => i.type === type);
+      return groupIssues.length > 0 && groupIssues.every((i) => this.selectedIssues[i.issue_id]);
+    },
+
+    /** True when some (but not all) issues in the group are selected. */
+    isGroupPartiallySelected(type) {
+      const groupIssues = this.issues.filter((i) => i.type === type);
+      const selectedCount = groupIssues.filter((i) => this.selectedIssues[i.issue_id]).length;
+      return selectedCount > 0 && selectedCount < groupIssues.length;
+    },
+
+    /** Toggle all issues in a group: select all if not fully selected, else deselect all. */
+    toggleGroupAll(type) {
+      const select = !this.isGroupFullySelected(type);
+      this.toggleGroupSelection(type, select);
     },
 
     // ── Computed ──────────────────────────────────────────────
@@ -346,7 +437,8 @@ function fsckTab() {
     /**
      * Issues grouped by type, ordered by FSCK_GROUP_ORDER.
      * Each group: { type, label, icon, borderCls, headerCls, issues: [...] }
-     * Issues within each group are sorted by severity (high > medium > low).
+     * Issues within each group are sorted by severity (high > medium > low),
+     * then by confidence (higher = more actionable) as a tiebreaker.
      * Only groups with at least one issue are included.
      */
     get groupedIssues() {
@@ -365,10 +457,15 @@ function fsckTab() {
         const issues = byType[type];
         if (!issues || issues.length === 0) continue;
 
-        // Sort by severity within group
-        issues.sort((a, b) =>
-          (FSCK_SEVERITY_WEIGHT[a.severity] ?? 1) - (FSCK_SEVERITY_WEIGHT[b.severity] ?? 1)
-        );
+        // Sort by severity first, then confidence (higher = more actionable)
+        issues.sort((a, b) => {
+          const sevA = FSCK_SEVERITY_WEIGHT[a.severity] ?? 1;
+          const sevB = FSCK_SEVERITY_WEIGHT[b.severity] ?? 1;
+          if (sevA !== sevB) return sevA - sevB;
+          const confA = a.confidence ?? 0;
+          const confB = b.confidence ?? 0;
+          return confB - confA;
+        });
 
         const meta = FSCK_GROUP_META[type] || {};
         groups.push({

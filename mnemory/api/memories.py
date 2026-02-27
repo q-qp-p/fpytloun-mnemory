@@ -310,12 +310,17 @@ def update_memory(
                 # Clear agent_id
                 kwargs["agent_id"] = None
             else:
-                # Security: session with agent_id can only set own or clear
-                if ctx.agent_id and req.agent_id != ctx.agent_id:
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Cannot set agent_id to a different agent",
-                    )
+                # Security: session with agent_id can only set own agent or
+                # a valid sub-agent (colon-prefixed). Mirrors the protection
+                # in server.py::_resolve_agent_id().
+                if ctx.agent_id:
+                    is_same = req.agent_id == ctx.agent_id
+                    is_sub = req.agent_id.startswith(ctx.agent_id + ":")
+                    if not is_same and not is_sub:
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Cannot set agent_id to a different agent",
+                        )
                 kwargs["agent_id"] = req.agent_id
         result = service.update_memory(**kwargs)
     except ValueError as e:

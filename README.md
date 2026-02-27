@@ -710,7 +710,7 @@ By default, `/metrics` and `/health` are served on the main port with standard A
 
 | Metric | Labels | Description |
 |---|---|---|
-| `mnemory_operations_total` | `operation`, `user_id`, `agent_id` | Total MCP/REST operations. Operations: `add_memory`, `add_memories`, `search_memories`, `find_memories`, `update_memory`, `delete_memory`, `delete_all`, `get_core_memories`, `get_recent_memories`, `list_memories`, `save_artifact`, `get_artifact`, `list_artifacts`, `delete_artifact`, `list_categories`, `recall`, `remember`, `initialize_memory` |
+| `mnemory_operations_total` | `operation`, `user_id`, `agent_id` | Total MCP/REST operations. Operations: `add_memory`, `add_memories`, `search_memories`, `find_memories`, `update_memory`, `delete_memory`, `delete_all`, `get_core_memories`, `get_recent_memories`, `list_memories`, `save_artifact`, `get_artifact`, `list_artifacts`, `delete_artifact`, `list_categories`, `recall`, `remember`, `initialize_memory`, `fsck_check`, `fsck_apply` |
 
 #### Gauges (from Qdrant, cached)
 

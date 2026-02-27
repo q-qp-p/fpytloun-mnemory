@@ -1305,19 +1305,26 @@
           <div class="space-y-6">
             <template x-for="group in groupedIssues" :key="group.type">
               <div>
-                <!-- Group Header (collapsible) -->
-                <button @click="toggleGroup(group.type)"
-                        class="w-full flex items-center gap-3 mb-3 group cursor-pointer">
-                  <span class="text-lg" :class="group.headerCls" x-text="group.icon"></span>
-                  <span class="text-sm font-semibold uppercase tracking-wider" :class="group.headerCls"
-                        x-text="group.label + ' (' + group.issues.length + ')'"></span>
-                  <span class="flex-1 border-t border-brand-border/50"></span>
-                  <span class="text-xs text-muted"
-                        x-text="groupSelectedCount(group.type) + '/' + group.issues.length + ' selected'"></span>
-                  <span class="text-xs text-secondary transition-transform"
-                        :class="isGroupCollapsed(group.type) ? '' : 'rotate-180'"
-                        x-text="'\u25BC'"></span>
-                </button>
+                <!-- Group Header (collapsible + group select checkbox) -->
+                <div class="w-full flex items-center gap-3 mb-3">
+                  <input type="checkbox"
+                         class="accent-brand-accent shrink-0 cursor-pointer w-3.5 h-3.5"
+                         :checked="isGroupFullySelected(group.type)"
+                         x-effect="$el.indeterminate = isGroupPartiallySelected(group.type)"
+                         @click.stop="toggleGroupAll(group.type)">
+                  <button @click="toggleGroup(group.type)"
+                          class="flex-1 flex items-center gap-3 cursor-pointer">
+                    <span class="text-lg" :class="group.headerCls" x-text="group.icon"></span>
+                    <span class="text-sm font-semibold uppercase tracking-wider" :class="group.headerCls"
+                          x-text="group.label + ' (' + group.issues.length + ')'"></span>
+                    <span class="flex-1 border-t border-brand-border/50"></span>
+                    <span class="text-xs text-muted"
+                          x-text="groupSelectedCount(group.type) + '/' + group.issues.length + ' selected'"></span>
+                    <span class="text-xs text-secondary transition-transform"
+                          :class="isGroupCollapsed(group.type) ? '' : 'rotate-180'"
+                          x-text="'\u25BC'"></span>
+                  </button>
+                </div>
 
                 <!-- Group Issues -->
                 <div x-show="!isGroupCollapsed(group.type)" x-transition class="space-y-4">
@@ -1393,7 +1400,20 @@
                                         pinned
                                       </span>
                                     </template>
-                                  </div>
+                                   </div>
+                                </div>
+                                <!-- Per-memory action buttons (edit / delete) -->
+                                <div class="flex items-center gap-1 shrink-0" @click.stop>
+                                  <button @click="openEditMemory(mem, issue)"
+                                          class="p-1.5 rounded-md text-muted hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
+                                          title="Edit memory">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125"/></svg>
+                                  </button>
+                                  <button @click="deleteAffectedMemory(mem.id, issue.issue_id)"
+                                          class="p-1.5 rounded-md text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                          title="Delete memory">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
+                                  </button>
                                 </div>
                               </div>
                               <!-- Expandable metadata detail grid -->

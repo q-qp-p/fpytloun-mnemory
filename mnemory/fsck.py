@@ -12,16 +12,21 @@ issues in the UI and then apply selected fixes without re-running the check.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any
 
+from qdrant_client.models import PointStruct
+
+from mnemory.categories import PREDEFINED_CATEGORIES, validate_categories
 from mnemory.config import Config
+from mnemory.embeddings import EmbeddingClient
 from mnemory.llm import LLMClient, parse_json_response
 from mnemory.prompts import (
     build_fsck_duplicate_prompt,
@@ -31,6 +36,9 @@ from mnemory.prompts import (
 from mnemory.sanitize import detect_injection_patterns
 from mnemory.storage.vector import VectorStore
 from mnemory.ttl import is_expired
+
+if TYPE_CHECKING:
+    from mnemory.memory import MemoryService
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +147,6 @@ class FsckCheck:
     def expires_at_utc(self) -> str:
         """Compute expiration time as ISO 8601 UTC string."""
         created = datetime.fromisoformat(self.created_at_utc)
-        from datetime import timedelta
-
         expires = created + timedelta(seconds=self.ttl_seconds)
         return expires.isoformat()
 
@@ -250,11 +256,13 @@ class FsckService:
         vector: VectorStore,
         llm: LLMClient,
         store: FsckStore,
+        memory_service: MemoryService | None = None,
     ):
         self._config = config
         self._vector = vector
         self._llm = llm
         self._store = store
+        self._memory_service = memory_service
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -262,13 +270,12 @@ class FsckService:
         self,
         user_id: str,
         agent_id: str | None = None,
-        categories: list[str] | None = None,
-        memory_type: str | None = None,
     ) -> FsckCheck:
         """Create a new check and return it (status=running).
 
         The caller is responsible for running run_check() in a background
-        task after this returns.
+        task after this returns, passing any filter parameters (categories,
+        memory_type) directly to run_check().
         """
         check = self._store.create(user_id, agent_id)
         return check
@@ -379,12 +386,20 @@ class FsckService:
             check.progress.issues_found = len(check.issues)
 
             # Phase 2: Quality check (LLM batches) — 55-100%
+            # Exclude memories already flagged in duplicate clusters to avoid
+            # double-reporting the same memories in both duplicate and quality issues.
+            quality_memories = [m for m in memories if m["id"] not in clustered_ids]
             logger.info(
-                "Fsck check %s phase 2: quality check on %d memories",
+                "Fsck check %s phase 2: quality check on %d memories (%d skipped, in duplicate clusters)",
                 check_id,
-                total,
+                len(quality_memories),
+                len(memories) - len(quality_memories),
             )
-            quality_issues = self._phase_quality_check(memories, check)
+            # Load available categories for this user so the LLM only proposes valid ones
+            available_categories = self._get_available_categories(check.user_id)
+            quality_issues = self._phase_quality_check(
+                quality_memories, check, available_categories=available_categories
+            )
             check.issues.extend(quality_issues)
             check.progress.issues_found = len(check.issues)
             check.progress.percent = 100
@@ -857,10 +872,26 @@ class FsckService:
 
     # ── Phase 2: Quality check ───────────────────────────────────────
 
+    def _get_available_categories(self, user_id: str) -> list[str]:
+        """Return valid category names for this user.
+
+        Combines predefined categories with any dynamic project:* categories
+        found in the user's memories. Falls back to predefined list on error.
+        """
+        try:
+            if self._memory_service is not None:
+                cats = self._memory_service.list_categories(user_id=user_id)
+                return [c["name"] for c in cats if c.get("name")]
+        except Exception:
+            logger.warning("Failed to load categories for fsck, using predefined list")
+        return list(PREDEFINED_CATEGORIES.keys())
+
     def _phase_quality_check(
         self,
         memories: list[dict],
         check: FsckCheck,
+        *,
+        available_categories: list[str] | None = None,
     ) -> list[FsckIssue]:
         """Batch memories and send to LLM for quality evaluation.
 
@@ -885,7 +916,9 @@ class FsckService:
         processed_mems = 0
 
         def _eval_batch(batch: list[dict]) -> list[FsckIssue]:
-            return self._evaluate_quality_batch(batch)
+            return self._evaluate_quality_batch(
+                batch, available_categories=available_categories
+            )
 
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = {
@@ -931,9 +964,13 @@ class FsckService:
     def _evaluate_quality_batch(
         self,
         batch: list[dict],
+        *,
+        available_categories: list[str] | None = None,
     ) -> list[FsckIssue]:
         """Send a batch of memories to LLM for quality evaluation."""
-        messages, schema = build_fsck_quality_prompt(batch)
+        messages, schema = build_fsck_quality_prompt(
+            batch, available_categories=available_categories
+        )
 
         response = self._llm.generate(
             messages,
@@ -1019,15 +1056,44 @@ class FsckService:
 
         for action in issue.actions:
             if action.action == "delete" and action.memory_id:
+                # Verify ownership before deleting
+                existing = self._vector.get_by_id(action.memory_id)
+                if existing is None:
+                    logger.warning(
+                        "Fsck apply: memory %s not found, skipping delete",
+                        action.memory_id,
+                    )
+                    continue
+                if existing.get("user_id") != user_id:
+                    logger.warning(
+                        "Fsck apply: memory %s belongs to a different user, skipping delete",
+                        action.memory_id,
+                    )
+                    continue
                 self._vector.delete(action.memory_id)
                 executed += 1
 
             elif action.action == "update" and action.memory_id:
+                # Verify ownership before updating
+                existing = self._vector.get_by_id(action.memory_id)
+                if existing is None:
+                    logger.warning(
+                        "Fsck apply: memory %s not found, skipping update",
+                        action.memory_id,
+                    )
+                    continue
+                if existing.get("user_id") != user_id:
+                    logger.warning(
+                        "Fsck apply: memory %s belongs to a different user, skipping update",
+                        action.memory_id,
+                    )
+                    continue
                 if action.new_content:
                     self._vector.update_content(action.memory_id, action.new_content)
                     executed += 1
                 if action.new_metadata:
-                    # Filter to allowed metadata fields
+                    # Filter to allowed metadata fields, dropping None values
+                    # (None means "unchanged" in LLM output — don't overwrite).
                     allowed = {
                         "memory_type",
                         "categories",
@@ -1035,60 +1101,91 @@ class FsckService:
                         "pinned",
                     }
                     clean_meta = {
-                        k: v for k, v in action.new_metadata.items() if k in allowed
+                        k: v
+                        for k, v in action.new_metadata.items()
+                        if k in allowed and v is not None
                     }
                     if clean_meta:
-                        self._vector.update_metadata(action.memory_id, clean_meta)
-                        executed += 1
+                        # Validate categories before writing — strip any LLM-hallucinated
+                        # categories that don't exist in the predefined set, keeping
+                        # valid ones rather than dropping the whole field.
+                        if (
+                            "categories" in clean_meta
+                            and clean_meta["categories"] is not None
+                        ):
+                            valid_cats = []
+                            for cat in clean_meta["categories"]:
+                                try:
+                                    valid_cats.extend(validate_categories([cat]))
+                                except ValueError as cat_err:
+                                    logger.warning(
+                                        "Fsck apply: stripping invalid category '%s' "
+                                        "from reclassify action for memory %s: %s",
+                                        cat,
+                                        action.memory_id,
+                                        cat_err,
+                                    )
+                            if valid_cats:
+                                clean_meta["categories"] = valid_cats
+                            else:
+                                del clean_meta["categories"]
+                        if clean_meta:
+                            self._vector.update_metadata(action.memory_id, clean_meta)
+                            executed += 1
 
             elif action.action == "add" and action.new_content:
-                # For split actions: add new memory with infer=False
-                # We need to go through the memory service for proper
-                # embedding and metadata handling
-                from mnemory.embeddings import EmbeddingClient
+                # For split actions: add new memory via MemoryService for proper
+                # deduplication, TTL assignment, and metadata handling.
+                if self._memory_service is not None:
+                    meta = action.new_metadata or {}
+                    self._memory_service.add_memory(
+                        content=action.new_content,
+                        user_id=user_id,
+                        memory_type=meta.get("memory_type"),
+                        categories=meta.get("categories"),
+                        importance=meta.get("importance"),
+                        pinned=meta.get("pinned"),
+                        infer=False,
+                    )
+                else:
+                    # Fallback: direct vector store insert when MemoryService
+                    # is not available (e.g., in tests).
+                    embed = EmbeddingClient(self._config.embed)
+                    vector = embed.embed(action.new_content)
 
-                embed = EmbeddingClient(self._config.embed)
-                vector = embed.embed(action.new_content)
+                    now = datetime.now(timezone.utc)
+                    payload: dict[str, Any] = {
+                        "data": action.new_content,
+                        "hash": hashlib.sha256(action.new_content.encode()).hexdigest(),
+                        "user_id": user_id,
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                    }
+                    if action.new_metadata:
+                        for k, v in action.new_metadata.items():
+                            if k in (
+                                "memory_type",
+                                "categories",
+                                "importance",
+                                "pinned",
+                            ):
+                                payload[k] = v
 
-                # Build payload
-                import hashlib
+                    payload.setdefault("memory_type", "fact")
+                    payload.setdefault("importance", "normal")
+                    payload.setdefault("pinned", False)
 
-                now = datetime.now(timezone.utc)
-                payload: dict[str, Any] = {
-                    "data": action.new_content,
-                    "hash": hashlib.sha256(action.new_content.encode()).hexdigest(),
-                    "user_id": user_id,
-                    "created_at": now.isoformat(),
-                    "updated_at": now.isoformat(),
-                }
-                if action.new_metadata:
-                    for k, v in action.new_metadata.items():
-                        if k in (
-                            "memory_type",
-                            "categories",
-                            "importance",
-                            "pinned",
-                        ):
-                            payload[k] = v
-
-                # Set defaults if not provided
-                payload.setdefault("memory_type", "fact")
-                payload.setdefault("importance", "normal")
-                payload.setdefault("pinned", False)
-
-                from qdrant_client.models import PointStruct
-
-                point_id = str(uuid.uuid4())
-                self._vector._client.upsert(
-                    collection_name=self._vector.collection_name,
-                    points=[
-                        PointStruct(
-                            id=point_id,
-                            vector=vector,
-                            payload=payload,
-                        )
-                    ],
-                )
+                    point_id = str(uuid.uuid4())
+                    self._vector._client.upsert(
+                        collection_name=self._vector.collection_name,
+                        points=[
+                            PointStruct(
+                                id=point_id,
+                                vector=vector,
+                                payload=payload,
+                            )
+                        ],
+                    )
                 executed += 1
 
         return executed

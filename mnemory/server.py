@@ -102,6 +102,7 @@ def _get_fsck_service():
             vector=service.vector,
             llm=service._llm,
             store=FsckStore(default_ttl=cfg.memory.fsck_cache_ttl),
+            memory_service=service,
         )
     return _fsck_service
 

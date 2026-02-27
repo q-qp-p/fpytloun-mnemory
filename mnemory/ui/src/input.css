@@ -1,6 +1,14 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* Load JS config for theme extensions (colors, shadows, etc.) */
+@config "../tailwind.config.js";
+
+/* Source: scan our static HTML/JS for class usage */
+@source "../../ui/static/**/*.{html,js}";
+
+/* Safelist: dynamic classes constructed in JS that Tailwind can't detect by scanning.
+   These are used in fsck.js for issue group borders, summary cards, badges, etc. */
+@source inline("border-red-500/40 border-red-500/30 border-amber-500/30 border-blue-500/30 border-purple-500/30 border-teal-500/30 border-green-500/30 text-red-400 text-red-300 text-amber-300 text-blue-300 text-purple-300 text-teal-300 text-green-400 text-amber-400 text-blue-400 text-purple-400 text-teal-400 text-slate-400 text-slate-300 bg-red-500/10 bg-amber-500/10 bg-blue-500/10 bg-purple-500/10 bg-teal-500/10 bg-green-500/10 bg-red-500/20 bg-red-600/20 bg-amber-500/20 bg-blue-500/20 bg-purple-500/20 bg-teal-500/20 bg-slate-500/20 border-l-red-500/60 border-l-blue-500/60 border-l-green-500/60");
 
 /* ── Brand color tokens (accessible from JS via getComputedStyle) ── */
 :root {
@@ -139,7 +147,7 @@
   .badge-score { @apply bg-brand-accent/15 text-brand-accent font-mono; }
 
   .stat-card {
-    @apply card flex flex-col items-center justify-center text-center min-h-[100px];
+    @apply bg-brand-surface border border-brand-border rounded-xl p-5 flex flex-col items-center justify-center text-center min-h-[100px];
   }
 
   .stat-value {
@@ -171,7 +179,7 @@
 
   /* Memory card */
   .memory-card {
-    @apply card hover:border-brand-accent/30 transition-all duration-200 cursor-pointer;
+    @apply bg-brand-surface border border-brand-border rounded-xl p-5 hover:border-brand-accent/30 transition-all duration-200 cursor-pointer;
   }
 
   .memory-card-expanded {
