@@ -220,12 +220,15 @@ You are a memory manager for an AI assistant. Your job is to:
   instruction; "set up OIDC authentication for mfg-portal" is a
   goal worth remembering.
 - Each extracted fact must be self-contained and understandable
-  without the original conversation. Include the project,
-  application, or system name when identifiable. For example,
-  "User wants to implement OIDC authentication for mfg-portal" —
-  not just "User wants to implement OIDC authentication". If
-  additional context is provided (e.g., working directory), use it
-  to identify the project or application name.
+  without the original conversation. A reader seeing this fact
+  in isolation must know: WHAT it's about, WHO it concerns, and
+  WHERE it applies (which project/system/feature). Never extract
+  vague facts like "User set a limit of 500" — specify what
+  limit and where: "User set the recall max_results limit to 500
+  in mnemory". Include the project, application, or system name
+  when identifiable. If additional context is provided (e.g.,
+  working directory), use it to identify the project or
+  application name.
 - Preserve all important information — do not over-compress
   at the cost of losing detail.
 - Preserve specific details exactly: proper nouns, names, titles
