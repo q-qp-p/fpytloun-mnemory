@@ -1,5 +1,48 @@
 # Changelog
 
+## [1.4.0] — 2026-02-27
+
+### Periodic Maintenance (Auto-fsck)
+
+- **Background maintenance service**: New `MaintenanceService` (`mnemory/maintenance.py`) runs automatic memory consistency checks on a configurable schedule. Sleep-first loop (waits the full interval before the first run), per-user error isolation, and `asyncio.to_thread()` for sync LLM work ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+- **Auto-apply with thresholds**: Fixes that meet configurable confidence (`FSCK_AUTO_MIN_CONFIDENCE`, default 0.95) and severity (`FSCK_AUTO_MIN_SEVERITY`, default `medium`) thresholds are applied automatically. Issues below either threshold are skipped ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+- **New config vars**: `FSCK_AUTO_INTERVAL` (hours, default 0 = disabled), `FSCK_AUTO_MIN_CONFIDENCE` (0.0–1.0), `FSCK_AUTO_MIN_SEVERITY` (low/medium/high) ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+- **User enumeration**: New `VectorStore.list_user_ids()` scrolls all Qdrant points to enumerate distinct users for the maintenance loop ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+
+### Metrics
+
+- **Auto-fsck Prometheus metrics**: Four new counters (`mnemory_autofsck_runs_total`, `mnemory_autofsck_issues_found_total`, `mnemory_autofsck_fixes_applied_total`, `mnemory_autofsck_fixes_failed_total`) and a gauge (`mnemory_autofsck_last_run_timestamp`), all labeled by `user_id` ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+- **Stats API extension**: `GET /api/stats` now includes an `autofsck` section with enabled flag, config, per-user run history, and aggregated totals ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+
+### Management UI
+
+- **Auto-fsck status banner**: Check tab shows a teal status banner when auto-fsck is enabled, displaying interval, confidence, severity, last run age, and fixes applied ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+- **Last Auto-Check stat card**: Dashboard shows a 7th stat card with the age of the last auto-fsck run (conditional on auto-fsck being enabled) ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+
+### Grafana Dashboard
+
+- **Auto-fsck row**: New "Auto-fsck" row with four panels — Last Auto-Check age (color thresholds: green <1h, yellow <24h, red >24h), Issues Found, Fixes Applied, and an Activity timeseries showing fixes applied and issues found per hour ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+
+### Fsck Improvements
+
+- **Apply idempotency**: `apply_check` tracks applied issue IDs and skips re-applying on repeated calls ([`d7a9b8a`](https://github.com/fpytloun/mnemory/commit/d7a9b8a))
+- **Background cleanup task**: `FsckStore` now has `start_cleanup_task()` / `stop_cleanup_task()` for periodic sweep of expired checks, wired into server lifespan ([`d7a9b8a`](https://github.com/fpytloun/mnemory/commit/d7a9b8a))
+- **Apply validations**: Category and memory type values in update actions are validated and stripped if invalid, preventing bad metadata from being written ([`d7a9b8a`](https://github.com/fpytloun/mnemory/commit/d7a9b8a))
+- **Ownership checks**: Apply actions verify memory ownership before mutating, skipping memories belonging to other users ([`d7a9b8a`](https://github.com/fpytloun/mnemory/commit/d7a9b8a))
+- **Scroll pagination**: `scroll_with_vectors` now paginates correctly for large collections ([`d7a9b8a`](https://github.com/fpytloun/mnemory/commit/d7a9b8a))
+- **FSCK_LLM_MODEL / FSCK_REASONING_EFFORT**: Override the LLM model and reasoning effort specifically for fsck checks, independent of the main `LLM_MODEL` ([`df4be81`](https://github.com/fpytloun/mnemory/commit/df4be81))
+- **LLM security re-evaluation**: Regex-flagged memories are re-evaluated by the LLM before being reported as security issues, reducing false positives ([`75febcf`](https://github.com/fpytloun/mnemory/commit/75febcf))
+- **Confidence field**: All fsck issues now carry a `confidence` score (0.0–1.0) from the LLM, surfaced in the UI and used for auto-apply threshold filtering ([`75febcf`](https://github.com/fpytloun/mnemory/commit/75febcf))
+
+### Core Memories
+
+- **Top-N non-pinned memories**: `get_core_memories` now includes the top-N most important non-pinned memories per section, configurable via `CORE_TOP_MEMORIES` (default 10) and `CORE_MIN_IMPORTANCE` (default `normal`) ([`40c085e`](https://github.com/fpytloun/mnemory/commit/40c085e))
+
+### Documentation
+
+- **Check UI screenshots**: Three new screenshots for the Check tab (progress, results, detail) added to README ([`4b87ca9`](https://github.com/fpytloun/mnemory/commit/4b87ca9))
+- **Periodic Maintenance section**: README documents the auto-fsck feature with configuration example and how-it-works description ([`d7f5139`](https://github.com/fpytloun/mnemory/commit/d7f5139))
+
 ## [1.3.0] — 2026-02-25
 
 ### Management UI
