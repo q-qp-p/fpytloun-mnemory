@@ -371,12 +371,14 @@ For each extracted fact, classify:
   - preference = likes, dislikes, style choices, tool preferences
   - fact = stable biographical or personal information (names, roles,
     locations, relationships, long-term traits). NOT for transient
-    technical observations or current project state.
+    technical observations, current code state, or project-specific
+    implementation details — those are context.
   - episodic = events, interactions, decisions made, conclusions reached
   - procedural = workflows, habits, how the user does things
   - context = session/short-term notes, current project state,
-    technical observations, implementation details, anything that
-    may change soon or is only relevant to the current task
+    technical observations, implementation details, bug reports,
+    analysis findings, anything that may change soon or is only
+    relevant to the current task
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
@@ -443,6 +445,13 @@ Set `store_artifact` to **false** when:
 
 When in doubt, prefer **false** — artifacts should be reserved for content
 with genuine reference value beyond the extracted facts.
+
+**Important**: When you set `store_artifact` to true, extract only a brief
+high-level summary as the memory — do NOT also extract individual details,
+findings, or recommendations as separate memories. The artifact preserves
+the full content; the memory serves as a searchable summary pointing to it.
+Make the summary descriptive enough to be found via search — include key
+topics, names, and terms from the content.
 
 ## Output Format
 
@@ -535,11 +544,11 @@ For each extracted fact, classify:
 - **memory_type**: {memory_types}
   - preference = assistant's likes, dislikes, style choices
   - fact = stable assistant identity (name, personality, capabilities,
-    long-term traits). NOT for transient observations.
+    long-term traits). NOT for transient observations or current state.
   - episodic = research conclusions, interaction outcomes, decisions
   - procedural = assistant's workflows, approaches
-  - context = session/short-term notes, current state, anything
-    that may change soon
+  - context = session/short-term notes, current state, analysis
+    findings, anything that may change soon
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
@@ -605,6 +614,13 @@ Set `store_artifact` to **false** when:
 
 When in doubt, prefer **false** — artifacts should be reserved for content
 with genuine reference value beyond the extracted facts.
+
+**Important**: When you set `store_artifact` to true, extract only a brief
+high-level summary as the memory — do NOT also extract individual details,
+findings, or recommendations as separate memories. The artifact preserves
+the full content; the memory serves as a searchable summary pointing to it.
+Make the summary descriptive enough to be found via search — include key
+topics, names, and terms from the content.
 
 ## Output Format
 
@@ -932,11 +948,13 @@ def build_classification_prompt(
             f'"memory_type": one of [{types}]. '
             "preference=likes/dislikes/style/tool preferences, "
             "fact=stable biographical/personal info (names, roles, locations, "
-            "long-term traits — NOT transient technical observations), "
+            "long-term traits — NOT transient technical observations, "
+            "current code state, or implementation details), "
             "episodic=events/interactions/decisions/conclusions, "
             "procedural=workflows/habits/how-to, "
             "context=session/short-term notes, current project state, "
-            "technical observations, implementation details"
+            "technical observations, implementation details, bug reports, "
+            "analysis findings"
         )
         schema_props["memory_type"] = {
             "type": "string",
@@ -1469,6 +1487,10 @@ Memories that are related but distinct should NOT be flagged.
 - Keep the merged/updated text concise (max {max_length} chars).
 - Preserve important metadata (categories, importance, pinned status) \
 from the best source memory.
+- When resolving duplicates or contradictions, prefer keeping the memory \
+marked with has_artifacts (it has detailed content attached). If you must \
+merge, UPDATE the artifact-bearing memory and DELETE the others — never \
+delete the one with artifacts.
 
 {anti_injection}
 
@@ -1593,6 +1615,8 @@ def build_fsck_duplicate_prompt(
             tags.append(f"event_date: {metadata['event_date']}")
         if metadata.get("created_at_utc"):
             tags.append(f"created: {metadata['created_at_utc'][:10]}")
+        if metadata.get("artifacts"):
+            tags.append("has_artifacts")
         tag_str = f" [{' | '.join(tags)}]" if tags else ""
         mem_lines.append(f"- id={mid}: {text}{tag_str}")
     mem_text = "\n".join(mem_lines)
@@ -1616,8 +1640,9 @@ that belong to the same user. Your job is to identify quality issues and \
 suggest fixes.
 
 Each memory may include metadata tags: type, categories, importance, pinned, \
-role, event_date (when the event occurred), and created (when the memory was \
-stored). Use these to make better reclassification decisions.
+role, event_date (when the event occurred), created (when the memory was \
+stored), and has_artifacts (memory has detailed content attached). \
+Use these to make better decisions.
 
 ## What to check
 
@@ -1691,12 +1716,19 @@ If no predefined category fits, use [] rather than making one up.
 - For quality issues: suggest UPDATE with corrected text, or DELETE if \
 unsalvageable.
 - For split: suggest ADD actions for each new fact + DELETE the original. \
-Each new fact must have suggested memory_type and categories.
+Each new fact must have suggested memory_type and categories. \
+Do NOT split memories marked with has_artifacts — these serve as \
+searchable summaries for their attached artifact content. Splitting \
+would destroy the artifact association.
 - For reclassify: suggest UPDATE with null new_content but with \
 new_metadata containing the corrected fields.
 - For security: suggest DELETE.
 - If a memory has no issues, do NOT include it in the output.
 - Be conservative: only flag clear issues. When in doubt, skip it.
+- Memories with has_artifacts are summaries pointing to detailed \
+attached content. Do NOT suggest DELETE unless the content is \
+genuinely harmful (security issue). Reclassify or quality-fix \
+is fine.
 
 {anti_injection}
 
@@ -1898,6 +1930,8 @@ def build_fsck_quality_prompt(
             tags.append(f"event_date: {metadata['event_date']}")
         if metadata.get("created_at_utc"):
             tags.append(f"created: {metadata['created_at_utc'][:10]}")
+        if metadata.get("artifacts"):
+            tags.append("has_artifacts")
         tag_str = f" [{' | '.join(tags)}]" if tags else ""
         mem_lines.append(f"- id={mid}: {text}{tag_str}")
     mem_text = "\n".join(mem_lines)

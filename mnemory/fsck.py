@@ -1141,6 +1141,23 @@ class FsckService:
         executed = 0
         skipped = 0
 
+        # Guard: skip split actions on memories with artifacts.
+        # Splitting would delete the original (destroying artifacts) and
+        # create new memories without them. The prompt should prevent this,
+        # but this is a hard safety net.
+        if issue.type == "split":
+            for action in issue.actions:
+                if action.action == "delete" and action.memory_id:
+                    mem = self._vector.get_by_id(action.memory_id)
+                    if mem and (mem.get("metadata") or {}).get("artifacts"):
+                        logger.warning(
+                            "Fsck apply: skipping split of memory %s — "
+                            "has %d artifact(s) that would be destroyed",
+                            action.memory_id,
+                            len(mem["metadata"]["artifacts"]),
+                        )
+                        return 0, len(issue.actions)
+
         for action in issue.actions:
             if action.action == "delete" and action.memory_id:
                 # Verify ownership before deleting
@@ -1159,6 +1176,15 @@ class FsckService:
                     )
                     skipped += 1
                     continue
+                # Warn when deleting a memory with artifacts — the prompt
+                # should prevent this in most cases, but log for visibility.
+                existing_meta = existing.get("metadata") or {}
+                if existing_meta.get("artifacts"):
+                    logger.warning(
+                        "Fsck apply: deleting memory %s which has %d artifact(s)",
+                        action.memory_id,
+                        len(existing_meta["artifacts"]),
+                    )
                 # Route through MemoryService to clean up artifacts and
                 # invalidate caches. Fall back to direct delete in tests.
                 if self._memory_service is not None:
