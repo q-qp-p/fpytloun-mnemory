@@ -340,7 +340,7 @@ For each extracted fact, classify:
   - context = session/short-term notes
 
 - **categories**: Pick from the available list below. Use [] if none fit.
-  Use project:<name> for project-specific content.
+  "project" is valid for general project content; use "project:<name>" when a specific project name is known.
 
 - **importance**: {importance_levels}
   - low = minor details, temporary notes
@@ -497,7 +497,7 @@ For each extracted fact, classify:
   - context = session/short-term notes
 
 - **categories**: Pick from the available list below. Use [] if none fit.
-  Use project:<name> for project-specific content.
+  "project" is valid for general project content; use "project:<name>" when a specific project name is known.
 
 - **importance**: {importance_levels}
   - low = minor details
@@ -881,7 +881,8 @@ def build_classification_prompt(
         cats = ", ".join(available_categories)
         field_instructions.append(
             f'"categories": list of applicable categories from [{cats}]. '
-            "Use project:<name> for project-specific content. "
+            '"project" is valid for general project content; '
+            'use "project:<name>" when a specific project name is known. '
             "Empty list [] if no category fits."
         )
         schema_props["categories"] = {
@@ -1600,7 +1601,11 @@ new memories. Do NOT invent categories not on this list.
 
 {categories_list}
 
-Use "project:<name>" for project-specific memories (e.g., "project:myapp"). \
+"project" is a valid category for general project-related content. Use \
+"project:<name>" only when a specific project name is known (e.g., \
+"project:myapp"). Do NOT change "project" to "project:<name>" unless the \
+memory clearly and unambiguously belongs to a specific named project — \
+never guess or infer a project name. \
 If no predefined category fits, use [] rather than making one up.
 
 ## Rules
