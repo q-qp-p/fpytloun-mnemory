@@ -297,10 +297,13 @@ When `MGMT_PORT` is not set (default):
 | `MEMORY_SESSION_SWEEP_INTERVAL` | `300` | Interval in seconds between session cleanup sweeps (5 minutes) |
 | `RECALL_MAX_RESULTS` | `10` | Max search results returned by recall endpoint |
 | `REMEMBER_RATE_LIMIT` | `10` | Max remember requests per minute per user. 0 = no limit |
-| `FSCK_CACHE_TTL` | `86400` | How long memory check results are cached in seconds (24 hours) |
-| `FSCK_LLM_CONCURRENCY` | `4` | Max concurrent LLM calls during memory check. Set to 1 for sequential |
-| `FSCK_LLM_MODEL` | | Override LLM model for memory check (empty = use main `LLM_MODEL`) |
-| `FSCK_REASONING_EFFORT` | `medium` | Reasoning effort for memory check LLM calls (empty = use main `LLM_REASONING_EFFORT`). Defaults to `medium` for better accuracy |
+ | `FSCK_CACHE_TTL` | `86400` | How long memory check results are cached in seconds (24 hours) |
+ | `FSCK_LLM_CONCURRENCY` | `4` | Max concurrent LLM calls during memory check. Set to 1 for sequential |
+ | `FSCK_LLM_MODEL` | | Override LLM model for memory check (empty = use main `LLM_MODEL`) |
+ | `FSCK_REASONING_EFFORT` | `medium` | Reasoning effort for memory check LLM calls (empty = use main `LLM_REASONING_EFFORT`). Defaults to `medium` for better accuracy |
+ | `FSCK_AUTO_INTERVAL` | `0` | Interval in hours between automatic background memory checks. `0` = disabled |
+ | `FSCK_AUTO_MIN_CONFIDENCE` | `0.95` | Minimum confidence score (0.0–1.0) for a fix to be auto-applied |
+ | `FSCK_AUTO_MIN_SEVERITY` | `medium` | Minimum severity for a fix to be auto-applied. Options: `low`, `medium`, `high` |
 
 ## Memory Model
 
@@ -543,6 +546,29 @@ The recall/remember endpoints use server-side sessions (`MemorySession`) to trac
 - Sessions are created on first recall and expire after idle timeout (default 1 hour)
 - Losing a session is harmless — next recall creates a new one
 - Periodic background sweep cleans up expired sessions
+
+### Periodic Maintenance
+
+mnemory includes a built-in background maintenance service that automatically runs memory consistency checks and applies fixes on a configurable schedule.
+
+Enable it by setting `FSCK_AUTO_INTERVAL` to a non-zero number of hours:
+
+```bash
+FSCK_AUTO_INTERVAL=24          # Run every 24 hours
+FSCK_AUTO_MIN_CONFIDENCE=0.95  # Only apply fixes with ≥95% confidence
+FSCK_AUTO_MIN_SEVERITY=medium  # Only apply medium or high severity fixes
+```
+
+**How it works:**
+
+1. The maintenance loop sleeps for the configured interval, then wakes up
+2. All users in the collection are enumerated via a Qdrant scroll
+3. For each user, a full fsck check is run (security scan → duplicate detection → quality check)
+4. Issues that meet both the confidence and severity thresholds are automatically applied
+5. Results are recorded in Prometheus metrics (`mnemory_autofsck_*` counters + last-run timestamp)
+6. Per-user errors are isolated — one failing user does not stop the run
+
+The loop is **sleep-first**: it waits the full interval before the first run, so startup is not impacted. Auto-applied fixes are visible in the management UI (Check tab status banner) and in the Grafana dashboard (Auto-fsck row).
 
 ## How It Works
 

@@ -11,6 +11,22 @@
 
 /* eslint-disable no-unused-vars */
 
+// ── Utilities ──────────────────────────────────────────────────────
+
+/**
+ * Format a duration in seconds as a human-readable age string.
+ * e.g. 45 → "45s ago", 130 → "2m ago", 7400 → "2h ago", 90000 → "1d ago"
+ *
+ * @param {number} seconds - Age in seconds (non-negative)
+ * @returns {string}
+ */
+function formatAge(seconds) {
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
 // ── Constants ──────────────────────────────────────────────────────
 
 /** Issue type display order (most critical first). */
@@ -74,6 +90,11 @@ function fsckTab() {
     availableCategories: [],
     availableAgentIds: [],
 
+    // Auto-fsck status (read from Alpine.store('metrics'))
+    lastAutoRun: null,        // Unix timestamp of last auto-fsck run (null = none)
+    lastAutoRunAge: null,     // Human-readable age string
+    lastAutoRunApplied: 0,    // Fixes applied in last run
+
     // ── Lifecycle ──────────────────────────────────────────────
 
     init() {
@@ -88,6 +109,8 @@ function fsckTab() {
           if (!this.checkId) {
             this._restoreLastCheck();
           }
+          // Refresh auto-fsck status banner
+          this._loadAutoFsckStatus();
         }
       });
 
@@ -119,6 +142,42 @@ function fsckTab() {
         const agents = data.agents || [];
         this.availableAgentIds = agents.map((a) => a.agent_id).filter(Boolean);
       } catch { /* ignore */ }
+    },
+
+    /**
+     * Populate auto-fsck status from the shared metrics store.
+     * Reads Alpine.store('metrics') which is set by metricsTab after loading.
+     */
+    _loadAutoFsckStatus() {
+      const metrics = Alpine.store('metrics');
+      if (!metrics?.autofsck?.enabled) {
+        this.lastAutoRun = null;
+        this.lastAutoRunAge = null;
+        this.lastAutoRunApplied = 0;
+        return;
+      }
+
+      // Find the most recent last_run across all users
+      const byUser = metrics.autofsck.by_user || {};
+      let latestTs = null;
+      let latestApplied = 0;
+      for (const uid of Object.keys(byUser)) {
+        const u = byUser[uid];
+        if (u.last_run && (latestTs === null || u.last_run > latestTs)) {
+          latestTs = u.last_run;
+          latestApplied = u.fixes_applied || 0;
+        }
+      }
+
+      this.lastAutoRun = latestTs;
+      this.lastAutoRunApplied = latestApplied;
+
+      if (latestTs) {
+        const ageSeconds = Math.floor(Date.now() / 1000) - latestTs;
+        this.lastAutoRunAge = formatAge(ageSeconds);
+      } else {
+        this.lastAutoRunAge = null;
+      }
     },
 
     // ── Actions ───────────────────────────────────────────────

@@ -1032,6 +1032,38 @@ class VectorStore:
             ]
         )
 
+    def list_user_ids(self) -> list[str]:
+        """Return a sorted list of all distinct user_ids in the collection.
+
+        Scrolls all points (payload only, no vectors) and collects unique
+        user_id values. Handles pagination automatically.
+
+        Returns:
+            Sorted list of user_id strings.
+        """
+        user_ids: set[str] = set()
+        offset = None
+        batch_size = 256
+
+        while True:
+            points, next_offset = self._client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=None,
+                limit=batch_size,
+                offset=offset,
+                with_payload=["user_id"],
+                with_vectors=False,
+            )
+            for point in points:
+                uid = (point.payload or {}).get("user_id")
+                if uid:
+                    user_ids.add(uid)
+            if next_offset is None:
+                break
+            offset = next_offset
+
+        return sorted(user_ids)
+
     # ── Result formatting ────────────────────────────────────────────
 
     @staticmethod

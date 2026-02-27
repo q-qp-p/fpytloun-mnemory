@@ -1597,9 +1597,20 @@ async def lifespan(app):
     if _fsck_service is not None:
         _fsck_service._store.start_cleanup_task()
 
+    # Start periodic maintenance (auto-fsck) if enabled
+    from mnemory.maintenance import MaintenanceService
+
+    maintenance = MaintenanceService(
+        config=cfg,
+        fsck=_get_fsck_service(),
+        collector=get_collector(),
+    )
+    await maintenance.start()
+
     async with mcp.session_manager.run():
         yield
 
+    await maintenance.stop()
     await _session_store.stop_cleanup_task()
     if _fsck_service is not None:
         await _fsck_service._store.stop_cleanup_task()

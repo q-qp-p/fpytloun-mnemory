@@ -171,6 +171,40 @@ class MetricsCollector:
             registry=self._registry,
         )
 
+        # ── Auto-fsck counters (in-memory) ────────────────────────
+        self._autofsck_runs = Counter(
+            "mnemory_autofsck_runs_total",
+            "Total number of automatic fsck runs",
+            ["user_id"],
+            registry=self._registry,
+        )
+        self._autofsck_issues_found = Counter(
+            "mnemory_autofsck_issues_found_total",
+            "Total issues found by automatic fsck runs",
+            ["user_id"],
+            registry=self._registry,
+        )
+        self._autofsck_fixes_applied = Counter(
+            "mnemory_autofsck_fixes_applied_total",
+            "Total fixes applied by automatic fsck runs",
+            ["user_id"],
+            registry=self._registry,
+        )
+        self._autofsck_fixes_failed = Counter(
+            "mnemory_autofsck_fixes_failed_total",
+            "Total fixes that failed during automatic fsck runs",
+            ["user_id"],
+            registry=self._registry,
+        )
+
+        # ── Auto-fsck last-run timestamp gauge ────────────────────
+        self._autofsck_last_run = Gauge(
+            "mnemory_autofsck_last_run_timestamp",
+            "Unix timestamp of the last automatic fsck run per user",
+            ["user_id"],
+            registry=self._registry,
+        )
+
     # ── Public API ────────────────────────────────────────────────
 
     def record_operation(
@@ -191,6 +225,28 @@ class MetricsCollector:
             user_id=user_id,
             agent_id=agent_id or "",
         ).inc()
+
+    def record_autofsck_run(
+        self,
+        *,
+        user_id: str,
+        issues_found: int,
+        fixes_applied: int,
+        fixes_failed: int,
+    ) -> None:
+        """Record the result of one automatic fsck run for a user.
+
+        Args:
+            user_id: User the check was run for.
+            issues_found: Number of qualifying issues found.
+            fixes_applied: Number of fixes successfully applied.
+            fixes_failed: Number of fixes that failed.
+        """
+        self._autofsck_runs.labels(user_id=user_id).inc()
+        self._autofsck_issues_found.labels(user_id=user_id).inc(issues_found)
+        self._autofsck_fixes_applied.labels(user_id=user_id).inc(fixes_applied)
+        self._autofsck_fixes_failed.labels(user_id=user_id).inc(fixes_failed)
+        self._autofsck_last_run.labels(user_id=user_id).set(time.time())
 
     def collect_gauges(self) -> None:
         """Refresh gauge values from Qdrant (with caching).
@@ -357,6 +413,68 @@ class MetricsCollector:
         except Exception:
             pass
 
+        # Build autofsck section
+        autofsck_cfg = self._config.memory
+        autofsck_enabled = autofsck_cfg.fsck_auto_interval > 0
+        autofsck_by_user: dict[str, dict] = {}
+
+        try:
+            for labels, metric in self._autofsck_runs._metrics.items():
+                (uid,) = labels
+                if uid not in autofsck_by_user:
+                    autofsck_by_user[uid] = {
+                        "runs": 0,
+                        "issues_found": 0,
+                        "fixes_applied": 0,
+                        "fixes_failed": 0,
+                        "last_run": None,
+                    }
+                autofsck_by_user[uid]["runs"] = int(metric._value.get())
+        except Exception:
+            logger.debug("Failed to read _autofsck_runs counter", exc_info=True)
+
+        try:
+            for labels, metric in self._autofsck_issues_found._metrics.items():
+                (uid,) = labels
+                if uid in autofsck_by_user:
+                    autofsck_by_user[uid]["issues_found"] = int(metric._value.get())
+        except Exception:
+            logger.debug("Failed to read _autofsck_issues_found counter", exc_info=True)
+
+        try:
+            for labels, metric in self._autofsck_fixes_applied._metrics.items():
+                (uid,) = labels
+                if uid in autofsck_by_user:
+                    autofsck_by_user[uid]["fixes_applied"] = int(metric._value.get())
+        except Exception:
+            logger.debug(
+                "Failed to read _autofsck_fixes_applied counter", exc_info=True
+            )
+
+        try:
+            for labels, metric in self._autofsck_fixes_failed._metrics.items():
+                (uid,) = labels
+                if uid in autofsck_by_user:
+                    autofsck_by_user[uid]["fixes_failed"] = int(metric._value.get())
+        except Exception:
+            logger.debug("Failed to read _autofsck_fixes_failed counter", exc_info=True)
+
+        try:
+            for labels, metric in self._autofsck_last_run._metrics.items():
+                (uid,) = labels
+                if uid in autofsck_by_user:
+                    ts = metric._value.get()
+                    autofsck_by_user[uid]["last_run"] = ts if ts > 0 else None
+        except Exception:
+            logger.debug("Failed to read _autofsck_last_run gauge", exc_info=True)
+
+        autofsck_totals = {
+            "runs": sum(u["runs"] for u in autofsck_by_user.values()),
+            "issues_found": sum(u["issues_found"] for u in autofsck_by_user.values()),
+            "fixes_applied": sum(u["fixes_applied"] for u in autofsck_by_user.values()),
+            "fixes_failed": sum(u["fixes_failed"] for u in autofsck_by_user.values()),
+        }
+
         return {
             "version": __version__,
             "vector_backend": vector_backend,
@@ -390,6 +508,14 @@ class MetricsCollector:
                 for uid, udata in sorted(by_user.items())
             },
             "operations": operations,
+            "autofsck": {
+                "enabled": autofsck_enabled,
+                "interval_hours": autofsck_cfg.fsck_auto_interval,
+                "min_confidence": autofsck_cfg.fsck_auto_min_confidence,
+                "min_severity": autofsck_cfg.fsck_auto_min_severity,
+                "by_user": autofsck_by_user,
+                "totals": autofsck_totals,
+            },
         }
 
     # ── Internal ──────────────────────────────────────────────────

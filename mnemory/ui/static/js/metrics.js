@@ -78,6 +78,9 @@ function metricsTab() {
       this.loading = true;
       try {
         this.data = await MnemoryAPI.stats();
+        // Expose data in the shared Alpine store so other tabs (e.g. fsck)
+        // can read autofsck status without making a separate API call.
+        Alpine.store('metrics', this.data);
         // Wait one tick so Alpine has flushed DOM updates for canvases
         this.$nextTick(() => this.renderCharts());
       } catch (err) {
@@ -116,6 +119,28 @@ function metricsTab() {
       const u = this._userSlice();
       return u ? { memories: u.total, pinned: u.pinned, decayed: u.decayed, with_artifacts: u.with_artifacts }
                : (this.data?.totals ?? {});
+    },
+
+    /**
+     * Human-readable age of the most recent auto-fsck run across all users.
+     * Returns null if auto-fsck is disabled or no runs have occurred.
+     * @returns {string|null}
+     */
+    get autofsckLastRunAge() {
+      const autofsck = this.data?.autofsck;
+      if (!autofsck?.enabled) return null;
+      const byUser = autofsck.by_user || {};
+      let latestTs = null;
+      for (const uid of Object.keys(byUser)) {
+        const ts = byUser[uid]?.last_run;
+        if (ts && (latestTs === null || ts > latestTs)) latestTs = ts;
+      }
+      if (!latestTs) return null;
+      const ageSeconds = Math.floor(Date.now() / 1000) - latestTs;
+      if (ageSeconds < 60) return `${ageSeconds}s ago`;
+      if (ageSeconds < 3600) return `${Math.floor(ageSeconds / 60)}m ago`;
+      if (ageSeconds < 86400) return `${Math.floor(ageSeconds / 3600)}h ago`;
+      return `${Math.floor(ageSeconds / 86400)}d ago`;
     },
 
     // ── Chart rendering ─────────────────────────────────────────

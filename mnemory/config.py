@@ -371,6 +371,23 @@ class MemoryConfig:
         default_factory=lambda: _env("FSCK_REASONING_EFFORT", "medium") or None
     )
 
+    # Auto-fsck: periodic background maintenance (0 = disabled)
+    # Interval in hours between automatic memory consistency checks.
+    fsck_auto_interval: int = field(
+        default_factory=lambda: _env_int("FSCK_AUTO_INTERVAL", 0)
+    )
+
+    # Auto-fsck: minimum confidence score (0.0–1.0) for a fix to be auto-applied.
+    fsck_auto_min_confidence: float = field(
+        default_factory=lambda: _env_float("FSCK_AUTO_MIN_CONFIDENCE", 0.95)
+    )
+
+    # Auto-fsck: minimum severity for a fix to be auto-applied.
+    # Options: low, medium, high
+    fsck_auto_min_severity: str = field(
+        default_factory=lambda: _env("FSCK_AUTO_MIN_SEVERITY", "medium")
+    )
+
 
 @dataclass
 class Config:
