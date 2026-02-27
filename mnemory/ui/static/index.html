@@ -1288,6 +1288,13 @@
                     <option value="medium">Medium+</option>
                     <option value="high">High only</option>
                   </select>
+                  <!-- Confidence threshold filter -->
+                  <select class="select text-xs py-1" x-model.number="confidenceFilter">
+                    <option value="0">All confidence</option>
+                    <option value="0.5">50%+</option>
+                    <option value="0.7">70%+</option>
+                    <option value="0.9">90%+</option>
+                  </select>
                   <button @click="applySelected()" :disabled="applying || selectedCount === 0"
                           class="btn btn-primary text-sm"
                           x-text="applying ? 'Applying...' : 'Apply Selected (' + selectedCount + ')'"></button>

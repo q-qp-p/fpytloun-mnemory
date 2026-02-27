@@ -60,6 +60,8 @@ function fsckTab() {
 
     // Severity threshold filter for displayed issues
     severityFilter: 'all',  // 'all', 'medium', 'high'
+    // Confidence threshold filter (0 = all, 0.5 = 50%+, etc.)
+    confidenceFilter: 0,
 
     // Selection state
     selectedIssues: {},  // issue_id -> boolean
@@ -331,6 +333,7 @@ function fsckTab() {
       this.loading = false;
       this.applying = false;
       this.severityFilter = 'all';
+      this.confidenceFilter = 0;
       sessionStorage.removeItem('mnemory_fsck_check_id');
     },
 
@@ -447,6 +450,8 @@ function fsckTab() {
         // Apply severity threshold filter
         if (this.severityFilter === 'medium' && issue.severity === 'low') continue;
         if (this.severityFilter === 'high' && issue.severity !== 'high') continue;
+        // Apply confidence threshold filter (null confidence treated as 0)
+        if (this.confidenceFilter > 0 && (issue.confidence ?? 0) < this.confidenceFilter) continue;
 
         if (!byType[issue.type]) byType[issue.type] = [];
         byType[issue.type].push(issue);
