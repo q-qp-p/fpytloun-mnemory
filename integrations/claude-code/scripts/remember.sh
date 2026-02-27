@@ -6,10 +6,11 @@
 # to store new memories. Fire-and-forget.
 #
 # Environment variables:
-#   MNEMORY_URL             - mnemory server URL (default: http://localhost:8050)
-#   MNEMORY_API_KEY         - API key for authentication
-#   MNEMORY_AGENT_ID        - Agent ID (default: claude-code)
-#   MNEMORY_USER_ID         - User ID (optional if using API key mapping)
+#   MNEMORY_URL                - mnemory server URL (default: http://localhost:8050)
+#   MNEMORY_API_KEY            - API key for authentication
+#   MNEMORY_AGENT_ID           - Agent ID (default: claude-code)
+#   MNEMORY_USER_ID            - User ID (optional if using API key mapping)
+#   MNEMORY_INCLUDE_ASSISTANT  - Include assistant messages in remember calls (default: false)
 
 set -euo pipefail
 
@@ -17,6 +18,7 @@ MNEMORY_URL="${MNEMORY_URL:-http://localhost:8050}"
 MNEMORY_API_KEY="${MNEMORY_API_KEY:-}"
 MNEMORY_AGENT_ID="${MNEMORY_AGENT_ID:-claude-code}"
 MNEMORY_USER_ID="${MNEMORY_USER_ID:-}"
+MNEMORY_INCLUDE_ASSISTANT="${MNEMORY_INCLUDE_ASSISTANT:-false}"
 
 # Read hook input from stdin
 INPUT=$(cat)
@@ -33,16 +35,27 @@ fi
 
 # Extract the last user + assistant messages from the transcript
 # The transcript is an array of {role, content} objects
-MESSAGES=$(echo "$INPUT" | jq -c '
-    .transcript // [] |
-    # Get the last user message and the last assistant message
-    (map(select(.role == "user")) | last // null) as $user |
-    (map(select(.role == "assistant")) | last // null) as $assistant |
-    [
-        (if $user then {role: "user", content: ($user.content // "")} else null end),
-        (if $assistant then {role: "assistant", content: ($assistant.content // "")} else null end)
-    ] | map(select(. != null and .content != ""))
-' 2>/dev/null || echo '[]')
+if [ "$MNEMORY_INCLUDE_ASSISTANT" = "true" ]; then
+    MESSAGES=$(echo "$INPUT" | jq -c '
+        .transcript // [] |
+        # Get the last user message and the last assistant message
+        (map(select(.role == "user")) | last // null) as $user |
+        (map(select(.role == "assistant")) | last // null) as $assistant |
+        [
+            (if $user then {role: "user", content: ($user.content // "")} else null end),
+            (if $assistant then {role: "assistant", content: ($assistant.content // "")} else null end)
+        ] | map(select(. != null and .content != ""))
+    ' 2>/dev/null || echo '[]')
+else
+    MESSAGES=$(echo "$INPUT" | jq -c '
+        .transcript // [] |
+        # Get only the last user message
+        (map(select(.role == "user")) | last // null) as $user |
+        [
+            (if $user then {role: "user", content: ($user.content // "")} else null end)
+        ] | map(select(. != null and .content != ""))
+    ' 2>/dev/null || echo '[]')
+fi
 
 # Skip if no messages to remember
 if [ "$MESSAGES" = "[]" ] || [ "$MESSAGES" = "null" ] || [ -z "$MESSAGES" ]; then
