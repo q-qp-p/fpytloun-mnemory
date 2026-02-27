@@ -43,6 +43,17 @@ IMPORTANCE_WEIGHTS: dict[str, float] = {
 }
 
 
+def importance_levels_at_or_above(min_level: str) -> list[str]:
+    """Return importance level names at or above the given minimum.
+
+    Example: importance_levels_at_or_above("high") -> ["high", "critical"]
+    """
+    min_weight = IMPORTANCE_WEIGHTS.get(min_level, 0.4)
+    return [
+        level for level, weight in IMPORTANCE_WEIGHTS.items() if weight >= min_weight
+    ]
+
+
 def validate_categories(categories: list[str]) -> list[str]:
     """Validate and normalize a list of categories.
 

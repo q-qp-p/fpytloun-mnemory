@@ -41,6 +41,9 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.remember_artifact_threshold = 4000
     # Input length cap
     mock_config.memory.max_input_length = 400000
+    # Core memories: top-N non-pinned memories
+    mock_config.memory.core_top_memories = 10
+    mock_config.memory.core_min_importance = "normal"
 
 
 def _make_service(auto_classify=False, track_access=False):
@@ -334,6 +337,7 @@ class TestCoreMemoryCache:
         service = _make_service()
         service.vector.get_pinned_memories.return_value = []
         service.vector.get_recent_memories.return_value = []
+        service.vector.get_all.return_value = {"results": []}
         return service
 
     def test_cache_hit_skips_queries(self):
@@ -367,8 +371,8 @@ class TestCoreMemoryCache:
         service.get_core_memories(user_id="filip", agent_id="open-webui")
         service.get_core_memories(user_id="filip", agent_id="claude")
         # Two different agent_ids = separate cache entries
-        # Each call does 2 get_pinned_memories calls (agent + user)
-        assert service.vector.get_pinned_memories.call_count == 4
+        # Each call does 1 get_pinned_memories call (merged query)
+        assert service.vector.get_pinned_memories.call_count == 2
 
     def test_add_memory_invalidates_cache(self):
         """add_memory should invalidate the core cache for that user."""
@@ -896,6 +900,7 @@ class TestCoreMemoriesRoleSections:
     def _make_service():
         service = _make_service()
         service.vector.get_recent_memories.return_value = []
+        service.vector.get_all.return_value = {"results": []}
         return service
 
     def test_agent_identity_section_from_assistant_role(self):
@@ -1011,6 +1016,7 @@ class TestCoreMemoriesBoundaryTags:
     def _make_service():
         service = _make_service()
         service.vector.get_recent_memories.return_value = []
+        service.vector.get_all.return_value = {"results": []}
         return service
 
     def test_user_facts_wrapped_in_memory_item_tags(self):
@@ -1111,6 +1117,394 @@ class TestCoreMemoriesBoundaryTags:
         open_tag = _BOUNDARY_TAGS["memory_item"][0]
         assert open_tag in result
         assert "Had a meeting about project X" in result
+
+
+# ── Core memories: top-N, sorting, truncation ─────────────────────────
+
+
+class TestCoreMemoriesTopN:
+    """Test top-N non-pinned memories in core sections."""
+
+    @staticmethod
+    def _make_service(top_n=10, min_importance="normal"):
+        service = _make_service()
+        service.vector.get_recent_memories.return_value = []
+        service.vector.get_pinned_memories.return_value = []
+        service.vector.get_all.return_value = {"results": []}
+        service._config.memory.core_top_memories = top_n
+        service._config.memory.core_min_importance = min_importance
+        return service
+
+    def test_non_pinned_high_importance_in_user_facts(self):
+        """Non-pinned high-importance facts should appear in User Facts."""
+        service = self._make_service()
+        service.vector.get_all.return_value = {
+            "results": [
+                {
+                    "id": "np-1",
+                    "memory": "User works at Acme Corp",
+                    "metadata": {
+                        "memory_type": "fact",
+                        "importance": "high",
+                        "pinned": False,
+                    },
+                },
+            ]
+        }
+        result = service.get_core_memories(user_id="filip")
+        assert "## User Facts" in result
+        assert "Acme Corp" in result
+
+    def test_non_pinned_preferences_in_user_preferences(self):
+        """Non-pinned preferences should appear in User Preferences."""
+        service = self._make_service()
+        service.vector.get_all.return_value = {
+            "results": [
+                {
+                    "id": "np-2",
+                    "memory": "Prefers dark mode",
+                    "metadata": {
+                        "memory_type": "preference",
+                        "importance": "normal",
+                        "pinned": False,
+                    },
+                },
+            ]
+        }
+        result = service.get_core_memories(user_id="filip")
+        assert "## User Preferences" in result
+        assert "dark mode" in result
+
+    def test_pinned_always_before_non_pinned(self):
+        """Pinned memories should appear before non-pinned in each section."""
+        service = self._make_service()
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": "pin-1",
+                "memory": "PINNED_FACT",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "normal",
+                    "pinned": True,
+                },
+            },
+        ]
+        service.vector.get_all.return_value = {
+            "results": [
+                {
+                    "id": "np-1",
+                    "memory": "NON_PINNED_FACT",
+                    "metadata": {
+                        "memory_type": "fact",
+                        "importance": "high",
+                        "pinned": False,
+                    },
+                },
+            ]
+        }
+        result = service.get_core_memories(user_id="filip")
+        assert "## User Facts" in result
+        pinned_pos = result.index("PINNED_FACT")
+        non_pinned_pos = result.index("NON_PINNED_FACT")
+        assert pinned_pos < non_pinned_pos
+
+    def test_top_n_zero_disables_feature(self):
+        """CORE_TOP_MEMORIES=0 should not include non-pinned memories."""
+        service = self._make_service(top_n=0)
+        service.vector.get_all.return_value = {
+            "results": [
+                {
+                    "id": "np-1",
+                    "memory": "Should not appear",
+                    "metadata": {
+                        "memory_type": "fact",
+                        "importance": "critical",
+                        "pinned": False,
+                    },
+                },
+            ]
+        }
+        result = service.get_core_memories(user_id="filip")
+        assert "Should not appear" not in result
+        # get_all should not be called for top-N when disabled
+        # (it may still be called for other purposes, so check the result)
+        assert "No core memories found." == result
+
+    def test_min_importance_filters_low(self):
+        """Memories below min_importance should not be included."""
+        service = self._make_service(min_importance="high")
+        # get_all is called with importance filter, so mock returns nothing
+        # (the filter would exclude normal/low)
+        service.vector.get_all.return_value = {"results": []}
+        result = service.get_core_memories(user_id="filip")
+        assert "No core memories found." == result
+
+    def test_top_n_limits_count(self):
+        """Only top N non-pinned memories should be included."""
+        service = self._make_service(top_n=2)
+        service.vector.get_all.return_value = {
+            "results": [
+                {
+                    "id": f"np-{i}",
+                    "memory": f"Memory {i}",
+                    "metadata": {
+                        "memory_type": "fact",
+                        "importance": "normal",
+                        "pinned": False,
+                        "created_at_utc": f"2024-01-{10 + i:02d}T00:00:00Z",
+                    },
+                }
+                for i in range(5)
+            ]
+        }
+        result = service.get_core_memories(user_id="filip")
+        # Should only include 2 memories (top_n=2)
+        count = sum(1 for i in range(5) if f"Memory {i}" in result)
+        assert count == 2
+
+    def test_sorting_by_importance_within_section(self):
+        """Memories within a section should be sorted by importance desc."""
+        service = self._make_service()
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": "pin-low",
+                "memory": "LOW_IMP",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "low",
+                    "pinned": True,
+                },
+            },
+            {
+                "id": "pin-crit",
+                "memory": "CRITICAL_IMP",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "critical",
+                    "pinned": True,
+                },
+            },
+        ]
+        result = service.get_core_memories(user_id="filip")
+        # Critical should appear before low
+        crit_pos = result.index("CRITICAL_IMP")
+        low_pos = result.index("LOW_IMP")
+        assert crit_pos < low_pos
+
+    def test_non_pinned_deduped_with_pinned(self):
+        """Non-pinned memories with same ID as pinned should be excluded."""
+        service = self._make_service()
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": "shared-id",
+                "memory": "Pinned version",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                },
+            },
+        ]
+        service.vector.get_all.return_value = {
+            "results": [
+                {
+                    "id": "shared-id",
+                    "memory": "Should be deduped",
+                    "metadata": {
+                        "memory_type": "fact",
+                        "importance": "high",
+                        "pinned": False,
+                    },
+                },
+            ]
+        }
+        result = service.get_core_memories(user_id="filip")
+        assert "Pinned version" in result
+        assert "Should be deduped" not in result
+
+    def test_agent_non_pinned_included(self):
+        """Non-pinned agent memories should appear in agent sections."""
+        service = self._make_service()
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": "agent-pin",
+                "memory": "My name is Bob",
+                "agent_id": "bob",
+                "metadata": {
+                    "memory_type": "fact",
+                    "role": "assistant",
+                    "importance": "critical",
+                    "pinned": True,
+                },
+            },
+        ]
+        service.vector.get_all.return_value = {
+            "results": [
+                {
+                    "id": "agent-np",
+                    "memory": "I like helping with code",
+                    "agent_id": "bob",
+                    "metadata": {
+                        "memory_type": "preference",
+                        "role": "assistant",
+                        "importance": "high",
+                        "pinned": False,
+                    },
+                },
+            ]
+        }
+        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        assert "## Agent Identity" in result
+        assert "My name is Bob" in result
+        assert "I like helping with code" in result
+
+    def test_merged_pinned_query_single_call(self):
+        """get_core_memories should make only one get_pinned_memories call."""
+        service = self._make_service()
+        service.get_core_memories(user_id="filip", agent_id="test-agent")
+        assert service.vector.get_pinned_memories.call_count == 1
+
+
+class TestCoreMemoriesPartialTruncation:
+    """Test graceful truncation of recent context."""
+
+    @staticmethod
+    def _make_service(max_len=500, top_n=0):
+        service = _make_service()
+        service.vector.get_pinned_memories.return_value = []
+        service.vector.get_all.return_value = {"results": []}
+        service._config.memory.max_core_context_length = max_len
+        service._config.memory.core_top_memories = top_n
+        return service
+
+    def test_partial_trim_keeps_some_recent(self):
+        """When over limit, should trim recent entries not drop all."""
+        service = self._make_service(max_len=800)
+        # Add a pinned fact to have main content
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": "pin-1",
+                "memory": "User is a developer",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                },
+            },
+        ]
+        # Add many recent memories
+        service.vector.get_recent_memories.return_value = [
+            {
+                "id": f"recent-{i}",
+                "memory": f"Recent event number {i} happened today",
+                "created_at": f"2024-01-15T{10 + i:02d}:00:00Z",
+                "metadata": {
+                    "memory_type": "episodic",
+                    "categories": ["work"],
+                },
+            }
+            for i in range(10)
+        ]
+        result = service.get_core_memories(user_id="filip")
+        # Should keep the pinned fact
+        assert "User is a developer" in result
+        # Should keep some recent entries (not all dropped)
+        assert "## Recent Context" in result
+        # Should not have all 10
+        recent_count = sum(1 for i in range(10) if f"Recent event number {i}" in result)
+        assert 0 < recent_count < 10
+
+    def test_all_recent_trimmed_if_needed(self):
+        """If main sections fill the budget, all recent should be removed."""
+        # Budget large enough for preamble + pinned facts but not recent
+        service = self._make_service(max_len=700)
+        # Pinned content that nearly fills the budget
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": f"pin-{i}",
+                "memory": f"Important fact number {i} about the user that is quite detailed",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                },
+            }
+            for i in range(5)
+        ]
+        service.vector.get_recent_memories.return_value = [
+            {
+                "id": "recent-1",
+                "memory": "Recent event that happened today and is quite long to push over limit",
+                "created_at": "2024-01-15T10:00:00Z",
+                "metadata": {"memory_type": "episodic"},
+            },
+        ]
+        result = service.get_core_memories(user_id="filip")
+        # Recent context should be gone (trimmed to fit)
+        assert "## Recent Context" not in result
+        # But pinned facts should remain
+        assert "Important fact" in result
+
+    def test_hard_truncate_as_last_resort(self):
+        """If even without recent it's too long, hard truncate."""
+        service = self._make_service(max_len=100)
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": "pin-1",
+                "memory": "A" * 200,
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                },
+            },
+        ]
+        result = service.get_core_memories(user_id="filip")
+        assert len(result) <= 100
+        assert "[...truncated]" in result
+
+
+class TestImportanceLevelsAtOrAbove:
+    """Test the importance_levels_at_or_above helper."""
+
+    def test_all_levels(self):
+        from mnemory.categories import importance_levels_at_or_above
+
+        assert set(importance_levels_at_or_above("low")) == {
+            "low",
+            "normal",
+            "high",
+            "critical",
+        }
+
+    def test_normal_and_above(self):
+        from mnemory.categories import importance_levels_at_or_above
+
+        assert set(importance_levels_at_or_above("normal")) == {
+            "normal",
+            "high",
+            "critical",
+        }
+
+    def test_high_and_above(self):
+        from mnemory.categories import importance_levels_at_or_above
+
+        assert set(importance_levels_at_or_above("high")) == {"high", "critical"}
+
+    def test_critical_only(self):
+        from mnemory.categories import importance_levels_at_or_above
+
+        assert set(importance_levels_at_or_above("critical")) == {"critical"}
+
+    def test_unknown_defaults_to_normal(self):
+        from mnemory.categories import importance_levels_at_or_above
+
+        # Unknown level defaults to weight 0.4 (same as normal)
+        assert set(importance_levels_at_or_above("unknown")) == {
+            "normal",
+            "high",
+            "critical",
+        }
 
 
 # ── TTL integration tests ─────────────────────────────────────────────

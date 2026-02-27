@@ -17,8 +17,10 @@ from typing import Any
 
 from mnemory.cache import TTLCache
 from mnemory.categories import (
+    IMPORTANCE_WEIGHTS,
     PREDEFINED_CATEGORIES,
     count_categories,
+    importance_levels_at_or_above,
     matches_category_filter,
     validate_categories,
     validate_importance,
@@ -1691,6 +1693,59 @@ class MemoryService:
 
         return f"- [{ts}] {meta_str}{text}"
 
+    @staticmethod
+    def _sort_memories_by_importance(memories: list[dict]) -> list[dict]:
+        """Sort memories by importance (desc) then created_at (desc).
+
+        Critical > high > normal > low, then most recent first within
+        the same importance level.
+        """
+        return sorted(
+            memories,
+            key=lambda m: (
+                IMPORTANCE_WEIGHTS.get(
+                    (m.get("metadata") or {}).get("importance", "normal"), 0.4
+                ),
+                (m.get("metadata") or {}).get("created_at_utc", "")
+                or m.get("created_at", ""),
+            ),
+            reverse=True,
+        )
+
+    def _classify_agent_memory(self, memory: dict) -> tuple[str, str]:
+        """Classify an agent-scoped memory into section and formatted line.
+
+        Returns (section_key, formatted_line) where section_key is one of:
+        "identity", "knowledge", "instructions".
+        """
+        meta = memory.get("metadata") or {}
+        mt = meta.get("memory_type", "fact")
+        mr = meta.get("role", "user")
+        text = wrap_memory_item(memory.get("memory", ""))
+        line = f"- {text}"
+
+        if mr == "assistant":
+            if mt in ("preference", "fact"):
+                return "identity", line
+            return "knowledge", line
+        return "instructions", line
+
+    def _classify_user_memory(self, memory: dict) -> tuple[str, str]:
+        """Classify a shared user memory into section and formatted line.
+
+        Returns (section_key, formatted_line) where section_key is one of:
+        "facts", "prefs", "other".
+        """
+        mt = (memory.get("metadata") or {}).get("memory_type", "fact")
+        text = wrap_memory_item(memory.get("memory", ""))
+        line = f"- {text}"
+
+        if mt == "fact":
+            return "facts", line
+        if mt == "preference":
+            return "prefs", line
+        return "other", line
+
     def get_core_memories(
         self,
         *,
@@ -1703,9 +1758,12 @@ class MemoryService:
         Returns a structured text with:
         1. Pinned agent memories (identity, knowledge) — if agent_id provided
         2. Pinned user memories (facts, preferences) — shared across agents
-        3. Recent context memories from the last N days (dual-scope: user + agent)
+        3. Top-N non-pinned memories by importance (configurable)
+        4. Recent context memories from the last N days (dual-scope)
 
-        Total output is capped at MAX_CORE_CONTEXT_LENGTH.
+        Pinned memories always appear first in each section, followed by
+        top-N non-pinned memories sorted by importance. Total output is
+        capped at MAX_CORE_CONTEXT_LENGTH with graceful truncation.
         """
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
@@ -1722,75 +1780,124 @@ class MemoryService:
             return cached
 
         max_len = self._config.memory.max_core_context_length
+        top_n = self._config.memory.core_top_memories
+        min_importance = self._config.memory.core_min_importance
 
         sections: list[str] = []
 
-        # Collect IDs of pinned memories for deduplication with recent
-        pinned_ids: set[str] = set()
+        # Collect IDs of all memories included in main sections (for dedup)
+        included_ids: set[str] = set()
 
-        # 1. Pinned agent memories (identity, knowledge, and agent-scoped instructions)
-        if agent_id:
-            agent_pinned = self.vector.get_pinned_memories(
-                user_id=user_id, agent_id=agent_id
-            )
-            # Only include memories that have this agent_id
-            agent_only = [m for m in agent_pinned if m.get("agent_id") == agent_id]
-            for m in agent_only:
-                if m.get("id"):
-                    pinned_ids.add(m["id"])
-            if agent_only:
-                identity = []
-                knowledge = []
-                instructions = []
-                for m in agent_only:
-                    meta = m.get("metadata") or {}
-                    mt = meta.get("memory_type", "fact")
-                    mr = meta.get("role", "user")
-                    text = wrap_memory_item(m.get("memory", ""))
-                    if mr == "assistant":
-                        # Memory about the agent itself
-                        if mt in ("preference", "fact"):
-                            identity.append(f"- {text}")
-                        else:
-                            knowledge.append(f"- {text}")
-                    else:
-                        # Memory about the user, scoped to this agent
-                        instructions.append(f"- {text}")
-                if identity:
-                    sections.append("## Agent Identity\n" + "\n".join(identity))
-                if knowledge:
-                    sections.append("## Agent Knowledge\n" + "\n".join(knowledge))
-                if instructions:
-                    sections.append("## Agent Instructions\n" + "\n".join(instructions))
+        # ── 1. Fetch all pinned memories in a single query ────────────
+        all_pinned = self.vector.get_pinned_memories(user_id=user_id)
 
-        # 2. Pinned user memories (no agent_id — shared across agents)
-        user_pinned = self.vector.get_pinned_memories(
-            user_id=user_id, exclude_agent=True
+        # Split into agent-scoped and shared user memories
+        agent_pinned = (
+            [m for m in all_pinned if m.get("agent_id") == agent_id] if agent_id else []
         )
-        for m in user_pinned:
-            if m.get("id"):
-                pinned_ids.add(m["id"])
-        if user_pinned:
-            facts = []
-            prefs = []
-            other = []
-            for m in user_pinned:
-                mt = (m.get("metadata") or {}).get("memory_type", "fact")
-                text = wrap_memory_item(m.get("memory", ""))
-                if mt == "fact":
-                    facts.append(f"- {text}")
-                elif mt == "preference":
-                    prefs.append(f"- {text}")
-                else:
-                    other.append(f"- {text}")
-            if facts:
-                sections.append("## User Facts\n" + "\n".join(facts))
-            if prefs:
-                sections.append("## User Preferences\n" + "\n".join(prefs))
-            if other:
-                sections.append("## User Context\n" + "\n".join(other))
+        user_pinned = [m for m in all_pinned if not m.get("agent_id")]
 
-        # 3. Recent context memories (dual-scope: user + agent)
+        # Track pinned IDs
+        for m in agent_pinned + user_pinned:
+            if m.get("id"):
+                included_ids.add(m["id"])
+
+        # ── 2. Agent sections (pinned + top-N non-pinned) ────────────
+        if agent_id:
+            # Sort pinned agent memories by importance
+            agent_pinned_sorted = self._sort_memories_by_importance(agent_pinned)
+
+            # Classify pinned agent memories into buckets
+            agent_sections: dict[str, list[str]] = {
+                "identity": [],
+                "knowledge": [],
+                "instructions": [],
+            }
+            for m in agent_pinned_sorted:
+                key, line = self._classify_agent_memory(m)
+                agent_sections[key].append(line)
+
+            # Fetch top-N non-pinned agent memories
+            if top_n > 0:
+                imp_levels = importance_levels_at_or_above(min_importance)
+                agent_non_pinned_raw = self.vector.get_all(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    filters={"pinned": False, "importance": imp_levels},
+                    limit=top_n * 3,
+                )
+                agent_non_pinned = [
+                    m
+                    for m in agent_non_pinned_raw.get("results", [])
+                    if m.get("id") not in included_ids and not should_exclude(m)
+                ]
+                agent_non_pinned = self._sort_memories_by_importance(agent_non_pinned)[
+                    :top_n
+                ]
+
+                for m in agent_non_pinned:
+                    if m.get("id"):
+                        included_ids.add(m["id"])
+                    key, line = self._classify_agent_memory(m)
+                    agent_sections[key].append(line)
+
+            if agent_sections["identity"]:
+                sections.append(
+                    "## Agent Identity\n" + "\n".join(agent_sections["identity"])
+                )
+            if agent_sections["knowledge"]:
+                sections.append(
+                    "## Agent Knowledge\n" + "\n".join(agent_sections["knowledge"])
+                )
+            if agent_sections["instructions"]:
+                sections.append(
+                    "## Agent Instructions\n"
+                    + "\n".join(agent_sections["instructions"])
+                )
+
+        # ── 3. User sections (pinned + top-N non-pinned) ─────────────
+        # Sort pinned user memories by importance
+        user_pinned_sorted = self._sort_memories_by_importance(user_pinned)
+
+        user_sections: dict[str, list[str]] = {
+            "facts": [],
+            "prefs": [],
+            "other": [],
+        }
+        for m in user_pinned_sorted:
+            key, line = self._classify_user_memory(m)
+            user_sections[key].append(line)
+
+        # Fetch top-N non-pinned user memories
+        if top_n > 0:
+            imp_levels = importance_levels_at_or_above(min_importance)
+            user_non_pinned_raw = self.vector.get_all(
+                user_id=user_id,
+                shared_only=True,
+                filters={"pinned": False, "importance": imp_levels},
+                limit=top_n * 3,
+            )
+            user_non_pinned = [
+                m
+                for m in user_non_pinned_raw.get("results", [])
+                if m.get("id") not in included_ids and not should_exclude(m)
+            ]
+            user_non_pinned = self._sort_memories_by_importance(user_non_pinned)[:top_n]
+
+            for m in user_non_pinned:
+                if m.get("id"):
+                    included_ids.add(m["id"])
+                key, line = self._classify_user_memory(m)
+                user_sections[key].append(line)
+
+        if user_sections["facts"]:
+            sections.append("## User Facts\n" + "\n".join(user_sections["facts"]))
+        if user_sections["prefs"]:
+            sections.append("## User Preferences\n" + "\n".join(user_sections["prefs"]))
+        if user_sections["other"]:
+            sections.append("## User Context\n" + "\n".join(user_sections["other"]))
+
+        # ── 4. Recent context memories (dual-scope: user + agent) ─────
         since = datetime.now(timezone.utc) - timedelta(days=recent_days)
         limit_user = self._config.memory.recent_limit_user
         limit_agent = self._config.memory.recent_limit_agent
@@ -1803,15 +1910,14 @@ class MemoryService:
             limit=limit_user,
             memory_types=self.RECENT_MEMORY_TYPES,
         )
-        # Filter out expired/decayed and already-pinned
         user_recent = [
             m
             for m in user_recent
-            if not should_exclude(m) and m.get("id") not in pinned_ids
+            if not should_exclude(m) and m.get("id") not in included_ids
         ]
 
         # Fetch agent recent memories (with agent_id)
-        agent_recent = []
+        agent_recent: list[dict] = []
         if agent_id:
             agent_recent = self.vector.get_recent_memories(
                 user_id=user_id,
@@ -1820,47 +1926,77 @@ class MemoryService:
                 limit=limit_agent,
                 memory_types=self.RECENT_MEMORY_TYPES,
             )
-            # Filter out expired/decayed and already-pinned
             agent_recent = [
                 m
                 for m in agent_recent
-                if not should_exclude(m) and m.get("id") not in pinned_ids
+                if not should_exclude(m) and m.get("id") not in included_ids
             ]
 
-        # Build recent context section with subsections
-        if user_recent or agent_recent:
-            recent_parts = ["## Recent Context"]
-            if user_recent:
-                recent_parts.append("\n### User Activity")
-                for m in user_recent:
-                    recent_parts.append(self._format_recent_memory_line(m))
-            if agent_recent:
-                recent_parts.append("\n### Agent Activity")
-                for m in agent_recent:
-                    recent_parts.append(self._format_recent_memory_line(m))
-            sections.append("\n".join(recent_parts))
+        # Build recent context lines (kept as list for partial truncation)
+        recent_user_lines = [self._format_recent_memory_line(m) for m in user_recent]
+        recent_agent_lines = [self._format_recent_memory_line(m) for m in agent_recent]
 
-        if not sections:
+        if not sections and not recent_user_lines and not recent_agent_lines:
             output = "No core memories found."
             self._core_cache.set(cache_key, output)
             return output
 
-        # Prepend security preamble to prevent stored memories from being
-        # treated as instructions by the consuming LLM
-        output = CORE_MEMORIES_PREAMBLE + "\n\n" + "\n\n".join(sections)
+        # ── 5. Assembly with graceful truncation ──────────────────────
+        # Prepend security preamble
+        preamble = CORE_MEMORIES_PREAMBLE
+        main_text = "\n\n".join(sections) if sections else ""
 
-        # Truncate if too long (trim recent context first)
+        # Build recent context section
+        recent_section = self._build_recent_section(
+            recent_user_lines, recent_agent_lines
+        )
+
+        # Assemble full output
+        parts = [p for p in [preamble, main_text, recent_section] if p]
+        output = "\n\n".join(parts)
+
+        # Graceful truncation: trim recent entries one by one from the end
+        if len(output) > max_len and (recent_user_lines or recent_agent_lines):
+            # Try trimming agent lines first, then user lines
+            while len(output) > max_len and recent_agent_lines:
+                recent_agent_lines.pop()
+                recent_section = self._build_recent_section(
+                    recent_user_lines, recent_agent_lines
+                )
+                parts = [p for p in [preamble, main_text, recent_section] if p]
+                output = "\n\n".join(parts)
+
+            while len(output) > max_len and recent_user_lines:
+                recent_user_lines.pop()
+                recent_section = self._build_recent_section(
+                    recent_user_lines, recent_agent_lines
+                )
+                parts = [p for p in [preamble, main_text, recent_section] if p]
+                output = "\n\n".join(parts)
+
+        # If still too long after removing all recent context, hard truncate
         if len(output) > max_len:
-            # Try removing recent context
-            if len(sections) > 1 and sections[-1].startswith("## Recent"):
-                sections = sections[:-1]
-                output = "\n\n".join(sections)
-            # If still too long, hard truncate
-            if len(output) > max_len:
-                output = output[: max_len - 20] + "\n\n[...truncated]"
+            output = output[: max_len - 20] + "\n\n[...truncated]"
 
         self._core_cache.set(cache_key, output)
         return output
+
+    @staticmethod
+    def _build_recent_section(user_lines: list[str], agent_lines: list[str]) -> str:
+        """Build the recent context section from pre-formatted lines.
+
+        Returns empty string if no lines remain.
+        """
+        if not user_lines and not agent_lines:
+            return ""
+        parts = ["## Recent Context"]
+        if user_lines:
+            parts.append("\n### User Activity")
+            parts.extend(user_lines)
+        if agent_lines:
+            parts.append("\n### Agent Activity")
+            parts.extend(agent_lines)
+        return "\n".join(parts)
 
     # ── Get Recent Memories ───────────────────────────────────────────
 

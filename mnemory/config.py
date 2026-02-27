@@ -246,6 +246,20 @@ class MemoryConfig:
         default_factory=lambda: _env_int("CORE_MEMORIES_CACHE_TTL", 300)
     )
 
+    # Core memories: include top-N non-pinned memories by importance in the
+    # main sections (User Facts, User Preferences, etc.). Set to 0 to disable
+    # (only pinned memories in core sections, original behavior).
+    core_top_memories: int = field(
+        default_factory=lambda: _env_int("CORE_TOP_MEMORIES", 10)
+    )
+
+    # Core memories: minimum importance for non-pinned memories to be included.
+    # Only memories at or above this level are considered for top-N inclusion.
+    # Options: low, normal, high, critical
+    core_min_importance: str = field(
+        default_factory=lambda: _env("CORE_MIN_IMPORTANCE", "normal")
+    )
+
     # TTL defaults by memory type (days, None = permanent)
     ttl_fact: int | None = field(
         default_factory=lambda: _env_int_or_none("TTL_FACT", None)

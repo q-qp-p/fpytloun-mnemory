@@ -1580,7 +1580,16 @@ Czech Republic" is ONE fact — do NOT split.
 with an event_date that should be "episodic" but is stored as "fact")
    - Missing or wrong categories — use ONLY the valid categories listed below
    - Wrong importance level (e.g., critical user identity stored as "low")
-   - Should be pinned but isn't (or vice versa)
+   - Wrong pinned status. Pinned memories are loaded at every conversation \
+start, so pinning should be reserved for essential information:
+     * SHOULD be pinned: core user identity (name, location, occupation, \
+family, birth date), essential preferences (communication style, language, \
+key workflow preferences), critical agent identity (name, personality). \
+These are typically fact or preference type with high/critical importance.
+     * Should NOT be pinned: temporary context, low-importance details, \
+episodic events (meetings, conversations), procedural memories, context \
+memories, or anything that is not a defining characteristic of the user \
+or agent.
    Only flag CLEAR misclassifications, not borderline cases.
    Hint: if a memory has an event_date, it is almost certainly "episodic".
 

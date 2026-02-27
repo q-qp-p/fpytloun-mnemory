@@ -884,7 +884,7 @@ class FsckService:
         try:
             if self._memory_service is not None:
                 cats = self._memory_service.list_categories(user_id=user_id)
-                return [c["name"] for c in cats if c.get("name")]
+                return [c["name"] for c in cats.get("categories", []) if c.get("name")]
         except Exception:
             logger.warning("Failed to load categories for fsck, using predefined list")
         return list(PREDEFINED_CATEGORIES.keys())

@@ -530,7 +530,8 @@ class VectorStore:
             shared_only: If True and agent_id is None, restrict to memories
                 without any agent_id (shared user memories only). Used by
                 dual-scope list to avoid leaking sub-agent memories.
-            filters: Simple key-value metadata filters.
+            filters: Metadata filters. Scalar values use exact match,
+                list values use any-of match (MatchAny).
             limit: Maximum results.
             order_by: Optional Qdrant OrderBy for server-side sorting.
                 When set, results are returned in the specified order.
@@ -538,7 +539,7 @@ class VectorStore:
 
         Returns dict with "results" key containing list of memory dicts.
         """
-        from qdrant_client.models import IsEmptyCondition
+        from qdrant_client.models import IsEmptyCondition, MatchAny
 
         must_conditions: list = [
             FieldCondition(key="user_id", match=MatchValue(value=user_id)),
@@ -553,9 +554,14 @@ class VectorStore:
             )
         if filters:
             for key, value in filters.items():
-                must_conditions.append(
-                    FieldCondition(key=key, match=MatchValue(value=value))
-                )
+                if isinstance(value, list):
+                    must_conditions.append(
+                        FieldCondition(key=key, match=MatchAny(any=value))
+                    )
+                else:
+                    must_conditions.append(
+                        FieldCondition(key=key, match=MatchValue(value=value))
+                    )
 
         scroll_kwargs: dict[str, Any] = {
             "collection_name": self.collection_name,

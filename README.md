@@ -278,6 +278,8 @@ When `MGMT_PORT` is not set (default):
 | `AUTO_CLASSIFY` | `true` | Auto-classify memory metadata (type, categories, importance, pinned) via LLM when not provided |
 | `CLASSIFY_CACHE_TTL` | `300` | TTL in seconds for the category cache used during auto-classification |
 | `CORE_MEMORIES_CACHE_TTL` | `300` | TTL in seconds for the core memories cache (get_core_memories). Set to 0 to disable. Invalidated on memory mutations. |
+| `CORE_TOP_MEMORIES` | `10` | Max non-pinned memories to include in core sections by importance. Set to 0 to disable (only pinned memories). |
+| `CORE_MIN_IMPORTANCE` | `normal` | Minimum importance for non-pinned memories in core sections. Options: low, normal, high, critical |
 | `TTL_FACT` | (none) | Default TTL in days for `fact` memories (empty = permanent) |
 | `TTL_PREFERENCE` | (none) | Default TTL in days for `preference` memories (empty = permanent) |
 | `TTL_EPISODIC` | `90` | Default TTL in days for `episodic` memories |
@@ -579,13 +581,16 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 ### Core Memories
 
 1. At conversation start, LLM calls `get_core_memories()`
-2. Fetches all pinned memories, organized by `role`:
+2. Fetches all pinned memories in a single query, organized by `role`:
    - **Agent Identity** (`role=assistant`, fact/preference): name, personality
    - **Agent Knowledge** (`role=assistant`, other types): researched conclusions
    - **Agent Instructions** (`role=user`): user preferences specific to this agent
 3. Fetches all pinned user memories (facts, preferences) — shared across agents
-4. Fetches recent context memories from last 24h
-5. Returns structured text injected into conversation context
+4. Fetches top-N non-pinned memories by importance (`CORE_TOP_MEMORIES`, default 10) at or above `CORE_MIN_IMPORTANCE` (default `normal`). These are added after pinned memories in each section.
+5. All memories within each section are sorted by importance (critical > high > normal > low), then by recency
+6. Fetches recent context memories from last N days (configurable)
+7. If output exceeds `MAX_CORE_CONTEXT_LENGTH`, recent context entries are trimmed one by one (most recent kept). Hard truncation only as last resort.
+8. Returns structured text injected into conversation context
 
 ### Artifacts
 
