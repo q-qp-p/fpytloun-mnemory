@@ -97,10 +97,28 @@ def _get_fsck_service():
 
         cfg = _get_config()
         service = _get_service()
+
+        # Use a separate LLM client for fsck if FSCK_LLM_MODEL is set,
+        # otherwise reuse the main LLM client.
+        if cfg.memory.fsck_model:
+            from mnemory.config import LLMConfig
+            from mnemory.llm import LLMClient
+
+            fsck_llm_config = LLMConfig(
+                model=cfg.memory.fsck_model,
+                base_url=cfg.llm.base_url,
+                api_key=cfg.llm.api_key,
+                temperature=cfg.llm.temperature,
+                reasoning_effort=cfg.llm.reasoning_effort,
+            )
+            fsck_llm = LLMClient(fsck_llm_config)
+        else:
+            fsck_llm = service._llm
+
         _fsck_service = FsckService(
             config=cfg,
             vector=service.vector,
-            llm=service._llm,
+            llm=fsck_llm,
             store=FsckStore(default_ttl=cfg.memory.fsck_cache_ttl),
             memory_service=service,
         )

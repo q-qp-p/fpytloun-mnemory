@@ -297,6 +297,8 @@ When `MGMT_PORT` is not set (default):
 | `REMEMBER_RATE_LIMIT` | `10` | Max remember requests per minute per user. 0 = no limit |
 | `FSCK_CACHE_TTL` | `86400` | How long memory check results are cached in seconds (24 hours) |
 | `FSCK_LLM_CONCURRENCY` | `4` | Max concurrent LLM calls during memory check. Set to 1 for sequential |
+| `FSCK_LLM_MODEL` | | Override LLM model for memory check (empty = use main `LLM_MODEL`) |
+| `FSCK_REASONING_EFFORT` | `medium` | Reasoning effort for memory check LLM calls (empty = use main `LLM_REASONING_EFFORT`). Defaults to `medium` for better accuracy |
 
 ## Memory Model
 

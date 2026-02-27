@@ -46,6 +46,7 @@ class LLMClient:
         json_schema: dict[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int = 2000,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Generate a chat completion, returning the content string.
 
@@ -55,6 +56,9 @@ class LLMClient:
                          (json_schema mode), falling back to json_object mode.
             temperature: Override default temperature.
             max_tokens: Maximum tokens to generate.
+            reasoning_effort: Override instance-level reasoning effort for this
+                              call only. Pass a value like "medium" or "high"
+                              to override, or None to use the instance default.
 
         Returns:
             The raw content string from the LLM response.
@@ -71,6 +75,7 @@ class LLMClient:
                     },
                     temperature=temp,
                     max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
                 )
                 self._supports_structured = True
                 return result
@@ -91,6 +96,7 @@ class LLMClient:
             response_format=response_format,
             temperature=temp,
             max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         )
 
     def _call(
@@ -99,6 +105,7 @@ class LLMClient:
         response_format: dict | None,
         temperature: float,
         max_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Execute a single chat completion call.
 
@@ -107,7 +114,13 @@ class LLMClient:
         temperature), the fix is cached so subsequent calls skip the
         unsupported parameter without any retry overhead.
         """
-        params = self._build_params(messages, response_format, temperature, max_tokens)
+        params = self._build_params(
+            messages,
+            response_format,
+            temperature,
+            max_tokens,
+            reasoning_effort=reasoning_effort,
+        )
 
         # Retry loop: some models reject multiple parameters (e.g., gpt-5-mini
         # rejects both max_tokens and temperature), each discovered one at a
@@ -135,6 +148,7 @@ class LLMClient:
         response_format: dict | None,
         temperature: float,
         max_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         """Build API call parameters, applying any cached fixes."""
         params: dict[str, Any] = {
@@ -155,9 +169,11 @@ class LLMClient:
         if response_format:
             params["response_format"] = response_format
 
-        # reasoning_effort: optional, omit if not set or if model rejected it
-        if self._reasoning_effort and "reasoning_effort" not in self._param_fixes:
-            params["reasoning_effort"] = self._reasoning_effort
+        # reasoning_effort: per-call override takes priority over instance default.
+        # Omit entirely if not set or if model rejected it previously.
+        effective_effort = reasoning_effort or self._reasoning_effort
+        if effective_effort and "reasoning_effort" not in self._param_fixes:
+            params["reasoning_effort"] = effective_effort
 
         return params
 

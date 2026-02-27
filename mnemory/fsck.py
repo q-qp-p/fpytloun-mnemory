@@ -263,6 +263,7 @@ class FsckService:
         self._llm = llm
         self._store = store
         self._memory_service = memory_service
+        self._reasoning_effort = config.memory.fsck_reasoning_effort
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -617,6 +618,7 @@ class FsckService:
             json_schema=schema,
             temperature=0.1,
             max_tokens=500,
+            reasoning_effort=self._reasoning_effort,
         )
 
         try:
@@ -808,6 +810,7 @@ class FsckService:
             json_schema=schema,
             temperature=0.1,
             max_tokens=4000,
+            reasoning_effort=self._reasoning_effort,
         )
 
         parsed = parse_json_response(response)
@@ -977,6 +980,7 @@ class FsckService:
             json_schema=schema,
             temperature=0.1,
             max_tokens=4000,
+            reasoning_effort=self._reasoning_effort,
         )
 
         parsed = parse_json_response(response)

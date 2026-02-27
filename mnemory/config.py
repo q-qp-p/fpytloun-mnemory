@@ -347,6 +347,16 @@ class MemoryConfig:
         default_factory=lambda: _env_int("FSCK_LLM_CONCURRENCY", 4)
     )
 
+    # Fsck — optional separate LLM model for check (empty = use main LLM_MODEL)
+    fsck_model: str = field(default_factory=lambda: _env("FSCK_LLM_MODEL", ""))
+
+    # Fsck — reasoning effort for check LLM calls (empty = use main LLM_REASONING_EFFORT).
+    # Defaults to "medium" because fsck is a batch operation where accuracy
+    # matters more than latency.
+    fsck_reasoning_effort: str | None = field(
+        default_factory=lambda: _env("FSCK_REASONING_EFFORT", "medium") or None
+    )
+
 
 @dataclass
 class Config:

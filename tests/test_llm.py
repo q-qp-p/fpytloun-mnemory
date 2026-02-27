@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
-from mnemory.llm import _clean_response, parse_json_response
+from mnemory.config import LLMConfig
+from mnemory.llm import LLMClient, _clean_response, parse_json_response
 
 # ── _clean_response ──────────────────────────────────────────────────
 
@@ -75,3 +78,59 @@ class TestParseJsonResponse:
         text = '<think>reasoning</think>{"key": "value"}'
         result = parse_json_response(text)
         assert result == {"key": "value"}
+
+
+# ── LLMClient._build_params reasoning_effort ────────────────────────
+
+
+class TestBuildParamsReasoningEffort:
+    """Test per-call reasoning_effort override in _build_params."""
+
+    @staticmethod
+    def _make_client(reasoning_effort: str | None = None) -> LLMClient:
+        config = LLMConfig(
+            model="test-model",
+            base_url="http://localhost",
+            api_key="test-key",
+            reasoning_effort=reasoning_effort,
+        )
+        with patch("mnemory.llm.OpenAI"):
+            return LLMClient(config)
+
+    def test_no_effort_set(self):
+        """No instance or per-call effort → param not in output."""
+        client = self._make_client(reasoning_effort=None)
+        params = client._build_params([], None, 0.1, 2000)
+        assert "reasoning_effort" not in params
+
+    def test_instance_effort_used(self):
+        """Instance-level effort is used when no per-call override."""
+        client = self._make_client(reasoning_effort="minimal")
+        params = client._build_params([], None, 0.1, 2000)
+        assert params["reasoning_effort"] == "minimal"
+
+    def test_per_call_overrides_instance(self):
+        """Per-call effort overrides instance-level effort."""
+        client = self._make_client(reasoning_effort="minimal")
+        params = client._build_params([], None, 0.1, 2000, reasoning_effort="high")
+        assert params["reasoning_effort"] == "high"
+
+    def test_per_call_with_no_instance(self):
+        """Per-call effort works even when instance has no default."""
+        client = self._make_client(reasoning_effort=None)
+        params = client._build_params([], None, 0.1, 2000, reasoning_effort="medium")
+        assert params["reasoning_effort"] == "medium"
+
+    def test_param_fix_suppresses_effort(self):
+        """If model rejected reasoning_effort, it's omitted even if set."""
+        client = self._make_client(reasoning_effort="high")
+        client._param_fixes["reasoning_effort"] = "remove"
+        params = client._build_params([], None, 0.1, 2000)
+        assert "reasoning_effort" not in params
+
+    def test_param_fix_suppresses_per_call_effort(self):
+        """If model rejected reasoning_effort, per-call override is also omitted."""
+        client = self._make_client(reasoning_effort=None)
+        client._param_fixes["reasoning_effort"] = "remove"
+        params = client._build_params([], None, 0.1, 2000, reasoning_effort="high")
+        assert "reasoning_effort" not in params
