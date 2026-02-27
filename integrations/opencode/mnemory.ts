@@ -28,6 +28,7 @@ interface SessionState {
   lastMessageCount: number
   recallPromise: Promise<RecallResult | null> | null
   recallResult: RecallResult | null
+  isChildSession: boolean
 }
 
 interface RecallResult {
@@ -95,6 +96,7 @@ export const MnemoryPlugin: Plugin = async ({ client, worktree, directory }) => 
         lastMessageCount: 0,
         recallPromise: null,
         recallResult: null,
+        isChildSession: false,
       }
       sessions.set(sessionId, state)
       // Evict oldest entries if over limit
@@ -230,6 +232,9 @@ export const MnemoryPlugin: Plugin = async ({ client, worktree, directory }) => 
 
       const state = getOrCreateState(sessionId)
 
+      // Skip memory injection for child sessions (subagent tasks)
+      if (state.isChildSession) return
+
       // If no recall has been started (e.g., resumed session), start one
       if (!state.recallPromise && !state.recallResult) {
         startRecall(state)
@@ -264,6 +269,15 @@ export const MnemoryPlugin: Plugin = async ({ client, worktree, directory }) => 
         if (!sessionId) return
 
         const state = getOrCreateState(sessionId)
+
+        // Child sessions (subagent tasks) have a parentID. Skip recall
+        // and mark them so session.idle skips remember too — subtask
+        // prompts are internal instructions, not user messages.
+        if (event.properties?.info?.parentID) {
+          state.isChildSession = true
+          return
+        }
+
         startRecall(state)
       }
 
@@ -286,6 +300,10 @@ export const MnemoryPlugin: Plugin = async ({ client, worktree, directory }) => 
 
         const state = sessions.get(sessionId)
         if (!state) return
+
+        // Skip remember for child sessions (subagent tasks) — their
+        // messages are internal instructions, not user conversations.
+        if (state.isChildSession) return
 
         try {
           const response = await client.session.messages({
