@@ -12,6 +12,7 @@ issues in the UI and then apply selected fixes without re-running the check.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import threading
@@ -24,7 +25,12 @@ from typing import TYPE_CHECKING, Any
 
 from qdrant_client.models import PointStruct
 
-from mnemory.categories import PREDEFINED_CATEGORIES, validate_categories
+from mnemory.categories import (
+    PREDEFINED_CATEGORIES,
+    validate_categories,
+    validate_importance,
+    validate_memory_type,
+)
 from mnemory.config import Config
 from mnemory.embeddings import EmbeddingClient
 from mnemory.llm import LLMClient, parse_json_response
@@ -53,9 +59,6 @@ _QUALITY_BATCH_SIZE = 20
 
 # Maximum memories per duplicate cluster sent to LLM.
 _MAX_CLUSTER_SIZE = 15
-
-# Maximum memories to process in a single fsck run.
-_MAX_MEMORIES = 2000
 
 # Maximum similar neighbors to check per memory during duplicate detection.
 _DUPLICATE_NEIGHBORS = 5
@@ -138,6 +141,8 @@ class FsckCheck:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     ttl_seconds: int = 1800
+    # Track which issues have been applied to prevent double-apply.
+    applied_issue_ids: set[str] = field(default_factory=set)
 
     @property
     def is_expired(self) -> bool:
@@ -158,13 +163,15 @@ class FsckStore:
     """Thread-safe in-memory store for fsck check results.
 
     Similar to SessionStore but for fsck check runs. Checks are stored
-    with a TTL and cleaned up lazily on access.
+    with a TTL and cleaned up periodically via a background sweep task.
     """
 
-    def __init__(self, default_ttl: int = 1800):
+    def __init__(self, default_ttl: int = 1800, sweep_interval: int = 300):
         self._checks: dict[str, FsckCheck] = {}
         self._lock = threading.Lock()
         self._default_ttl = default_ttl
+        self._sweep_interval = sweep_interval
+        self._sweep_task: asyncio.Task | None = None
 
     def create(
         self,
@@ -200,6 +207,36 @@ class FsckStore:
             for cid in expired:
                 del self._checks[cid]
             return len(expired)
+
+    def start_cleanup_task(self) -> None:
+        """Start periodic background sweep for expired checks.
+
+        Safe to call multiple times — only starts one task.
+        Must be called from within an async context (event loop running).
+        """
+        if self._sweep_task is not None:
+            return
+        self._sweep_task = asyncio.create_task(self._sweep_loop())
+        logger.info("Fsck cleanup task started (interval=%ds)", self._sweep_interval)
+
+    async def stop_cleanup_task(self) -> None:
+        """Stop the background sweep task."""
+        if self._sweep_task is not None:
+            self._sweep_task.cancel()
+            try:
+                await self._sweep_task
+            except asyncio.CancelledError:
+                pass
+            self._sweep_task = None
+            logger.info("Fsck cleanup task stopped")
+
+    async def _sweep_loop(self) -> None:
+        """Periodically remove expired checks."""
+        while True:
+            await asyncio.sleep(self._sweep_interval)
+            removed = self.sweep()
+            if removed > 0:
+                logger.info("Fsck sweep: removed %d expired checks", removed)
 
 
 # ── Union-Find for clustering ────────────────────────────────────────
@@ -314,7 +351,6 @@ class FsckService:
                 user_id=check.user_id,
                 agent_id=check.agent_id,
                 filters=filters,
-                limit=_MAX_MEMORIES,
             )
 
             # Filter by categories if specified (client-side since Qdrant
@@ -369,7 +405,7 @@ class FsckService:
                 check_id,
                 len(regex_flagged),
             )
-            security_issues = self._phase_security_reeval(regex_flagged, mem_by_id)
+            security_issues = self._phase_security_reeval(regex_flagged)
             check.issues.extend(security_issues)
             check.progress.percent = 8
             check.progress.issues_found = len(check.issues)
@@ -433,6 +469,10 @@ class FsckService:
     ) -> dict[str, Any]:
         """Apply fixes from a completed check.
 
+        Idempotent: issues that have already been applied are skipped
+        (tracked in check.applied_issue_ids). Safe to call multiple times
+        with different issue_ids to apply fixes incrementally.
+
         Args:
             check_id: The check to apply.
             issue_ids: Specific issue IDs to apply. None/empty = apply all.
@@ -465,14 +505,36 @@ class FsckService:
         details: list[dict] = []
 
         for issue in issues:
+            # Idempotency: skip issues that were already applied.
+            if issue.issue_id in check.applied_issue_ids:
+                skipped += 1
+                details.append(
+                    {
+                        "issue_id": issue.issue_id,
+                        "status": "skipped",
+                        "actions_executed": 0,
+                        "actions_skipped": 0,
+                    }
+                )
+                continue
+
             try:
-                actions_executed = self._apply_issue(issue, check.user_id)
+                actions_executed, actions_skipped = self._apply_issue(
+                    issue, check.user_id
+                )
+                # Only mark as applied (and prevent retry) when at least one
+                # action actually executed. If all actions were skipped (e.g.,
+                # memory not found), leave the issue available for future apply
+                # attempts so transient misses don't permanently block fixes.
+                if actions_executed > 0:
+                    check.applied_issue_ids.add(issue.issue_id)
                 applied += 1
                 details.append(
                     {
                         "issue_id": issue.issue_id,
                         "status": "applied",
                         "actions_executed": actions_executed,
+                        "actions_skipped": actions_skipped,
                     }
                 )
             except Exception as e:
@@ -487,8 +549,21 @@ class FsckService:
                         "issue_id": issue.issue_id,
                         "status": "failed",
                         "actions_executed": 0,
+                        "actions_skipped": 0,
                         "error": str(e),
                     }
+                )
+
+        # Invalidate caches so mutations are reflected immediately.
+        if self._memory_service is not None and (applied > 0 or failed > 0):
+            try:
+                self._memory_service._core_cache.invalidate_prefix(check.user_id)
+                self._memory_service._category_cache.invalidate(check.user_id)
+            except Exception:
+                logger.warning(
+                    "Fsck apply: failed to invalidate caches for user %s",
+                    check.user_id,
+                    exc_info=True,
                 )
 
         return {
@@ -530,7 +605,6 @@ class FsckService:
     def _phase_security_reeval(
         self,
         flagged: list[tuple[dict, list[str]]],
-        mem_by_id: dict[str, dict],
     ) -> list[FsckIssue]:
         """Re-evaluate regex-flagged memories with LLM to drop false positives.
 
@@ -623,7 +697,7 @@ class FsckService:
 
         try:
             parsed = parse_json_response(response)
-        except (ValueError, Exception):
+        except Exception:
             parsed = None
 
         if not parsed:
@@ -851,6 +925,10 @@ class FsckService:
             if issue_type not in ("duplicate", "contradiction"):
                 issue_type = "duplicate"
 
+            severity = raw_issue.get("severity", "medium")
+            if severity not in ("low", "medium", "high"):
+                severity = "medium"
+
             raw_confidence = raw_issue.get("confidence")
             confidence: float | None = None
             if raw_confidence is not None:
@@ -863,7 +941,7 @@ class FsckService:
                 FsckIssue(
                     issue_id=str(uuid.uuid4()),
                     type=issue_type,
-                    severity=raw_issue.get("severity", "medium"),
+                    severity=severity,
                     reasoning=raw_issue.get("reasoning", ""),
                     affected_memories=affected_mems,
                     actions=actions,
@@ -1054,9 +1132,14 @@ class FsckService:
 
     # ── Apply logic ──────────────────────────────────────────────────
 
-    def _apply_issue(self, issue: FsckIssue, user_id: str) -> int:
-        """Apply all actions for a single issue. Returns count of actions executed."""
+    def _apply_issue(self, issue: FsckIssue, user_id: str) -> tuple[int, int]:
+        """Apply all actions for a single issue.
+
+        Returns:
+            Tuple of (actions_executed, actions_skipped).
+        """
         executed = 0
+        skipped = 0
 
         for action in issue.actions:
             if action.action == "delete" and action.memory_id:
@@ -1067,14 +1150,23 @@ class FsckService:
                         "Fsck apply: memory %s not found, skipping delete",
                         action.memory_id,
                     )
+                    skipped += 1
                     continue
                 if existing.get("user_id") != user_id:
                     logger.warning(
                         "Fsck apply: memory %s belongs to a different user, skipping delete",
                         action.memory_id,
                     )
+                    skipped += 1
                     continue
-                self._vector.delete(action.memory_id)
+                # Route through MemoryService to clean up artifacts and
+                # invalidate caches. Fall back to direct delete in tests.
+                if self._memory_service is not None:
+                    self._memory_service.delete_memory(
+                        memory_id=action.memory_id, user_id=user_id
+                    )
+                else:
+                    self._vector.delete(action.memory_id)
                 executed += 1
 
             elif action.action == "update" and action.memory_id:
@@ -1085,12 +1177,14 @@ class FsckService:
                         "Fsck apply: memory %s not found, skipping update",
                         action.memory_id,
                     )
+                    skipped += 1
                     continue
                 if existing.get("user_id") != user_id:
                     logger.warning(
                         "Fsck apply: memory %s belongs to a different user, skipping update",
                         action.memory_id,
                     )
+                    skipped += 1
                     continue
                 if action.new_content:
                     self._vector.update_content(action.memory_id, action.new_content)
@@ -1110,9 +1204,37 @@ class FsckService:
                         if k in allowed and v is not None
                     }
                     if clean_meta:
-                        # Validate categories before writing — strip any LLM-hallucinated
-                        # categories that don't exist in the predefined set, keeping
-                        # valid ones rather than dropping the whole field.
+                        # Validate memory_type — strip LLM-hallucinated values.
+                        if "memory_type" in clean_meta:
+                            try:
+                                clean_meta["memory_type"] = validate_memory_type(
+                                    clean_meta["memory_type"]
+                                )
+                            except ValueError:
+                                logger.warning(
+                                    "Fsck apply: stripping invalid memory_type '%s' "
+                                    "from reclassify action for memory %s",
+                                    clean_meta["memory_type"],
+                                    action.memory_id,
+                                )
+                                del clean_meta["memory_type"]
+                        # Validate importance — strip LLM-hallucinated values.
+                        if "importance" in clean_meta:
+                            try:
+                                clean_meta["importance"] = validate_importance(
+                                    clean_meta["importance"]
+                                )
+                            except ValueError:
+                                logger.warning(
+                                    "Fsck apply: stripping invalid importance '%s' "
+                                    "from reclassify action for memory %s",
+                                    clean_meta["importance"],
+                                    action.memory_id,
+                                )
+                                del clean_meta["importance"]
+                        # Validate categories — strip any LLM-hallucinated
+                        # categories that don't exist in the predefined set,
+                        # keeping valid ones rather than dropping the whole field.
                         if (
                             "categories" in clean_meta
                             and clean_meta["categories"] is not None
@@ -1192,7 +1314,7 @@ class FsckService:
                     )
                 executed += 1
 
-        return executed
+        return executed, skipped
 
     # ── Helpers ───────────────────────────────────────────────────────
 

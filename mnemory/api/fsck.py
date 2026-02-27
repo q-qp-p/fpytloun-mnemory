@@ -239,6 +239,7 @@ def apply_fsck(
             issue_id=d["issue_id"],
             status=d["status"],
             actions_executed=d.get("actions_executed", 0),
+            actions_skipped=d.get("actions_skipped", 0),
             error=d.get("error"),
         )
         for d in result.get("details", [])

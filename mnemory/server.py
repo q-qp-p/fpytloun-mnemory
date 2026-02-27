@@ -122,6 +122,19 @@ def _get_fsck_service():
             store=FsckStore(default_ttl=cfg.memory.fsck_cache_ttl),
             memory_service=service,
         )
+        # Start the cleanup task immediately if an event loop is already
+        # running (i.e., the service is first used during a request, after
+        # lifespan startup). The lifespan guard is kept as a belt-and-suspenders
+        # fallback for the rare case where the service is created before the
+        # first request.
+        import asyncio as _asyncio
+
+        try:
+            loop = _asyncio.get_running_loop()
+            if loop.is_running():
+                _fsck_service._store.start_cleanup_task()
+        except RuntimeError:
+            pass  # No event loop yet — lifespan will start it
     return _fsck_service
 
 
@@ -1580,10 +1593,16 @@ async def lifespan(app):
     # Start session cleanup task for REST API
     _session_store.start_cleanup_task()
 
+    # Start fsck check cleanup task (lazy init — only if fsck was used)
+    if _fsck_service is not None:
+        _fsck_service._store.start_cleanup_task()
+
     async with mcp.session_manager.run():
         yield
 
     await _session_store.stop_cleanup_task()
+    if _fsck_service is not None:
+        await _fsck_service._store.stop_cleanup_task()
     logger.info("mnemory shutting down")
 
 

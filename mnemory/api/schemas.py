@@ -517,6 +517,7 @@ class FsckApplyDetail(BaseModel):
     issue_id: str
     status: str = Field(..., description="Status: applied, skipped, failed")
     actions_executed: int = 0
+    actions_skipped: int = 0
     error: str | None = None
 
 

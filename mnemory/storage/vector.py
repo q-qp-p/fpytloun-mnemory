@@ -742,12 +742,14 @@ class VectorStore:
         user_id: str,
         agent_id: str | None = None,
         filters: dict | None = None,
-        limit: int = 2000,
     ) -> list[dict[str, Any]]:
-        """Scroll all memories for a user, including stored embedding vectors.
+        """Scroll ALL memories for a user, including stored embedding vectors.
 
         Used by the fsck (memory check) feature to retrieve stored vectors
         for similarity comparison without re-embedding.
+
+        Paginates through all Qdrant points using the scroll cursor so that
+        users with large memory sets are fully covered — no hard limit.
 
         Returns list of memory dicts with an extra "vector" key containing
         the stored embedding.
@@ -772,19 +774,32 @@ class VectorStore:
                         FieldCondition(key=key, match=MatchValue(value=value))
                     )
 
-        points, _ = self._client.scroll(
-            collection_name=self.collection_name,
-            scroll_filter=Filter(must=must_conditions),
-            limit=limit,
-            with_payload=True,
-            with_vectors=True,
-        )
+        scroll_filter = Filter(must=must_conditions)
+        # Use a page size that balances memory and round-trips.
+        # with_vectors=True makes payloads larger, so keep pages moderate.
+        _PAGE_SIZE = 256
 
         results = []
-        for p in points:
-            mem = self._point_to_memory(p)
-            mem["vector"] = p.vector
-            results.append(mem)
+        offset = None  # None = start from beginning
+
+        while True:
+            points, next_offset = self._client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=scroll_filter,
+                limit=_PAGE_SIZE,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            for p in points:
+                mem = self._point_to_memory(p)
+                mem["vector"] = p.vector
+                results.append(mem)
+
+            if next_offset is None or len(points) < _PAGE_SIZE:
+                break
+            offset = next_offset
+
         return results
 
     def search_by_vector(
