@@ -318,6 +318,7 @@ export const MnemoryPlugin: Plugin = async ({ client, worktree, directory }) => 
           callApi("/api/remember", {
             session_id: state.mnemorySessionId,
             messages,
+            ...(workingDirectory && { context: `Working directory: ${workingDirectory}` }),
           }).catch(() => {})
         } catch {
           // Graceful degradation

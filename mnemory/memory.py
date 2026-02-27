@@ -393,6 +393,7 @@ class MemoryService:
         agent_id: str | None = None,
         role: str = "user",
         session_timezone: str | None = None,
+        context: str | None = None,
     ) -> dict:
         """Process conversation content for memory extraction.
 
@@ -402,6 +403,11 @@ class MemoryService:
         - Auto-classifies everything (no explicit metadata)
         - Uses REMEMBER_ARTIFACT_THRESHOLD for auto-artifact decisions
         - Designed for fire-and-forget background processing from plugins
+
+        Args:
+            context: Optional context hint (e.g., working directory, active
+                project). Passed to the extraction prompt to help identify
+                the project and produce self-contained memories.
 
         The extraction pipeline produces concise facts that respect
         MAX_MEMORY_LENGTH. Returns the same format as add_memory.
@@ -436,6 +442,7 @@ class MemoryService:
             event_date=None,
             artifact_threshold=artifact_threshold,
             session_timezone=session_timezone,
+            context=context,
         )
 
         # Invalidate caches
@@ -459,6 +466,7 @@ class MemoryService:
         event_date: str | None = None,
         artifact_threshold: int | None = None,
         session_timezone: str | None = None,
+        context: str | None = None,
     ) -> dict:
         """Add memory with LLM-driven extraction, classification, and dedup.
 
@@ -478,6 +486,9 @@ class MemoryService:
             session_timezone: IANA timezone from X-Timezone header. When
                 event_date is None, used to compute "Today's date" in the
                 extraction prompt using the user's local date instead of UTC.
+            context: Optional context hint (e.g., working directory, active
+                project). Injected into the extraction prompt to help the
+                LLM identify the project and produce self-contained facts.
         """
         # 1. Embed the raw content for similarity search
         content_vector = self.vector.embedding.embed(content)
@@ -518,6 +529,7 @@ class MemoryService:
             max_memory_length=max_len,
             event_date=event_date,
             session_timezone=session_timezone,
+            context=context,
         )
 
         # 4. Single LLM call

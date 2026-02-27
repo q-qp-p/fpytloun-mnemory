@@ -200,6 +200,11 @@ You are a memory manager for an AI assistant. Your job is to:
   - Do NOT extract the assistant's own reasoning, analysis,
     recommendations, or observations as separate memories. The
     assistant's responses are context, not facts to remember.
+  - Do NOT extract the assistant's observations about file contents,
+    configurations, build setups, infrastructure details, or
+    implementation specifics — these are transient working context.
+    Only extract if the observation leads to a concrete decision
+    or conclusion.
   - You may extract from assistant messages only when they paraphrase
     or confirm a user fact (e.g., assistant says "you mentioned you
     live in Prague" → extract "User lives in Prague").
@@ -207,6 +212,20 @@ You are a memory manager for an AI assistant. Your job is to:
   user/assistant exchange), extract facts about all participants.
 - Do not extract generic responses, pleasantries, or procedural
   statements (e.g., "Sure, I can help with that" is not a fact).
+- When the user tells the assistant to perform a task (read files,
+  run commands, check something, explore code), do NOT store the
+  instruction itself. Instead, look for the underlying intent or
+  goal — WHY the user wants this done. Store the goal, not the
+  action. For example, "read the Dockerfile" is a transient
+  instruction; "set up OIDC authentication for mfg-portal" is a
+  goal worth remembering.
+- Each extracted fact must be self-contained and understandable
+  without the original conversation. Include the project,
+  application, or system name when identifiable. For example,
+  "User wants to implement OIDC authentication for mfg-portal" —
+  not just "User wants to implement OIDC authentication". If
+  additional context is provided (e.g., working directory), use it
+  to identify the project or application name.
 - Preserve all important information — do not over-compress
   at the cost of losing detail.
 - Preserve specific details exactly: proper nouns, names, titles
@@ -328,19 +347,43 @@ Output: {{"memories": [
     "importance": "normal", "pinned": false, "event_date": null}}
 ], "store_artifact": false}}
 
+Input: "User: Read the Dockerfile and docker-compose.yml from the argocd-apps repo\n\
+Assistant: The docker-compose.yml builds backend from ./backend and uses env_file: \
+.env at runtime but provides no build.args for the frontend and no image tags."
+Output: {{"memories": [], "store_artifact": false}}
+(The user instruction is a transient task and the assistant response is an \
+implementation observation — neither is a fact worth remembering.)
+
+Input: "User: Help me set up OIDC authentication for our mfg-portal app\n\
+Assistant: I'll implement this using the ALB OIDC action with Cognito."
+Output: {{"memories": [
+  {{"text": "User wants to implement OIDC authentication for mfg-portal using ALB and Cognito",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "episodic", "categories": ["technical", "project:mfg-portal"],
+    "importance": "normal", "pinned": false, "event_date": null}}
+], "store_artifact": false}}
+
 ## Classification Rules
 
 For each extracted fact, classify:
 
 - **memory_type**: {memory_types}
-  - preference = likes, dislikes, style choices
-  - fact = biographical, factual information
-  - episodic = events, interactions, conclusions
-  - procedural = workflows, habits, how-to
-  - context = session/short-term notes
+  - preference = likes, dislikes, style choices, tool preferences
+  - fact = stable biographical or personal information (names, roles,
+    locations, relationships, long-term traits). NOT for transient
+    technical observations or current project state.
+  - episodic = events, interactions, decisions made, conclusions reached
+  - procedural = workflows, habits, how the user does things
+  - context = session/short-term notes, current project state,
+    technical observations, implementation details, anything that
+    may change soon or is only relevant to the current task
 
 - **categories**: Pick from the available list below. Use [] if none fit.
-  "project" is valid for general project content; use "project:<name>" when a specific project name is known.
+  "project" is for general project content. When the conversation
+  clearly involves a specific named project, create a subcategory by
+  appending the project name (e.g., project:mnemory, project:argocd-apps).
+  Only do this when the project name is clearly identifiable from the
+  content or additional context — do not guess.
 
 - **importance**: {importance_levels}
   - low = minor details, temporary notes
@@ -491,13 +534,19 @@ For each extracted fact, classify:
 
 - **memory_type**: {memory_types}
   - preference = assistant's likes, dislikes, style choices
-  - fact = assistant's identity, name, capabilities
-  - episodic = research conclusions, interaction outcomes
+  - fact = stable assistant identity (name, personality, capabilities,
+    long-term traits). NOT for transient observations.
+  - episodic = research conclusions, interaction outcomes, decisions
   - procedural = assistant's workflows, approaches
-  - context = session/short-term notes
+  - context = session/short-term notes, current state, anything
+    that may change soon
 
 - **categories**: Pick from the available list below. Use [] if none fit.
-  "project" is valid for general project content; use "project:<name>" when a specific project name is known.
+  "project" is for general project content. When the conversation
+  clearly involves a specific named project, create a subcategory by
+  appending the project name (e.g., project:mnemory, project:argocd-apps).
+  Only do this when the project name is clearly identifiable from the
+  content or additional context — do not guess.
 
 - **importance**: {importance_levels}
   - low = minor details
@@ -580,6 +629,7 @@ def build_extraction_prompt(
     max_memory_length: int = 1000,
     event_date: str | None = None,
     session_timezone: str | None = None,
+    context: str | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any], dict[str, str]]:
     """Build the unified extraction+classification+dedup prompt.
 
@@ -604,6 +654,9 @@ def build_extraction_prompt(
         session_timezone: IANA timezone from X-Timezone header. When
             event_date is None, used to compute "Today's date" using the
             user's local date instead of UTC.
+        context: Optional context hint (e.g., working directory, active
+            project). Injected into the system prompt to help the LLM
+            identify the project and produce self-contained facts.
 
     Returns:
         Tuple of (messages, json_schema, id_mapping) for the LLM call.
@@ -693,6 +746,17 @@ def build_extraction_prompt(
 
     if explicit_note:
         system_prompt += explicit_note
+
+    # Inject additional context (e.g., working directory) when provided.
+    # Helps the LLM identify the project and produce self-contained facts.
+    if context:
+        system_prompt += (
+            "\n\n## Additional Context\n"
+            + wrap_with_boundary(context, "context")
+            + "\nUse this to identify which project or application the "
+            "conversation is about. Include the project/application name "
+            "in extracted facts to make them self-contained."
+        )
 
     # Build user message — wrap content in boundary tags to prevent
     # prompt injection. The LLM is instructed to treat content within
@@ -866,10 +930,13 @@ def build_classification_prompt(
         types = ", ".join(VALID_MEMORY_TYPES)
         field_instructions.append(
             f'"memory_type": one of [{types}]. '
-            "preference=likes/dislikes/style, fact=biographical/factual, "
-            "episodic=events/interactions/conclusions, "
+            "preference=likes/dislikes/style/tool preferences, "
+            "fact=stable biographical/personal info (names, roles, locations, "
+            "long-term traits — NOT transient technical observations), "
+            "episodic=events/interactions/decisions/conclusions, "
             "procedural=workflows/habits/how-to, "
-            "context=session/short-term notes"
+            "context=session/short-term notes, current project state, "
+            "technical observations, implementation details"
         )
         schema_props["memory_type"] = {
             "type": "string",
@@ -881,8 +948,9 @@ def build_classification_prompt(
         cats = ", ".join(available_categories)
         field_instructions.append(
             f'"categories": list of applicable categories from [{cats}]. '
-            '"project" is valid for general project content; '
-            'use "project:<name>" when a specific project name is known. '
+            '"project" is for general project content; create a subcategory '
+            "by appending the project name (e.g., project:mnemory) when "
+            "clearly identifiable. "
             "Empty list [] if no category fits."
         )
         schema_props["categories"] = {

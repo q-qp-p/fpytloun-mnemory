@@ -390,6 +390,15 @@ class RememberRequest(BaseModel):
     messages: list[MessageParam] = Field(
         ..., description="OpenAI-format messages (typically last 2: user + assistant)"
     )
+    context: str | None = Field(
+        None,
+        max_length=10_000,
+        description=(
+            "Optional context hint (e.g., current working directory, active "
+            "project). Passed to the extraction pipeline to help identify "
+            "the project and produce self-contained memories."
+        ),
+    )
 
 
 class RememberResponse(BaseModel):
