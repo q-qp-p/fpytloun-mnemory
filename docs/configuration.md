@@ -1,0 +1,152 @@
+# Configuration Reference
+
+All configuration is via environment variables. Defaults are optimized for local development — just set `OPENAI_API_KEY` and run.
+
+Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In Docker, `DATA_DIR` is set to `/data` for volume mounting.
+
+## LLM & Embeddings
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENAI_API_KEY` | | OpenAI API key (also used as fallback for `LLM_API_KEY`) |
+| `OPENAI_API_BASE` | | OpenAI-compatible API base URL (also used as fallback for `LLM_BASE_URL`) |
+| `LLM_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for LLM provider |
+| `LLM_BASE_URL` | (falls back to `OPENAI_API_BASE`, then `https://api.openai.com/v1`) | OpenAI-compatible API base URL |
+| `LLM_MODEL` | `gpt-5-mini` | LLM model for fact extraction and deduplication |
+| `LLM_REASONING_EFFORT` | | Reasoning effort for LLM (none/minimal/low/medium/high). Models that don't support it auto-skip. |
+| `EMBED_MODEL` | `text-embedding-3-small` | Embedding model |
+| `EMBED_BASE_URL` | (falls back to `LLM_BASE_URL`) | Separate base URL for embeddings |
+| `EMBED_DIMS` | `1536` | Embedding dimensions |
+
+## Data Storage
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATA_DIR` | `~/.mnemory` | Base data directory (all paths below default to subdirectories of this) |
+| `QDRANT_HOST` | | Qdrant host (empty = local embedded mode, set for remote Qdrant) |
+| `QDRANT_PORT` | `6333` | Qdrant port |
+| `QDRANT_PATH` | `{DATA_DIR}/qdrant` | Local embedded Qdrant storage path (used when `QDRANT_HOST` is not set) |
+| `QDRANT_API_KEY` | | Qdrant API key (optional) |
+| `QDRANT_COLLECTION` | `mnemory` | Qdrant collection name |
+| `ARTIFACT_BACKEND` | `filesystem` | Artifact backend: `filesystem` (local) or `s3` (production) |
+| `ARTIFACT_PATH` | `{DATA_DIR}/artifacts` | Local filesystem path for artifacts |
+| `S3_ENDPOINT` | `http://localhost:9000` | S3/MinIO endpoint URL |
+| `S3_ACCESS_KEY` | (required for s3) | S3 access key |
+| `S3_SECRET_KEY` | (required for s3) | S3 secret key |
+| `S3_BUCKET` | `mnemory` | S3 bucket name |
+| `S3_REGION` | | S3 region (optional) |
+
+## Server
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_HOST` | `0.0.0.0` | Listen host |
+| `MCP_PORT` | `8050` | Listen port |
+| `MCP_API_KEY` | | Single API key for authentication (empty = no auth) |
+| `MCP_API_KEYS` | | JSON dict mapping API keys to user IDs (see [Authentication](#authentication) below) |
+| `INSTRUCTION_MODE` | `proactive` | LLM behavioral instructions: `passive`, `proactive`, or `personality` (see [Instruction Modes](#instruction-modes) below) |
+| `ENABLE_DELETE_ALL` | `false` | Enable the `delete_all_memories` tool (destructive, disabled by default) |
+| `ENABLE_METRICS` | `true` | Enable the `/metrics` Prometheus endpoint |
+| `METRICS_CACHE_TTL` | `60` | Cache TTL in seconds for Qdrant gauge aggregation on `/metrics` |
+| `MGMT_PORT` | | Management port for `/health` and `/metrics` (see [Management Port](#management-port) below) |
+| `MGMT_HOST` | (falls back to `MCP_HOST`) | Bind host for the management port |
+| `LOG_LEVEL` | `INFO` | Logging level |
+
+## Memory Behavior
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_MEMORY_LENGTH` | `1000` | Max characters for fast memory content |
+| `MAX_ARTIFACT_SIZE` | `102400` | Max bytes per artifact (100KB) |
+| `MAX_CORE_CONTEXT_LENGTH` | `4000` | Max characters for get_core_memories response |
+| `DEFAULT_RECENT_DAYS` | `7` | Default days for recent context in core memories |
+| `RECENT_LIMIT_USER` | `25` | Max recent user memories to include |
+| `RECENT_LIMIT_AGENT` | `25` | Max recent agent memories to include |
+| `AUTO_CLASSIFY` | `true` | Auto-classify memory metadata (type, categories, importance, pinned) via LLM when not provided |
+| `CLASSIFY_CACHE_TTL` | `300` | TTL in seconds for the category cache used during auto-classification |
+| `CORE_MEMORIES_CACHE_TTL` | `300` | TTL in seconds for the core memories cache (get_core_memories). Set to 0 to disable. Invalidated on memory mutations. |
+| `CORE_TOP_MEMORIES` | `10` | Max non-pinned memories to include in core sections by importance. Set to 0 to disable (only pinned memories). |
+| `CORE_MIN_IMPORTANCE` | `normal` | Minimum importance for non-pinned memories in core sections. Options: low, normal, high, critical |
+| `TTL_FACT` | (none) | Default TTL in days for `fact` memories (empty = permanent) |
+| `TTL_PREFERENCE` | (none) | Default TTL in days for `preference` memories (empty = permanent) |
+| `TTL_EPISODIC` | `90` | Default TTL in days for `episodic` memories |
+| `TTL_PROCEDURAL` | `60` | Default TTL in days for `procedural` memories |
+| `TTL_CONTEXT` | `7` | Default TTL in days for `context` memories |
+| `TRACK_MEMORY_ACCESS` | `true` | Update last_accessed_at and reset TTL on search/recall |
+| `SEARCH_SCORE_THRESHOLD` | `0.30` | Minimum score for search results (0.0-1.0). Results below this are filtered out |
+| `DEDUP_SIMILARITY_THRESHOLD` | `0.4` | Minimum similarity for deduplication matching during memory ingestion |
+| `SEARCH_SIMILARITY_WEIGHT` | `0.9` | Weight for cosine similarity in search ranking (remainder goes to importance). Default 0.9 = 90% similarity, 10% importance |
+| `SEARCH_KEYWORD_WEIGHT` | `0.2` | Weight for keyword overlap boost in search results. Set to 0.0 to disable |
+| `DEFAULT_TIMEZONE` | | Default IANA timezone for naive `event_date` values (e.g., `Europe/Prague`). Empty = server local timezone. Can be overridden per session via `X-Timezone` header |
+| `FIND_MEMORIES_QUERIES` | `5` | Maximum number of search queries the LLM generates for `find_memories` (may return fewer or zero) |
+| `MAX_INPUT_LENGTH` | `400000` | Max chars for input to `add_memory(infer=True)` and `remember()`. ~100k tokens |
+| `MEMORY_SESSION_TTL` | `3600` | Default session idle TTL in seconds (1 hour) |
+| `MEMORY_SESSION_SWEEP_INTERVAL` | `300` | Interval in seconds between session cleanup sweeps (5 minutes) |
+| `RECALL_MAX_RESULTS` | `10` | Max search results returned by recall endpoint |
+| `REMEMBER_RATE_LIMIT` | `10` | Max remember requests per minute per user. 0 = no limit |
+| `FSCK_CACHE_TTL` | `86400` | How long memory check results are cached in seconds (24 hours) |
+| `FSCK_LLM_CONCURRENCY` | `4` | Max concurrent LLM calls during memory check. Set to 1 for sequential |
+| `FSCK_LLM_MODEL` | | Override LLM model for memory check (empty = use main `LLM_MODEL`) |
+| `FSCK_REASONING_EFFORT` | `medium` | Reasoning effort for memory check LLM calls (empty = use main `LLM_REASONING_EFFORT`). Defaults to `medium` for better accuracy |
+| `FSCK_AUTO_INTERVAL` | `0` | Interval in hours between automatic background memory checks. `0` = disabled |
+| `FSCK_AUTO_MIN_CONFIDENCE` | `0.95` | Minimum confidence score (0.0-1.0) for a fix to be auto-applied |
+| `FSCK_AUTO_MIN_SEVERITY` | `medium` | Minimum severity for a fix to be auto-applied. Options: `low`, `medium`, `high` |
+
+## Instruction Modes
+
+The `INSTRUCTION_MODE` env var controls how aggressively the LLM uses memory tools. These instructions are sent via the MCP protocol and injected into the LLM's system prompt by supporting clients.
+
+| Mode | Description |
+|---|---|
+| `passive` | Soft guidance — use memory when asked or clearly relevant. Minimal behavioral directives. |
+| `proactive` | **Default.** Always search before answering, proactively store new information, treat memory as primary context. Plug-and-play magic. |
+| `personality` | Proactive + identity development. The agent can develop and maintain its own personality, knowledge, and "soul" through `role=assistant` memories. |
+
+For most setups, `proactive` (default) is the right choice — it makes memory work automatically without any system prompt configuration. Use `personality` when all connected agents should develop their own identity. Use `passive` for manual control.
+
+To activate personality behavior for a **specific agent** while keeping the server in `proactive` mode, add the personality snippet to that agent's system prompt instead. See [system-prompts/](system-prompts/) for templates.
+
+## Authentication
+
+### Session-Level Identity (`MCP_API_KEYS`)
+
+Map API keys to user IDs so the LLM doesn't need to pass `user_id` in every tool call:
+
+```bash
+MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
+```
+
+- `"key": "username"` — authenticates AND binds `user_id=username` to the session
+- `"key": "*"` — authenticates only (wildcard), `user_id` must come from identity headers or tool parameter
+
+**Identity resolution priority (user_id):**
+1. API key mapping (non-wildcard) — most secure, cannot be overridden
+2. `X-User-Id` HTTP header — explicit identity header
+3. `X-OpenWebUI-User-Email` HTTP header — automatic Open WebUI integration
+4. Tool parameter — backward compatible fallback
+
+**Agent ID** is set via the `X-Agent-Id` HTTP header per client connection:
+- Open WebUI: `X-Agent-Id: open-webui`
+- Claude Code: `X-Agent-Id: claude-code`
+
+**Timezone** is set via the `X-Timezone` HTTP header per client connection. This overrides the `DEFAULT_TIMEZONE` env var for the session, affecting how naive `event_date` values are interpreted. Use an IANA timezone name (e.g., `Europe/Prague`, `America/New_York`).
+
+`MCP_API_KEY` (single key) is kept for backward compatibility — it authenticates but does not bind to a user. If both `MCP_API_KEYS` and `MCP_API_KEY` are set, `MCP_API_KEYS` is checked first, then `MCP_API_KEY` as fallback.
+
+## Management Port
+
+By default, `/health` and `/metrics` are served on the main port (`MCP_PORT`) and go through standard API key authentication. Set `MGMT_PORT` to run these endpoints on a separate port **without authentication** — useful for Kubernetes probes and Prometheus scraping:
+
+```bash
+MGMT_PORT=9090          # /health and /metrics on port 9090, no auth
+MGMT_HOST=127.0.0.1     # Optional: bind management to localhost only
+```
+
+When `MGMT_PORT` is set and differs from `MCP_PORT`:
+- `/health` and `/metrics` are served on `MGMT_PORT` without auth
+- The main port (`MCP_PORT`) does NOT serve `/health` or `/metrics`
+- All MCP and REST API endpoints remain on the main port with auth
+
+When `MGMT_PORT` is not set (default):
+- `/health` and `/metrics` are on the main port with standard auth
+- Kubernetes probes and Prometheus must send a valid API key

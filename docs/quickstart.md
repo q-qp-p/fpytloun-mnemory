@@ -123,4 +123,6 @@ You say: "I decided to go with Recharts for the dashboard"
 - [Open WebUI -- Basic](system-prompts/openwebui-basic.md) -- Detailed Open WebUI setup
 - [Open WebUI -- Personality](system-prompts/openwebui-personality.md) -- Agents with evolving personality
 - [Claude Code / OpenCode](system-prompts/claude-code.md) -- Coding assistants with memory
-- [README.md](../README.md) -- Full configuration reference
+- [Configuration](configuration.md) -- Full configuration reference
+- [Memory Model](memory-model.md) -- Types, categories, TTL, roles
+- [Architecture](architecture.md) -- How it works under the hood

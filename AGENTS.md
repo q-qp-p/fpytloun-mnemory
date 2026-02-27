@@ -195,7 +195,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 4. Return JSON string via `json.dumps()`
 5. Wrap in try/except returning error JSON on failure
 6. Update `instructions.py` if the tool changes the usage workflow
-7. Update README.md tool table
+7. Update `docs/mcp-tools.md` tool table
 
 ### Adding a new storage backend
 
@@ -204,7 +204,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 3. Add configuration fields to `config.py`
 4. Add the backend selection logic in the store's `__init__`
 5. Add optional dependency to `pyproject.toml`
-6. Update README.md configuration table
+6. Update `docs/configuration.md` configuration table
 
 ## Important Notes
 

@@ -1,10 +1,35 @@
 # Documentation
 
-Setup guides, system prompt templates, and integration instructions for mnemory.
+Welcome to the mnemory documentation. New to mnemory? Start with the **[Quick Start Guide](quickstart.md)**.
 
-## Quick Start
+## Getting Started
 
-New to mnemory? Start here: **[Quick Start Guide](quickstart.md)** — get running in 5 minutes.
+| Document | Description |
+|---|---|
+| [Quick Start](quickstart.md) | Get running in 5 minutes with any client |
+| [Deployment](deployment.md) | Production setup, Docker, authentication, Kubernetes |
+
+## Core Concepts
+
+| Document | Description |
+|---|---|
+| [Memory Model](memory-model.md) | Types, categories, importance, TTL, roles, scoping, sub-agents |
+| [Architecture](architecture.md) | System diagram, detailed flows for storing, searching, and recalling |
+
+## Reference
+
+| Document | Description |
+|---|---|
+| [Configuration](configuration.md) | All environment variables — LLM, storage, server, memory behavior |
+| [MCP Tools](mcp-tools.md) | 16 MCP tools — memory CRUD, search, artifacts |
+| [REST API](rest-api.md) | Full REST API, fsck pipeline, recall/remember endpoints |
+
+## Operations
+
+| Document | Description |
+|---|---|
+| [Management UI](management-ui.md) | Built-in web UI — dashboard, search, browse, graph, health checks |
+| [Monitoring](monitoring.md) | Prometheus metrics, Grafana dashboard |
 
 ## Client Setup Guides
 
@@ -54,6 +79,8 @@ Runnable plugin code lives in the [`integrations/`](../integrations/) directory:
 | [Open WebUI](../integrations/openwebui/) | Filter function for automatic recall/remember |
 | [Grafana](../integrations/grafana/) | Pre-built monitoring dashboard |
 
-## Configuration Reference
+## Development
 
-See the main [README.md](../README.md) for the full configuration reference (environment variables, memory model, REST API, architecture).
+| Document | Description |
+|---|---|
+| [Development](development.md) | Building, testing, linting, UI development |
