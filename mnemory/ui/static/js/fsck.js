@@ -686,6 +686,19 @@ function fsckTab() {
       return cards;
     },
 
+    /** Scroll to a specific issue group section and expand it if collapsed. */
+    scrollToGroup(type) {
+      // Expand the group if it's collapsed
+      if (this.collapsedGroups[type]) {
+        delete this.collapsedGroups[type];
+      }
+      // Wait for Alpine to render the expanded content, then scroll
+      this.$nextTick(() => {
+        const el = document.getElementById('fsck-group-' + type);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    },
+
     _recalcSummary() {
       if (!this.summary) return;
       const counts = { duplicate: 0, quality: 0, split: 0, contradiction: 0, reclassify: 0, security: 0 };

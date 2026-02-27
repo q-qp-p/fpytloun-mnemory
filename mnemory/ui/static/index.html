@@ -1264,8 +1264,10 @@
             <template x-if="summary.total > 0">
               <div>
                 <div class="flex flex-wrap gap-3 mb-4">
-                  <template x-for="card in summaryCards()" :key="card.type">
-                    <div class="rounded-lg border px-4 py-3 min-w-[120px]" :class="card.cls">
+                   <template x-for="card in summaryCards()" :key="card.type">
+                    <div class="rounded-lg border px-4 py-3 min-w-[120px] cursor-pointer hover:brightness-125 transition"
+                         :class="card.cls"
+                         @click="scrollToGroup(card.type)">
                       <div class="text-2xl font-bold" x-text="card.count"></div>
                       <div class="text-xs text-secondary" x-text="card.label"></div>
                     </div>
@@ -1312,7 +1314,7 @@
         <template x-if="status === 'completed' && issues.length > 0">
           <div class="space-y-6">
             <template x-for="group in groupedIssues" :key="group.type">
-              <div>
+              <div :id="'fsck-group-' + group.type">
                 <!-- Group Header (collapsible + group select checkbox) -->
                 <div class="w-full flex items-center gap-3 mb-3">
                   <input type="checkbox"
