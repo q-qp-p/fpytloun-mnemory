@@ -528,6 +528,10 @@
           </div>
           <div class="ml-auto flex items-center gap-3">
             <span class="text-sm text-muted">Showing <span class="text-secondary" x-text="sortedMemories.length"></span> of <span class="text-secondary" x-text="totalFiltered"></span><span x-show="hasMoreOnServer">+</span> memories</span>
+            <button @click="loadMemories(false)" class="btn-secondary text-sm" :disabled="loading">
+              <span x-show="!loading">Refresh</span>
+              <span x-show="loading">Loading...</span>
+            </button>
             <button @click="toggleBulkMode()" class="btn-secondary text-sm"
                     :class="bulkMode && 'ring-1 ring-brand-accent/50'"
                     x-text="bulkMode ? 'Cancel Select' : 'Select'"></button>
