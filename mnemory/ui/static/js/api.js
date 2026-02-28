@@ -198,6 +198,10 @@ const MnemoryAPI = {
   applyFsck(checkId, issueIds = null) {
     return this.post(`/fsck/${checkId}/apply`, { issue_ids: issueIds });
   },
+
+  autoRunFsck() {
+    return this.post('/fsck/auto-run', {});
+  },
 };
 
 // ── Color helpers ──────────────────────────────────────────────────

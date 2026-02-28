@@ -91,6 +91,7 @@ def _check_to_response(check) -> FsckStatusResponse:
                     reasoning=issue.reasoning,
                     affected_memories=affected,
                     actions=actions,
+                    applied=issue.issue_id in check.applied_issue_ids,
                 )
             )
 
@@ -174,6 +175,47 @@ def start_fsck(
     )
 
     return FsckStartResponse(check_id=check.check_id, status="running")
+
+
+def _get_maintenance_service():
+    """Lazy import to avoid circular dependencies."""
+    from mnemory.server import _get_maintenance_service
+
+    return _get_maintenance_service()
+
+
+@router.post("/auto-run", response_model=FsckStartResponse)
+def auto_run_fsck(
+    background_tasks: BackgroundTasks,
+    ctx: SessionContext = Depends(get_session_context),
+):
+    """Trigger an immediate auto-fsck run for the current user.
+
+    Runs the same pipeline as the scheduled auto-fsck: check all memories,
+    then auto-apply fixes that meet the configured confidence and severity
+    thresholds. Returns the check_id to poll for progress.
+
+    The check + auto-apply runs in the background. Poll
+    ``GET /api/fsck/{check_id}`` for progress and results.
+    """
+    _record("fsck_auto_run", ctx)
+
+    maintenance = _get_maintenance_service()
+    if maintenance is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Auto-fsck is not available (maintenance service not initialized)",
+        )
+
+    try:
+        check_id = maintenance.start_run_now(user_id=ctx.user_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Run check + auto-apply in background
+    background_tasks.add_task(maintenance.finish_run_now, check_id, ctx.user_id)
+
+    return FsckStartResponse(check_id=check_id, status="running")
 
 
 @router.get("/{check_id}", response_model=FsckStatusResponse)

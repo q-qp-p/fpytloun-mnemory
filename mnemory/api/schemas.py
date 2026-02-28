@@ -480,6 +480,9 @@ class FsckIssue(BaseModel):
     )
     affected_memories: list[FsckAffectedMemory]
     actions: list[FsckAction]
+    applied: bool = Field(
+        False, description="Whether this issue's fixes have already been applied"
+    )
 
 
 class FsckProgress(BaseModel):

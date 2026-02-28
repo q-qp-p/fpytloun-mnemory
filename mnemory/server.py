@@ -87,6 +87,12 @@ def _get_service():
 
 
 _fsck_service = None
+_maintenance_service = None
+
+
+def _get_maintenance_service():
+    """Get the MaintenanceService singleton (may be None if not yet started)."""
+    return _maintenance_service
 
 
 def _get_fsck_service():
@@ -1676,6 +1682,7 @@ async def lifespan(app):
         _fsck_service._store.start_cleanup_task()
 
     # Start periodic maintenance (auto-fsck) if enabled
+    global _maintenance_service
     from mnemory.maintenance import MaintenanceService
 
     maintenance = MaintenanceService(
@@ -1683,12 +1690,20 @@ async def lifespan(app):
         fsck=_get_fsck_service(),
         collector=get_collector(),
     )
+    _maintenance_service = maintenance
+
+    # Wire maintenance service to metrics collector for schedule info
+    collector = get_collector()
+    if collector is not None:
+        collector.set_maintenance_service(maintenance)
+
     await maintenance.start()
 
     async with mcp.session_manager.run():
         yield
 
     await maintenance.stop()
+    _maintenance_service = None
     await _session_store.stop_cleanup_task()
     if _fsck_service is not None:
         await _fsck_service._store.stop_cleanup_task()

@@ -51,6 +51,31 @@ class MaintenanceService:
         self._collector = collector
         self._task: asyncio.Task | None = None
 
+        # Scheduling state — exposed via properties for the stats endpoint.
+        self._next_run_at: float | None = None  # Unix timestamp
+        self._running: bool = False
+        self._last_check_ids: dict[str, str] = {}  # user_id → check_id
+
+    # ── Public properties ────────────────────────────────────────────
+
+    @property
+    def next_run_at(self) -> float | None:
+        """Unix timestamp of the next scheduled auto-fsck run.
+
+        Returns None if auto-fsck is disabled or a run is in progress.
+        """
+        return self._next_run_at
+
+    @property
+    def is_running(self) -> bool:
+        """Whether an auto-fsck run is currently in progress."""
+        return self._running
+
+    @property
+    def last_check_ids(self) -> dict[str, str]:
+        """Mapping of user_id → most recent auto-fsck check_id."""
+        return dict(self._last_check_ids)
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -76,7 +101,101 @@ class MaintenanceService:
             except asyncio.CancelledError:
                 pass
             self._task = None
+            self._next_run_at = None
             logger.debug("Auto-fsck maintenance loop stopped")
+
+    # ── Run Now ──────────────────────────────────────────────────────
+
+    def start_run_now(self, user_id: str) -> str:
+        """Start an immediate auto-fsck check for a single user.
+
+        Creates the check synchronously and returns the check_id. The
+        caller is responsible for running the check in the background
+        (via :meth:`finish_run_now`).
+
+        Args:
+            user_id: The user to run auto-fsck for.
+
+        Returns:
+            The check_id of the created check.
+
+        Raises:
+            RuntimeError: If auto-fsck is disabled.
+        """
+        if self._config.memory.fsck_auto_interval <= 0:
+            raise RuntimeError("Auto-fsck is disabled (FSCK_AUTO_INTERVAL=0)")
+
+        check = self._fsck.start_check(user_id=user_id)
+        self._last_check_ids[user_id] = check.check_id
+        logger.info(
+            "Auto-fsck: manual run started for user %s (check %s)",
+            user_id,
+            check.check_id,
+        )
+        return check.check_id
+
+    def finish_run_now(self, check_id: str, user_id: str) -> None:
+        """Run the check and auto-apply qualifying fixes (blocking).
+
+        Intended to be called in a background task after
+        :meth:`start_run_now`. This is synchronous and may take minutes.
+        """
+        min_confidence = self._config.memory.fsck_auto_min_confidence
+        min_severity = self._config.memory.fsck_auto_min_severity
+
+        self._fsck.run_check(check_id)
+
+        check = self._fsck.get_check(check_id)
+        if check is None or check.status != "completed":
+            status = check.status if check else "not found"
+            logger.warning(
+                "Auto-fsck (manual): check %s ended with status=%s",
+                check_id,
+                status,
+            )
+            return
+
+        # Filter issues that meet the thresholds
+        qualifying_ids = [
+            issue.issue_id
+            for issue in check.issues
+            if self._meets_thresholds(issue, min_confidence, min_severity)
+        ]
+
+        fixes_applied = 0
+        fixes_failed = 0
+
+        if qualifying_ids:
+            logger.info(
+                "Auto-fsck (manual): applying %d/%d qualifying fixes for user %s",
+                len(qualifying_ids),
+                len(check.issues),
+                user_id,
+            )
+            result = self._fsck.apply_check(check_id, qualifying_ids)
+            fixes_applied = result.get("applied", 0)
+            fixes_failed = result.get("failed", 0)
+            logger.info(
+                "Auto-fsck (manual): user %s — applied=%d, failed=%d",
+                user_id,
+                fixes_applied,
+                fixes_failed,
+            )
+        else:
+            logger.debug(
+                "Auto-fsck (manual): no qualifying fixes for user %s "
+                "(%d issues below threshold)",
+                user_id,
+                len(check.issues),
+            )
+
+        if self._collector is not None:
+            self._collector.record_autofsck_run(
+                user_id=user_id,
+                issues_found=len(qualifying_ids),
+                fixes_applied=fixes_applied,
+                fixes_failed=fixes_failed,
+            )
 
     # ── Loop ─────────────────────────────────────────────────────────
 
@@ -84,16 +203,22 @@ class MaintenanceService:
         """Main maintenance loop: sleep first, then run."""
         interval_seconds = self._config.memory.fsck_auto_interval * 3600
         while True:
+            self._next_run_at = time.time() + interval_seconds
             try:
                 await asyncio.sleep(interval_seconds)
             except asyncio.CancelledError:
+                self._next_run_at = None
                 return
+            self._next_run_at = None
             try:
+                self._running = True
                 await self._run_auto_fsck()
             except asyncio.CancelledError:
                 return
             except Exception:
                 logger.exception("Auto-fsck run failed unexpectedly")
+            finally:
+                self._running = False
 
     # ── Core logic ───────────────────────────────────────────────────
 
@@ -129,6 +254,9 @@ class MaintenanceService:
         # start_check() is synchronous (just creates a FsckCheck object)
         check = self._fsck.start_check(user_id=user_id)
         check_id = check.check_id
+
+        # Track the check_id for this user (for UI retrieval).
+        self._last_check_ids[user_id] = check_id
 
         logger.debug("Auto-fsck: running check %s for user %s", check_id, user_id)
 
@@ -207,7 +335,7 @@ class MaintenanceService:
         Args:
             issue: FsckIssue object with ``confidence`` (float) and
                    ``severity`` (str) attributes.
-            min_confidence: Minimum confidence score (0.0–1.0).
+            min_confidence: Minimum confidence score (0.0-1.0).
             min_severity: Minimum severity level ("low", "medium", "high").
         """
         confidence = getattr(issue, "confidence", 0.0) or 0.0

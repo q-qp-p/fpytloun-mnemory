@@ -106,6 +106,9 @@ class MetricsCollector:
         self._cache_lock = threading.Lock()
         self._cache_timestamp: float = 0.0
 
+        # Optional reference to MaintenanceService for schedule info.
+        self._maintenance: Any = None
+
         # Custom registry (not the global default)
         self._registry = CollectorRegistry()
 
@@ -206,6 +209,14 @@ class MetricsCollector:
         )
 
     # ── Public API ────────────────────────────────────────────────
+
+    def set_maintenance_service(self, maintenance: Any) -> None:
+        """Set a reference to the MaintenanceService for schedule info.
+
+        Called once during startup after both MetricsCollector and
+        MaintenanceService are created.
+        """
+        self._maintenance = maintenance
 
     def record_operation(
         self,
@@ -515,6 +526,21 @@ class MetricsCollector:
                 "min_severity": autofsck_cfg.fsck_auto_min_severity,
                 "by_user": autofsck_by_user,
                 "totals": autofsck_totals,
+                "next_run_at": (
+                    self._maintenance.next_run_at
+                    if self._maintenance is not None
+                    else None
+                ),
+                "running": (
+                    self._maintenance.is_running
+                    if self._maintenance is not None
+                    else False
+                ),
+                "last_check_ids": (
+                    self._maintenance.last_check_ids
+                    if self._maintenance is not None
+                    else {}
+                ),
             },
         }
 

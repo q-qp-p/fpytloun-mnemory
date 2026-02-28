@@ -1261,26 +1261,49 @@
           </div>
         </div>
 
-        <!-- Auto-fsck status banner -->
+        <!-- Auto-fsck status banner (self-contained x-data, independent of fsckTab scope) -->
         <template x-if="$store.metrics?.autofsck?.enabled">
-          <div class="mb-6 border-l-4 border-l-teal-500 bg-brand-elevated rounded-r-lg px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-            <span class="font-medium text-teal-400">Auto-Check Active</span>
-            <span class="text-secondary">
-              Every <span class="text-[#E6EDF3]" x-text="$store.metrics.autofsck.interval_hours"></span>h
-              &middot; min confidence <span class="text-[#E6EDF3]" x-text="($store.metrics.autofsck.min_confidence * 100).toFixed(0) + '%'"></span>
-              &middot; min severity <span class="text-[#E6EDF3]" x-text="$store.metrics.autofsck.min_severity"></span>
-            </span>
-            <template x-if="lastAutoRun">
+          <div x-data="autoFsckBanner()" x-init="_startCountdown()" class="mb-6 border-l-4 border-l-teal-500 bg-brand-elevated rounded-r-lg px-4 py-3 text-sm">
+            <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+              <span class="font-medium text-teal-400">Auto-Check Active</span>
               <span class="text-secondary">
-                Last run: <span class="text-[#E6EDF3]" x-text="lastAutoRunAge"></span>
-                <template x-if="lastAutoRunApplied > 0">
-                  <span class="ml-1 text-teal-400">(<span x-text="lastAutoRunApplied"></span> fix<span x-show="lastAutoRunApplied !== 1">es</span> applied)</span>
+                Every <span class="text-[#E6EDF3]" x-text="$store.metrics.autofsck.interval_hours"></span>h
+                &middot; min confidence <span class="text-[#E6EDF3]" x-text="($store.metrics.autofsck.min_confidence * 100).toFixed(0) + '%'"></span>
+                &middot; min severity <span class="text-[#E6EDF3]" x-text="$store.metrics.autofsck.min_severity"></span>
+              </span>
+              <template x-if="lastRunAge">
+                <span class="text-secondary">
+                  Last run: <span class="text-[#E6EDF3]" x-text="lastRunAge"></span>
+                  <template x-if="lastRunApplied > 0">
+                    <span class="ml-1 text-teal-400">(<span x-text="lastRunApplied"></span> fix<span x-show="lastRunApplied !== 1">es</span> applied)</span>
+                  </template>
+                </span>
+              </template>
+              <template x-if="!lastRunAge">
+                <span class="text-secondary italic">No runs yet this session</span>
+              </template>
+              <!-- Next run countdown -->
+              <template x-if="countdown">
+                <span class="text-secondary">
+                  Next run: <span class="text-[#E6EDF3]" x-text="countdown"></span>
+                </span>
+              </template>
+              <!-- Action buttons -->
+              <span class="ml-auto flex items-center gap-2">
+                <button @click="runNow()"
+                        class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all duration-200 bg-teal-500/20 text-teal-300 border border-teal-500/40 hover:bg-teal-500/30 hover:border-teal-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                        :disabled="runLoading">
+                  <span x-show="!runLoading">Run Now</span>
+                  <span x-show="runLoading">Running...</span>
+                </button>
+                <template x-if="hasLastResults && !runLoading">
+                  <button @click="viewLastResults()"
+                          class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all duration-200 text-teal-400 hover:text-teal-300 hover:bg-teal-500/10">
+                    View Last Results
+                  </button>
                 </template>
               </span>
-            </template>
-            <template x-if="!lastAutoRun">
-              <span class="text-secondary italic">No runs yet this session</span>
-            </template>
+            </div>
           </div>
         </template>
 
@@ -1577,6 +1600,59 @@
                 </div>
               </div>
             </template>
+          </div>
+        </template>
+
+        <!-- Applied Issues Log (auto-applied fixes, read-only) -->
+        <template x-if="status === 'completed' && appliedIssueCount > 0">
+          <div class="mt-6">
+            <button @click="showAppliedIssues = !showAppliedIssues"
+                    class="flex items-center gap-2 text-sm text-secondary hover:text-[#E6EDF3] transition-colors mb-3">
+              <svg class="w-3 h-3 transition-transform" :class="showAppliedIssues && 'rotate-90'"
+                   fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+              </svg>
+              <span class="text-teal-400 font-medium" x-text="appliedIssueCount"></span>
+              <span>fix<span x-show="appliedIssueCount !== 1">es</span> auto-applied</span>
+            </button>
+
+            <div x-show="showAppliedIssues" x-transition class="space-y-2 opacity-70">
+              <template x-for="issue in appliedIssues" :key="issue.issue_id">
+                <div class="flex items-start gap-3 px-4 py-2.5 rounded-lg bg-brand-surface border border-brand-border/50">
+                  <!-- Action icon -->
+                  <template x-if="issue.actions && issue.actions.length > 0">
+                    <span class="mt-0.5 text-sm shrink-0"
+                          :class="issue.actions[0].action === 'delete' ? 'text-red-400' : issue.actions[0].action === 'update' ? 'text-blue-400' : 'text-green-400'"
+                          x-text="issue.actions[0].action === 'delete' ? '\u2716' : issue.actions[0].action === 'update' ? '\u270E' : '\u002B'">
+                    </span>
+                  </template>
+                  <!-- Issue info -->
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="badge text-xs" :class="issueTypeBadgeClass(issue.type)" x-text="issue.type"></span>
+                      <span class="badge text-xs" :class="severityBadgeClass(issue.severity)" x-text="issue.severity"></span>
+                      <template x-if="issue.confidence != null">
+                        <span class="text-xs text-muted" x-text="(issue.confidence * 100).toFixed(0) + '%'"></span>
+                      </template>
+                    </div>
+                    <p class="text-sm text-secondary leading-relaxed" x-text="issue.reasoning"></p>
+                    <!-- Affected memory IDs -->
+                    <div class="flex flex-wrap gap-1 mt-1.5">
+                      <template x-for="mem in issue.affected_memories" :key="mem.id">
+                        <span class="text-xs font-mono text-muted bg-brand-bg px-1.5 py-0.5 rounded" x-text="mem.id.slice(0, 8) + '...'"></span>
+                      </template>
+                      <!-- Action summary -->
+                      <template x-for="action in issue.actions" :key="action.memory_id || Math.random()">
+                        <span class="text-xs px-1.5 py-0.5 rounded"
+                              :class="action.action === 'delete' ? 'bg-red-500/10 text-red-400' : action.action === 'update' ? 'bg-blue-500/10 text-blue-400' : 'bg-green-500/10 text-green-400'"
+                              x-text="action.action.toUpperCase()">
+                        </span>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
           </div>
         </template>
 

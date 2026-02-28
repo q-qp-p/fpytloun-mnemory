@@ -45,7 +45,120 @@ const FSCK_GROUP_META = {
   reclassify:    { label: 'Misclassified',     icon: '\u2699', borderCls: 'border-teal-500/30',   headerCls: 'text-teal-300' },
 };
 
-// ── Component ──────────────────────────────────────────────────────
+// ── Auto-fsck Banner Component ────────────────────────────────────
+// Self-contained Alpine component for the auto-fsck status banner.
+// Reads all data from $store.metrics (set by metricsTab), so it has
+// no dependency on fsckTab() scope — avoids Alpine scope errors when
+// the store updates before fsckTab is initialized.
+
+function autoFsckBanner() {
+  return {
+    runLoading: false,
+    countdown: null,
+    _timer: null,
+
+    /** Start a 30-second countdown refresh interval. */
+    _startCountdown() {
+      this._refreshCountdown();
+      this._timer = setInterval(() => this._refreshCountdown(), 30000);
+    },
+
+    /** Compute countdown string from $store.metrics.autofsck.next_run_at. */
+    _refreshCountdown() {
+      const af = Alpine.store('metrics')?.autofsck;
+      if (af?.running) {
+        this.countdown = 'Running now...';
+        return;
+      }
+      if (!af?.next_run_at) {
+        this.countdown = null;
+        return;
+      }
+      const remaining = Math.max(0, Math.floor(af.next_run_at - Date.now() / 1000));
+      if (remaining <= 0) {
+        this.countdown = 'Starting soon...';
+        return;
+      }
+      const h = Math.floor(remaining / 3600);
+      const m = Math.floor((remaining % 3600) / 60);
+      this.countdown = h > 0 ? `${h}h ${m}m` : `${m}m`;
+    },
+
+    /** Human-readable age of the most recent auto-fsck run. */
+    get lastRunAge() {
+      const byUser = Alpine.store('metrics')?.autofsck?.by_user || {};
+      let latestTs = null;
+      for (const uid of Object.keys(byUser)) {
+        const ts = byUser[uid]?.last_run;
+        if (ts && (latestTs === null || ts > latestTs)) latestTs = ts;
+      }
+      if (!latestTs) return null;
+      return formatAge(Math.floor(Date.now() / 1000) - latestTs);
+    },
+
+    /** Number of fixes applied in the most recent auto-fsck run. */
+    get lastRunApplied() {
+      const byUser = Alpine.store('metrics')?.autofsck?.by_user || {};
+      let latestTs = null;
+      let applied = 0;
+      for (const uid of Object.keys(byUser)) {
+        const u = byUser[uid];
+        if (u.last_run && (latestTs === null || u.last_run > latestTs)) {
+          latestTs = u.last_run;
+          applied = u.fixes_applied || 0;
+        }
+      }
+      return applied;
+    },
+
+    /** Whether there are last check results available to view. */
+    get hasLastResults() {
+      const ids = Alpine.store('metrics')?.autofsck?.last_check_ids || {};
+      return Object.keys(ids).length > 0;
+    },
+
+    /** Trigger an immediate auto-fsck run. Communicates with fsckTab via event. */
+    async runNow() {
+      this.runLoading = true;
+      try {
+        const data = await MnemoryAPI.autoRunFsck();
+        sessionStorage.setItem('mnemory_fsck_check_id', data.check_id);
+        Alpine.store('notify').success('Auto-check started');
+        window.dispatchEvent(new CustomEvent('mnemory:autorun-started', {
+          detail: { checkId: data.check_id },
+        }));
+      } catch (err) {
+        Alpine.store('notify').error(`Auto-run failed: ${err.message}`);
+      } finally {
+        this.runLoading = false;
+      }
+    },
+
+    /** Load the last auto-check results into fsckTab via event. */
+    viewLastResults() {
+      const ids = Alpine.store('metrics')?.autofsck?.last_check_ids || {};
+      const userId = Alpine.store('auth')?.selectedUser || Alpine.store('auth')?.userId;
+      const checkId = ids[userId];
+      if (!checkId) {
+        Alpine.store('notify').warning('No auto-check results available');
+        return;
+      }
+      sessionStorage.setItem('mnemory_fsck_check_id', checkId);
+      window.dispatchEvent(new CustomEvent('mnemory:autorun-started', {
+        detail: { checkId },
+      }));
+    },
+
+    destroy() {
+      if (this._timer) {
+        clearInterval(this._timer);
+        this._timer = null;
+      }
+    },
+  };
+}
+
+// ── Check Tab Component ───────────────────────────────────────────
 
 function fsckTab() {
   return {
@@ -90,10 +203,8 @@ function fsckTab() {
     availableCategories: [],
     availableAgentIds: [],
 
-    // Auto-fsck status (read from Alpine.store('metrics'))
-    lastAutoRun: null,        // Unix timestamp of last auto-fsck run (null = none)
-    lastAutoRunAge: null,     // Human-readable age string
-    lastAutoRunApplied: 0,    // Fixes applied in last run
+    // Applied issues display
+    showAppliedIssues: false,
 
     // ── Lifecycle ──────────────────────────────────────────────
 
@@ -109,8 +220,6 @@ function fsckTab() {
           if (!this.checkId) {
             this._restoreLastCheck();
           }
-          // Refresh auto-fsck status banner
-          this._loadAutoFsckStatus();
         }
       });
 
@@ -119,6 +228,22 @@ function fsckTab() {
           this.reset();
           this._loadAgentIds();
           sessionStorage.removeItem('mnemory_fsck_check_id');
+        }
+      });
+
+      // Listen for auto-run events from the banner component
+      window.addEventListener('mnemory:autorun-started', (e) => {
+        const { checkId } = e.detail;
+        if (checkId) {
+          this.checkId = checkId;
+          this.status = 'running';
+          this.loading = true;
+          this.progress = null;
+          this.summary = null;
+          this.issues = [];
+          this.error = null;
+          this.selectedIssues = {};
+          this.startPolling();
         }
       });
     },
@@ -142,42 +267,6 @@ function fsckTab() {
         const agents = data.agents || [];
         this.availableAgentIds = agents.map((a) => a.agent_id).filter(Boolean);
       } catch { /* ignore */ }
-    },
-
-    /**
-     * Populate auto-fsck status from the shared metrics store.
-     * Reads Alpine.store('metrics') which is set by metricsTab after loading.
-     */
-    _loadAutoFsckStatus() {
-      const metrics = Alpine.store('metrics');
-      if (!metrics?.autofsck?.enabled) {
-        this.lastAutoRun = null;
-        this.lastAutoRunAge = null;
-        this.lastAutoRunApplied = 0;
-        return;
-      }
-
-      // Find the most recent last_run across all users
-      const byUser = metrics.autofsck.by_user || {};
-      let latestTs = null;
-      let latestApplied = 0;
-      for (const uid of Object.keys(byUser)) {
-        const u = byUser[uid];
-        if (u.last_run && (latestTs === null || u.last_run > latestTs)) {
-          latestTs = u.last_run;
-          latestApplied = u.fixes_applied || 0;
-        }
-      }
-
-      this.lastAutoRun = latestTs;
-      this.lastAutoRunApplied = latestApplied;
-
-      if (latestTs) {
-        const ageSeconds = Math.floor(Date.now() / 1000) - latestTs;
-        this.lastAutoRunAge = formatAge(ageSeconds);
-      } else {
-        this.lastAutoRunAge = null;
-      }
     },
 
     // ── Actions ───────────────────────────────────────────────
@@ -223,7 +312,12 @@ function fsckTab() {
 
         if (data.status === 'completed') {
           this.issues = data.issues || [];
-          this.selectAll();
+          // Select only unapplied issues
+          for (const issue of this.issues) {
+            if (!issue.applied) {
+              this.selectedIssues[issue.issue_id] = true;
+            }
+          }
         } else if (data.status === 'running') {
           this.loading = true;
           this.startPolling();
@@ -265,7 +359,12 @@ function fsckTab() {
           this.issues = data.issues || [];
           this.stopPolling();
           this.loading = false;
-          this.selectAll();
+          // Select only unapplied issues
+          for (const issue of this.issues) {
+            if (!issue.applied) {
+              this.selectedIssues[issue.issue_id] = true;
+            }
+          }
         } else if (data.status === 'failed') {
           this.stopPolling();
           this.loading = false;
@@ -391,6 +490,7 @@ function fsckTab() {
       this.expandedMemories = {};
       this.loading = false;
       this.applying = false;
+      this.showAppliedIssues = false;
       this.severityFilter = 'all';
       this.confidenceFilter = 0;
       sessionStorage.removeItem('mnemory_fsck_check_id');
@@ -501,7 +601,7 @@ function fsckTab() {
     },
 
     get hasIssues() {
-      return this.issues.length > 0;
+      return this.issues.some((i) => !i.applied);
     },
 
     /**
@@ -510,10 +610,13 @@ function fsckTab() {
      * Issues within each group are sorted by severity (high > medium > low),
      * then by confidence (higher = more actionable) as a tiebreaker.
      * Only groups with at least one issue are included.
+     * Excludes already-applied issues (shown separately in appliedIssues).
      */
     get groupedIssues() {
       const byType = {};
       for (const issue of this.issues) {
+        // Skip applied issues — shown separately
+        if (issue.applied) continue;
         // Apply severity threshold filter
         if (this.severityFilter === 'medium' && issue.severity === 'low') continue;
         if (this.severityFilter === 'high' && issue.severity !== 'high') continue;
@@ -550,6 +653,18 @@ function fsckTab() {
         });
       }
       return groups;
+    },
+
+    /**
+     * Issues that were already auto-applied. Shown in a separate
+     * read-only collapsed section as an action log.
+     */
+    get appliedIssues() {
+      return this.issues.filter((i) => i.applied);
+    },
+
+    get appliedIssueCount() {
+      return this.appliedIssues.length;
     },
 
     // ── Group Collapse ────────────────────────────────────────
