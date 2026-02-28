@@ -366,22 +366,58 @@ Output: {{"memories": [
     "importance": "normal", "pinned": false, "event_date": null}}
 ], "store_artifact": false}}
 
+Input: "User: Our platform doesn't have distributed tracing yet, I want \
+to add it. I don't really understand how OpenTelemetry works.\n\
+Assistant: OpenTelemetry provides a unified framework for traces, metrics \
+and logs. I'd recommend starting with automatic instrumentation."
+Output: {{"memories": [
+  {{"text": "User wants to add distributed tracing to their platform using OpenTelemetry",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "episodic", "categories": ["technical"],
+    "importance": "normal", "pinned": false, "event_date": null}}
+], "store_artifact": false}}
+(The user's intent/goal is episodic — it will be fulfilled eventually. \
+The knowledge gap is too transient to store separately.)
+
+Input: "User: We decided to use PostgreSQL instead of MySQL for the \
+billing service.\n\
+Assistant: Good choice. I'll update the docker-compose and migrations."
+Output: {{"memories": [
+  {{"text": "User decided to use PostgreSQL instead of MySQL for the billing service",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "episodic", "categories": ["technical", "decisions"],
+    "importance": "high", "pinned": false, "event_date": null}}
+], "store_artifact": false}}
+(A decision is episodic — it records what was decided at a point in time.)
+
 ## Classification Rules
 
 For each extracted fact, classify:
 
 - **memory_type**: {memory_types}
   - preference = likes, dislikes, style choices, tool preferences
-  - fact = stable biographical or personal information (names, roles,
-    locations, relationships, long-term traits). NOT for transient
-    technical observations, current code state, or project-specific
-    implementation details — those are context.
-  - episodic = events, interactions, decisions made, conclusions reached
+  - fact = stable biographical or personal information that remains
+    true until explicitly changed (names, roles, locations,
+    relationships, long-term traits, enduring preferences). NOT for
+    goals, plans, intents, current knowledge gaps, feature requests,
+    transient technical observations, or project-specific
+    implementation details.
+    Heuristic: "Will this still be true in 3 months if nothing
+    changes?" If yes → fact. If it depends on completing a task or
+    learning something → episodic or context.
+  - episodic = events, interactions, decisions, conclusions, goals,
+    plans, intents, feature requests, current knowledge state.
+    Anything that HAPPENED, was DECIDED, or is WANTED/PLANNED.
+    "User wants X", "User decided Y", "User doesn't know Z",
+    "User is working on X" are all episodic — they describe a
+    point-in-time state that will change once acted upon.
   - procedural = workflows, habits, how the user does things
-  - context = session/short-term notes, current project state,
+  - context = session/short-term notes, current project/system state,
     technical observations, implementation details, bug reports,
-    analysis findings, anything that may change soon or is only
-    relevant to the current task
+    analysis findings, what a project currently lacks or has.
+    "Project X does not have feature Y" is context, not a fact.
+    Anything that may change soon or is only relevant to the
+    current task.
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
@@ -950,14 +986,17 @@ def build_classification_prompt(
         field_instructions.append(
             f'"memory_type": one of [{types}]. '
             "preference=likes/dislikes/style/tool preferences, "
-            "fact=stable biographical/personal info (names, roles, locations, "
-            "long-term traits — NOT transient technical observations, "
-            "current code state, or implementation details), "
-            "episodic=events/interactions/decisions/conclusions, "
+            "fact=stable biographical/personal info that remains true until "
+            "explicitly changed (names, roles, locations, long-term traits "
+            "— NOT goals, plans, intents, knowledge gaps, feature requests, "
+            "or transient observations), "
+            "episodic=events/interactions/decisions/conclusions/goals/plans/"
+            "intents/feature requests/current knowledge state "
+            "(anything that happened, was decided, or is wanted/planned), "
             "procedural=workflows/habits/how-to, "
-            "context=session/short-term notes, current project state, "
-            "technical observations, implementation details, bug reports, "
-            "analysis findings"
+            "context=session/short-term notes, current project/system state, "
+            "technical observations, implementation details, what a project "
+            "currently lacks or has"
         )
         schema_props["memory_type"] = {
             "type": "string",

@@ -86,6 +86,12 @@ def _mem_categories(m: dict) -> list[str]:
     return meta.get("categories", [])
 
 
+def _mem_type(m: dict) -> str:
+    """Get memory_type from a search/list result dict."""
+    meta = m.get("metadata") or {}
+    return meta.get("memory_type", "")
+
+
 # ── Smoke test ───────────────────────────────────────────────────────
 
 
@@ -1310,4 +1316,224 @@ class TestRoleFilter:
         )
         assert "dark mode" not in asst_text, (
             f"role=assistant search should NOT find user memory: {_texts(asst_results)}"
+        )
+
+
+# ── Memory type classification ──────────────────────────────────────
+
+
+class TestMemoryTypeClassification:
+    """Verify LLM correctly classifies memory_type for edge cases.
+
+    These tests use remember() and then list_memories() to check the
+    memory_type stored in metadata.  They target the specific failure
+    mode where goals, intents, decisions, and knowledge gaps are
+    misclassified as permanent ``fact`` instead of ``episodic`` or
+    ``context``.
+    """
+
+    USER = "e2e_classify"
+
+    @staticmethod
+    def _type_pairs(
+        memory_service: MemoryService, user_id: str
+    ) -> list[tuple[str, str]]:
+        """Return [(text, memory_type), ...] for all memories of *user_id*."""
+        mems = memory_service.list_memories(user_id=user_id, limit=100)
+        return [(_mem_text(m), _mem_type(m)) for m in mems]
+
+    def test_goal_intent_is_episodic(self, memory_service: MemoryService) -> None:
+        """'User wants to add X' should be episodic, not fact.
+
+        The user states a feature gap and their intent to fix it.
+        This should be classified as episodic (a goal/intent), not as
+        a permanent fact about the user.
+        """
+        user = f"{self.USER}_goal"
+        conversation = (
+            "User: I've been thinking about our monitoring stack. We "
+            "definitely need to add distributed tracing to our platform, "
+            "it's something we're completely missing right now. I don't "
+            "really understand how OpenTelemetry works yet but I want to "
+            "learn it and implement it across all our microservices.\n"
+            "Assistant: That's a great initiative. OpenTelemetry provides "
+            "a unified framework for collecting traces, metrics, and logs. "
+            "For your microservices architecture, I'd recommend starting "
+            "with automatic instrumentation for your HTTP frameworks, then "
+            "adding custom spans for critical business operations. We can "
+            "use Jaeger or Tempo as the backend for trace storage and "
+            "visualization. The key steps would be adding the OTel SDK to "
+            "each service, configuring exporters, and setting up a collector "
+            "to aggregate and forward traces to your backend."
+        )
+        memory_service.remember(content=conversation, user_id=user)
+        time.sleep(0.5)
+
+        pairs = self._type_pairs(memory_service, user)
+        assert len(pairs) >= 1, f"Expected at least 1 memory, got {pairs}"
+        # All memories from this conversation should be episodic or context,
+        # NOT fact — there are no stable biographical facts here.
+        for text, mtype in pairs:
+            assert mtype in ("episodic", "context"), (
+                f"Expected episodic/context for '{text}', got '{mtype}'"
+            )
+
+    def test_decision_is_episodic(self, memory_service: MemoryService) -> None:
+        """'User decided to use X' should be episodic, not fact.
+
+        Uses Czech multi-turn conversation to match real-world patterns.
+        """
+        user = f"{self.USER}_decision"
+        conversation = (
+            "User: Přemýšlel jsem o tom a myslím že bychom měli použít "
+            "PostgreSQL místo MySQL pro billing service\n"
+            "Assistant: Dobrá volba, PostgreSQL má lepší podporu pro JSON "
+            "a transakce.\n"
+            "User: Jo, tak to uděláme. Updatni ty configy prosím.\n"
+            "Assistant: Jasně, upravím docker-compose a migration skripty."
+        )
+        memory_service.remember(content=conversation, user_id=user)
+        time.sleep(0.5)
+
+        pairs = self._type_pairs(memory_service, user)
+        assert len(pairs) >= 1, f"Expected at least 1 memory, got {pairs}"
+        for text, mtype in pairs:
+            assert mtype in ("episodic", "context"), (
+                f"Expected episodic/context for '{text}', got '{mtype}'"
+            )
+
+    def test_knowledge_gap_is_not_fact(self, memory_service: MemoryService) -> None:
+        """'User doesn't know X' should be episodic or context, not fact.
+
+        Uses Czech input — the real failure was 'nevim odkud se dana
+        vzpominka vznikla' being stored as a permanent fact.
+        """
+        user = f"{self.USER}_knowledge"
+        conversation = (
+            "User: Vubec nevim jak funguje ta extrakce vzpominek v mnemory, "
+            "muzes mi to vysvetlit?\n"
+            "Assistant: Extrakce používá jeden LLM call pro extrakci faktů, "
+            "klasifikaci a deduplikaci proti existujícím vzpomínkám."
+        )
+        memory_service.remember(content=conversation, user_id=user)
+        time.sleep(0.5)
+
+        pairs = self._type_pairs(memory_service, user)
+        # This might produce 0 memories (assistant explanation is transient)
+        # or 1 episodic memory.  It should NOT produce a fact.
+        for text, mtype in pairs:
+            assert mtype != "fact", (
+                f"Knowledge gap should not be fact: '{text}' classified as '{mtype}'"
+            )
+
+    def test_feature_request_is_not_fact(self, memory_service: MemoryService) -> None:
+        """'User wants to add feature X to project Y' — not a fact.
+
+        Multi-turn conversation where the user identifies a gap in their
+        project and expresses intent to fix it. The extracted memories
+        should be episodic (goals/intents), not permanent facts.
+        """
+        user = f"{self.USER}_feature"
+        conversation = (
+            "User: I've been reviewing our deployment pipeline and there "
+            "are some big gaps. We have no rollback mechanism at all right "
+            "now, if a deploy goes bad we have to manually revert.\n"
+            "Assistant: That's a significant risk. Having automated rollback "
+            "is critical for production reliability.\n"
+            "User: Yeah, I want to implement canary deployments with "
+            "automatic rollback based on error rate thresholds. I also "
+            "realized I don't fully understand how Argo Rollouts works, "
+            "so I need to study that first before we start implementing.\n"
+            "Assistant: Argo Rollouts is a great choice for progressive "
+            "delivery. It extends Kubernetes deployments with canary and "
+            "blue-green strategies. You define analysis templates that "
+            "query your metrics backend, and if the error rate exceeds "
+            "your threshold during the canary phase, it automatically "
+            "rolls back to the stable version. I would suggest starting "
+            "with a simple canary strategy on one non-critical service "
+            "to get familiar with the workflow before rolling it out "
+            "across all services."
+        )
+        memory_service.remember(content=conversation, user_id=user)
+        time.sleep(0.5)
+
+        pairs = self._type_pairs(memory_service, user)
+        assert len(pairs) >= 1, f"Expected at least 1 memory, got {pairs}"
+        for text, mtype in pairs:
+            assert mtype in ("episodic", "context"), (
+                f"Expected episodic/context for '{text}', got '{mtype}'"
+            )
+
+    def test_current_state_observation_is_not_fact(
+        self, memory_service: MemoryService
+    ) -> None:
+        """'Project X doesn't have feature Y' is context, not a permanent fact.
+
+        Pure observation about current project state without an explicit
+        intent to change it.
+        """
+        user = f"{self.USER}_state"
+        conversation = (
+            "User: mnemory zatim nema zadny system pro sledovani odkud "
+            "vzpominky pochazi\n"
+            "Assistant: Ano, provenance tracking zatím chybí. Mohli bychom "
+            "přidat pole source_session_id do metadat."
+        )
+        memory_service.remember(content=conversation, user_id=user)
+        time.sleep(0.5)
+
+        pairs = self._type_pairs(memory_service, user)
+        # May produce 0 memories (transient observation) or 1 context/episodic.
+        for text, mtype in pairs:
+            assert mtype in ("episodic", "context"), (
+                f"Expected episodic/context for '{text}', got '{mtype}'"
+            )
+
+    def test_biographical_facts_remain_fact(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Stable biographical info should still be classified as fact.
+
+        This guards against over-correction — real facts must not be
+        reclassified as episodic.
+        """
+        user = f"{self.USER}_bio"
+        conversation = (
+            "User: My name is Elena, I'm a data engineer living in Barcelona.\n"
+            "Assistant: Nice to meet you, Elena!"
+        )
+        memory_service.remember(content=conversation, user_id=user)
+        time.sleep(0.5)
+
+        pairs = self._type_pairs(memory_service, user)
+        assert len(pairs) >= 1, f"Expected at least 1 memory, got {pairs}"
+        # At least one memory should be a fact (name, role, or location)
+        fact_count = sum(1 for _, mtype in pairs if mtype == "fact")
+        assert fact_count >= 1, (
+            f"Expected at least 1 fact for biographical info, got: {pairs}"
+        )
+
+    def test_mixed_fact_and_episodic(self, memory_service: MemoryService) -> None:
+        """Conversation with both biographical facts and goals should
+        produce both fact and non-fact memories."""
+        user = f"{self.USER}_mixed"
+        conversation = (
+            "User: I'm a backend developer at Acme Corp. "
+            "I want to migrate our API from REST to GraphQL.\n"
+            "Assistant: That's a significant change. Let me help plan it."
+        )
+        memory_service.remember(content=conversation, user_id=user)
+        time.sleep(0.5)
+
+        pairs = self._type_pairs(memory_service, user)
+        assert len(pairs) >= 2, f"Expected at least 2 memories, got: {pairs}"
+        types = {mtype for _, mtype in pairs}
+        # Should have at least one fact (job) and one non-fact (migration goal)
+        assert "fact" in types, (
+            f"Expected at least one fact (job info), got types: {types}\n{pairs}"
+        )
+        non_fact = types - {"fact", "preference"}
+        assert non_fact, (
+            f"Expected at least one episodic/context (migration goal), "
+            f"got types: {types}\n{pairs}"
         )
