@@ -279,13 +279,27 @@ class Filter:
         # Last 2 user/assistant messages (current exchange)
         last_two = conversation[-2:]
 
-        # Fire-and-forget
-        asyncio.create_task(
-            self._post(
-                "/api/remember",
-                {"session_id": session_id, "messages": last_two},
-                __user__,
-            )
+        # Build context from the first user message to give the extraction
+        # LLM topic awareness. Without this, memories extracted from the
+        # last exchange can be vague (e.g., "User wants to search the web")
+        # because the LLM doesn't know what the conversation is about.
+        context = None
+        first_user_msg = next(
+            (
+                m.get("content", "")
+                for m in conversation
+                if m.get("role") == "user" and m.get("content")
+            ),
+            None,
         )
+        if first_user_msg and isinstance(first_user_msg, str):
+            # Cap context to avoid sending huge first messages
+            context = f"Conversation topic: {first_user_msg[:500]}"
+
+        # Fire-and-forget
+        payload: dict = {"session_id": session_id, "messages": last_two}
+        if context:
+            payload["context"] = context
+        asyncio.create_task(self._post("/api/remember", payload, __user__))
 
         return body

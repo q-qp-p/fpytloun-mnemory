@@ -440,6 +440,7 @@ class VectorStore:
         *,
         user_id: str,
         agent_id: str | None = None,
+        shared_only: bool = False,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         """Search for similar existing memories using a pre-computed vector.
@@ -447,6 +448,15 @@ class VectorStore:
         Used during the add pipeline to find candidates for deduplication.
         Excludes expired/decayed memories so the LLM doesn't deduplicate
         against memories the user can no longer see.
+
+        Args:
+            vector: Pre-computed embedding vector.
+            user_id: Required user scope.
+            agent_id: Optional agent scope.
+            shared_only: If True and agent_id is None, restrict to memories
+                without any agent_id (shared user memories only). Used by
+                dual-scope dedup to search shared memories separately.
+            limit: Maximum results.
 
         Returns simple dicts with "id" and "text" keys.
         """
@@ -461,6 +471,10 @@ class VectorStore:
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+        elif shared_only:
+            must_conditions.append(
+                IsEmptyCondition(is_empty=PayloadField(key="agent_id"))
             )
 
         # Exclude expired/decayed memories from dedup candidates.
@@ -741,6 +755,7 @@ class VectorStore:
         *,
         user_id: str,
         agent_id: str | None = None,
+        shared_only: bool = False,
         filters: dict | None = None,
     ) -> list[dict[str, Any]]:
         """Scroll ALL memories for a user, including stored embedding vectors.
@@ -751,10 +766,18 @@ class VectorStore:
         Paginates through all Qdrant points using the scroll cursor so that
         users with large memory sets are fully covered — no hard limit.
 
+        Args:
+            user_id: Required user scope.
+            agent_id: Optional agent scope.
+            shared_only: If True and agent_id is None, restrict to memories
+                without any agent_id (shared user memories only). Used by
+                dual-scope fsck to scroll shared memories separately.
+            filters: Additional metadata filters.
+
         Returns list of memory dicts with an extra "vector" key containing
         the stored embedding.
         """
-        from qdrant_client.models import MatchAny
+        from qdrant_client.models import IsEmptyCondition, MatchAny
 
         must_conditions: list = [
             FieldCondition(key="user_id", match=MatchValue(value=user_id)),
@@ -762,6 +785,10 @@ class VectorStore:
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+        elif shared_only:
+            must_conditions.append(
+                IsEmptyCondition(is_empty=PayloadField(key="agent_id"))
             )
         if filters:
             for key, value in filters.items():
@@ -808,6 +835,7 @@ class VectorStore:
         *,
         user_id: str,
         agent_id: str | None = None,
+        shared_only: bool = False,
         limit: int = 5,
         exclude_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
@@ -820,10 +848,13 @@ class VectorStore:
             vector: Pre-computed embedding vector.
             user_id: Required user scope.
             agent_id: Optional agent scope.
+            shared_only: If True and agent_id is None, restrict to memories
+                without any agent_id (shared user memories only). Used by
+                dual-scope fsck to search shared memories separately.
             limit: Maximum results.
             exclude_ids: Point IDs to exclude from results.
         """
-        from qdrant_client.models import HasIdCondition
+        from qdrant_client.models import HasIdCondition, IsEmptyCondition
 
         must_conditions: list = [
             FieldCondition(key="user_id", match=MatchValue(value=user_id)),
@@ -831,6 +862,10 @@ class VectorStore:
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+        elif shared_only:
+            must_conditions.append(
+                IsEmptyCondition(is_empty=PayloadField(key="agent_id"))
             )
 
         must_not: list = []

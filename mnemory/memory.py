@@ -493,13 +493,37 @@ class MemoryService:
         # 1. Embed the raw content for similarity search
         content_vector = self.vector.embedding.embed(content)
 
-        # 2. Search for similar existing memories (excludes expired/decayed)
+        # 2. Search for similar existing memories (excludes expired/decayed).
+        # When agent_id is set, perform dual-scope search: check both
+        # agent-scoped AND shared (no agent_id) memories. This prevents
+        # duplicates when the same fact already exists as a shared memory.
         existing_raw = self.vector.search_similar(
             content_vector,
             user_id=user_id,
             agent_id=agent_id,
             limit=10,
         )
+        if agent_id:
+            shared_raw = self.vector.search_similar(
+                content_vector,
+                user_id=user_id,
+                agent_id=None,
+                shared_only=True,
+                limit=10,
+            )
+            # Merge and deduplicate by memory ID, keep highest score
+            seen_ids: set[str] = set()
+            merged: list[dict[str, Any]] = []
+            for mem in sorted(
+                existing_raw + shared_raw,
+                key=lambda m: m.get("score", 0),
+                reverse=True,
+            ):
+                mid = mem.get("id")
+                if mid and mid not in seen_ids:
+                    seen_ids.add(mid)
+                    merged.append(mem)
+            existing_raw = merged[:10]
 
         # Filter out low-similarity results to avoid false dedup matches
         dedup_threshold = self._config.memory.dedup_similarity_threshold

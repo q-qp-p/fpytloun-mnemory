@@ -347,11 +347,28 @@ class FsckService:
             if memory_type:
                 filters["memory_type"] = memory_type
 
+            # When agent_id is set, perform dual-scope scroll: fetch both
+            # agent-scoped AND shared (no agent_id) memories. This allows
+            # fsck to detect cross-scope duplicates (e.g., same fact stored
+            # as both agent-scoped and shared).
             memories = self._vector.scroll_with_vectors(
                 user_id=check.user_id,
                 agent_id=check.agent_id,
                 filters=filters,
             )
+            if check.agent_id:
+                shared_memories = self._vector.scroll_with_vectors(
+                    user_id=check.user_id,
+                    agent_id=None,
+                    shared_only=True,
+                    filters=filters,
+                )
+                # Merge and deduplicate by memory ID
+                seen_ids = {m["id"] for m in memories}
+                for m in shared_memories:
+                    if m["id"] not in seen_ids:
+                        seen_ids.add(m["id"])
+                        memories.append(m)
 
             # Filter by categories if specified (client-side since Qdrant
             # MatchAny on array fields needs special handling)
@@ -766,7 +783,9 @@ class FsckService:
         for idx, mem in enumerate(memories):
             vector = mem.get("vector")
             if vector is not None:
-                # Search for similar memories using stored vector
+                # Search for similar memories using stored vector.
+                # When agent_id is set, also search shared memories
+                # to detect cross-scope duplicates.
                 similar = self._vector.search_by_vector(
                     vector,
                     user_id=check.user_id,
@@ -774,6 +793,21 @@ class FsckService:
                     limit=_DUPLICATE_NEIGHBORS,
                     exclude_ids=[mem["id"]],
                 )
+                if check.agent_id:
+                    shared_similar = self._vector.search_by_vector(
+                        vector,
+                        user_id=check.user_id,
+                        agent_id=None,
+                        shared_only=True,
+                        limit=_DUPLICATE_NEIGHBORS,
+                        exclude_ids=[mem["id"]],
+                    )
+                    # Merge, deduplicate by ID, keep highest score
+                    seen = {s["id"] for s in similar}
+                    for s in shared_similar:
+                        if s["id"] not in seen:
+                            seen.add(s["id"])
+                            similar.append(s)
 
                 for sim in similar:
                     score = sim.get("score", 0)

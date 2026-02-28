@@ -1494,6 +1494,12 @@ from the best source memory.
 marked with has_artifacts (it has detailed content attached). If you must \
 merge, UPDATE the artifact-bearing memory and DELETE the others — never \
 delete the one with artifacts.
+- Each memory may have a "scope" tag indicating its visibility: \
+"shared" means visible to all agents, while an agent name (e.g., \
+"open-webui") means visible only to that agent. When a shared memory \
+and an agent-scoped memory express the same fact, they are duplicates — \
+prefer keeping the shared version (wider visibility) and deleting the \
+agent-scoped one.
 
 {anti_injection}
 
@@ -1606,6 +1612,10 @@ def build_fsck_duplicate_prompt(
         text = mem.get("memory", "")
         metadata = mem.get("metadata") or {}
         tags = []
+        # Include scope (agent_id or "shared") so the LLM can see
+        # which visibility scope each memory belongs to.
+        agent_id = mem.get("agent_id")
+        tags.append(f"scope: {agent_id}" if agent_id else "scope: shared")
         if metadata.get("memory_type"):
             tags.append(f"type: {metadata['memory_type']}")
         if metadata.get("categories"):
