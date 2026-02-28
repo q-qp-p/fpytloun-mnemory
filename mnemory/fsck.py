@@ -131,7 +131,7 @@ class FsckCheck:
     check_id: str
     user_id: str
     agent_id: str | None = None
-    status: str = "running"  # running, completed, failed
+    status: str = "running"  # running, applying, completed, failed
     progress: FsckProgress = field(default_factory=FsckProgress)
     issues: list[FsckIssue] = field(default_factory=list)
     summary: FsckSummary | None = None
@@ -503,7 +503,7 @@ class FsckService:
                 "error": True,
                 "message": "Check not found or expired. Please re-run the check.",
             }
-        if check.status != "completed":
+        if check.status not in ("completed", "applying"):
             return {
                 "error": True,
                 "message": f"Check is not completed (status: {check.status})",

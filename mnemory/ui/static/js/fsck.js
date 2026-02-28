@@ -318,7 +318,7 @@ function fsckTab() {
               this.selectedIssues[issue.issue_id] = true;
             }
           }
-        } else if (data.status === 'running') {
+        } else if (data.status === 'running' || data.status === 'applying') {
           this.loading = true;
           this.startPolling();
         } else if (data.status === 'failed') {
@@ -365,6 +365,9 @@ function fsckTab() {
               this.selectedIssues[issue.issue_id] = true;
             }
           }
+        } else if (data.status === 'applying') {
+          // Auto-apply in progress — keep polling until "completed"
+          this.issues = data.issues || [];
         } else if (data.status === 'failed') {
           this.stopPolling();
           this.loading = false;

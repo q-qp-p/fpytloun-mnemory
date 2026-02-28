@@ -1308,16 +1308,17 @@
         </template>
 
         <!-- Progress Bar -->
-        <template x-if="status === 'running' && progress">
+        <template x-if="(status === 'running' || status === 'applying') && progress">
           <div class="mb-6">
             <div class="flex items-center justify-between mb-2">
-              <span class="text-sm text-secondary" x-text="phaseLabel"></span>
+              <span class="text-sm text-secondary" x-text="status === 'applying' ? 'Applying fixes...' : phaseLabel"></span>
               <span class="text-sm text-secondary">
                 <span x-text="progress.processed"></span> / <span x-text="progress.total_memories"></span> memories
               </span>
             </div>
             <div class="w-full bg-brand-border rounded-full h-2.5">
-              <div class="bg-brand-accent h-2.5 rounded-full transition-all duration-500"
+              <div class="h-2.5 rounded-full transition-all duration-500"
+                   :class="status === 'applying' ? 'bg-teal-500' : 'bg-brand-accent'"
                    :style="'width: ' + progressPercent + '%'"></div>
             </div>
             <div class="flex items-center justify-between mt-2">

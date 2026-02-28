@@ -166,6 +166,11 @@ class MaintenanceService:
         fixes_failed = 0
 
         if qualifying_ids:
+            # Set status to "applying" so the UI keeps polling until
+            # auto-apply is done (prevents race where UI sees "completed"
+            # before applied_issue_ids is populated).
+            check.status = "applying"
+
             logger.info(
                 "Auto-fsck (manual): applying %d/%d qualifying fixes for user %s",
                 len(qualifying_ids),
@@ -188,6 +193,10 @@ class MaintenanceService:
                 user_id,
                 len(check.issues),
             )
+
+        # Mark completed after auto-apply is done so the UI sees the
+        # final state with applied_issue_ids populated.
+        check.status = "completed"
 
         if self._collector is not None:
             self._collector.record_autofsck_run(
@@ -287,6 +296,11 @@ class MaintenanceService:
         fixes_failed = 0
 
         if qualifying_ids:
+            # Set status to "applying" so the UI keeps polling until
+            # auto-apply is done (prevents race where UI sees "completed"
+            # before applied_issue_ids is populated).
+            check.status = "applying"
+
             logger.info(
                 "Auto-fsck: applying %d/%d qualifying fixes for user %s",
                 issues_found,
@@ -312,6 +326,10 @@ class MaintenanceService:
                 user_id,
                 len(check.issues),
             )
+
+        # Mark completed after auto-apply is done so the UI sees the
+        # final state with applied_issue_ids populated.
+        check.status = "completed"
 
         if self._collector is not None:
             self._collector.record_autofsck_run(

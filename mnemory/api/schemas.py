@@ -514,7 +514,7 @@ class FsckStatusResponse(BaseModel):
     """Response from polling a memory check status."""
 
     check_id: str
-    status: str = Field(..., description="Status: running, completed, failed")
+    status: str = Field(..., description="Status: running, applying, completed, failed")
     progress: FsckProgress
     summary: FsckSummary | None = None
     issues: list[FsckIssue] | None = None
