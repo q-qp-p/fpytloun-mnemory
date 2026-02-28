@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.5.0] — 2026-02-28
+
+### Batch Operations
+
+- **Batch delete API and MCP tool**: New `delete_memories` MCP tool and `DELETE /api/memories/batch` endpoint for deleting multiple memories in a single call ([`94698a9`](https://github.com/fpytloun/mnemory/commit/94698a9))
+- **Bulk selection in UI**: Browse tab now supports select-all, shift-click range selection, and batch delete for managing large memory sets ([`c9637c9`](https://github.com/fpytloun/mnemory/commit/c9637c9))
+
+### Memory Intelligence
+
+- **Context hint in remember pipeline**: Plugins can pass a context hint (e.g., working directory, current topic) to the remember endpoint, improving extraction relevance for project-scoped work ([`7a00f72`](https://github.com/fpytloun/mnemory/commit/7a00f72))
+- **Dual-scope deduplication**: Agent-scoped memories are now deduplicated against both agent-specific and shared user memories, preventing cross-scope duplicates ([`9220a10`](https://github.com/fpytloun/mnemory/commit/9220a10))
+- **Improved memory_type classification**: Better prompt guidance for classifying goals, intents, and decisions — goals/intents are now correctly classified as `episodic` rather than `fact`, with expanded e2e test coverage ([`d6c3b8d`](https://github.com/fpytloun/mnemory/commit/d6c3b8d))
+- **Clarified extraction guidance**: Fact-extraction prompts refined to better distinguish stable facts from transient observations ([`be30809`](https://github.com/fpytloun/mnemory/commit/be30809))
+
+### Fsck / Health Checks
+
+- **Artifact-aware fsck**: Split actions are skipped and delete actions trigger warnings for memories with attached artifacts, preventing accidental data loss ([`4562a36`](https://github.com/fpytloun/mnemory/commit/4562a36))
+- **Auto-fsck UI**: Check tab now shows scheduling status banner with interval, next-run countdown, run-now button, and last auto-fsck results display ([`590374b`](https://github.com/fpytloun/mnemory/commit/590374b))
+- **Auto-fsck race condition fix**: Resolved issue where UI showed auto-applied issues as unapplied due to a timing race between apply and UI refresh ([`2e6e488`](https://github.com/fpytloun/mnemory/commit/2e6e488))
+
+### Management UI
+
+- **Refresh button**: Manual refresh button added to the dashboard header ([`12d3dde`](https://github.com/fpytloun/mnemory/commit/12d3dde))
+
+### Integrations
+
+- **MNEMORY_INCLUDE_ASSISTANT option**: Claude Code and OpenCode plugins can now include assistant messages in remember flows, enabling the server to extract agent identity and capability facts ([`1df5e63`](https://github.com/fpytloun/mnemory/commit/1df5e63))
+- **OpenCode child session handling**: OpenCode plugin skips memory recall/remember for child/subtask sessions to avoid noise from automated sub-agent work ([`6439dd4`](https://github.com/fpytloun/mnemory/commit/6439dd4))
+
+### Documentation
+
+- **Docs reorganization**: README split into dedicated documentation pages under `docs/` — architecture, configuration, deployment, development, management UI, MCP tools, memory model, monitoring, and REST API ([`9475191`](https://github.com/fpytloun/mnemory/commit/9475191))
+
 ## [1.4.0] — 2026-02-27
 
 ### Periodic Maintenance (Auto-fsck)
