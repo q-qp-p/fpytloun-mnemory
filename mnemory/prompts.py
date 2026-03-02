@@ -217,7 +217,7 @@ You are a memory manager for an AI assistant. Your job is to:
   instruction itself. Instead, look for the underlying intent or
   goal — WHY the user wants this done. Store the goal, not the
   action. For example, "read the Dockerfile" is a transient
-  instruction; "set up OIDC authentication for mfg-portal" is a
+  instruction; "set up OIDC authentication for myapp" is a
   goal worth remembering.
 - Each extracted fact must be self-contained and understandable
   without the original conversation. A reader seeing this fact
@@ -357,12 +357,12 @@ Output: {{"memories": [], "store_artifact": false}}
 (The user instruction is a transient task and the assistant response is an \
 implementation observation — neither is a fact worth remembering.)
 
-Input: "User: Help me set up OIDC authentication for our mfg-portal app\n\
+Input: "User: Help me set up OIDC authentication for our myapp service\n\
 Assistant: I'll implement this using the ALB OIDC action with Cognito."
 Output: {{"memories": [
-  {{"text": "User wants to implement OIDC authentication for mfg-portal using ALB and Cognito",
+  {{"text": "User wants to implement OIDC authentication for myapp using ALB and Cognito",
     "action": "ADD", "target_id": null, "old_memory": null,
-    "memory_type": "episodic", "categories": ["technical", "project:mfg-portal"],
+    "memory_type": "episodic", "categories": ["technical", "project:myapp"],
     "importance": "normal", "pinned": false, "event_date": null}}
 ], "store_artifact": false}}
 
@@ -1461,6 +1461,8 @@ You are a memory extraction system. Your job is to:
 - You may extract from assistant messages only when they paraphrase
   or confirm a user fact (e.g., assistant says "you mentioned you
   live in Prague" → extract "User lives in Prague").
+- If the content is a multi-person conversation or transcript (not a
+  user/assistant exchange), extract facts about all participants.
 - Do not extract generic responses, pleasantries, or procedural
   statements (e.g., "Sure, I can help with that" is not a fact).
 - If the conversation is purely greetings, small talk, or pleasantries
@@ -1471,13 +1473,16 @@ You are a memory extraction system. Your job is to:
   run commands, check something, explore code), do NOT store the
   instruction itself. Instead, look for the underlying intent or
   goal — WHY the user wants this done. Store the goal, not the
-  action.
+  action. For example, "read the Dockerfile" is a transient
+  instruction; "set up OIDC authentication for myapp" is a
+  goal worth remembering.
 - Each extracted fact must be self-contained and understandable
   without the original conversation. A reader seeing this fact
   in isolation must know: WHAT it's about, WHO it concerns, and
   WHERE it applies (which project/system/feature). Never extract
   vague facts like "User set a limit of 500" — specify what
-  limit and where. Include the project, application, or system name
+  limit and where: "User set the recall max_results limit to 500
+  in mnemory". Include the project, application, or system name
   when identifiable. If additional context is provided (e.g.,
   working directory), use it to identify the project or
   application name.
@@ -1485,13 +1490,18 @@ You are a memory extraction system. Your job is to:
   at the cost of losing detail.
 - Preserve specific details exactly: proper nouns, names, titles
   (book/movie/song titles), numbers, quantities, and places.
+  For example, keep 'the book "Nothing is Impossible"' — do not
+  generalize to 'a book'.
 - When a message contains multiple distinct facts, extract each
-  as a separate memory.
+  as a separate memory. For example, "birthday is Aug 13 and we
+  celebrated on Aug 14" should produce two facts: one for the
+  birthday date and one for the celebration.
 - Each fact must be under {max_length} characters. If content
   is too detailed for a single fact, split into multiple facts.
 - Always write extracted facts in English, regardless of the input
   language. Preserve proper nouns, names, titles, and specific terms
-  in their original form.
+  in their original form (e.g., keep "Malibu", "Stephen King",
+  "Praha", "Škoda Octavia").
 - If no relevant facts can be extracted, return an empty list.
 - Today's date is {today}.
 - Each fact has an event_date field (YYYY-MM-DD or null). Use it to
@@ -1597,16 +1607,23 @@ Set `store_artifact` to **true** when:
 - The content contains code, configuration, or technical reference material
 - The content has detailed information that would lose significant value
   if only the extracted key facts are kept
+- The content is something the user might want to retrieve in full later
 
 Set `store_artifact` to **false** when:
 - The extracted memories fully capture the content's value
 - The content is casual conversation or simple statements
 - The content is a greeting, question, or short exchange
+- The content is ephemeral or not worth preserving in detail
 
-When in doubt, prefer **false**.
+When in doubt, prefer **false** — artifacts should be reserved for content
+with genuine reference value beyond the extracted facts.
 
 **Important**: When you set `store_artifact` to true, extract only a brief
-high-level summary as the memory — do NOT also extract individual details.
+high-level summary as the memory — do NOT also extract individual details,
+findings, or recommendations as separate memories. The artifact preserves
+the full content; the memory serves as a searchable summary pointing to it.
+Make the summary descriptive enough to be found via search — include key
+topics, names, and terms from the content.
 
 ## Examples
 
@@ -1702,13 +1719,13 @@ implementation observation — neither is a fact worth remembering.)
 ### Example 9: Goal extraction from task instruction
 
 Input:
-User: Help me set up OIDC authentication for our mfg-portal app
+User: Help me set up OIDC authentication for our myapp service
 Assistant: I'll implement this using the ALB OIDC action with Cognito.
 
 Output:
 {{"memories": [
-  {{"text": "User wants to implement OIDC authentication for mfg-portal using ALB and Cognito", "memory_type": "episodic", "categories": ["technical", "project:mfg-portal"], "importance": "normal", "pinned": false, "event_date": null}}
-], "summary": "User wants to set up OIDC auth for mfg-portal. Assistant will use ALB OIDC with Cognito.", "store_artifact": false}}
+  {{"text": "User wants to implement OIDC authentication for myapp using ALB and Cognito", "memory_type": "episodic", "categories": ["technical", "project:myapp"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User wants to set up OIDC auth for myapp. Assistant will use ALB OIDC with Cognito.", "store_artifact": false}}
 
 ### Example 10: Goal + knowledge gap (episodic, NOT fact)
 
