@@ -731,7 +731,7 @@ class TestInjection:
         )
         time.sleep(0.5)
 
-        output = memory_service.get_core_memories(user_id=self.USER)
+        output = memory_service.get_core_memories(user_id=self.USER).text
         # The malicious close tag should be escaped (ZWSP after first char)
         # Note: legitimate ⟨/memory_item⟩ wrapper tags ARE present in output
         # (from wrap_memory_item), so we only check the ZWSP-escaped version
@@ -766,7 +766,7 @@ class TestCoreMemories:
         )
         time.sleep(0.5)
 
-        output = memory_service.get_core_memories(user_id=self.USER)
+        output = memory_service.get_core_memories(user_id=self.USER).text
         assert "photographer" in output.lower(), (
             f"Pinned memory should appear in core memories: {output[:500]}"
         )
@@ -789,7 +789,7 @@ class TestCoreMemories:
         output = memory_service.get_core_memories(
             user_id=self.USER,
             agent_id="e2e-agent",
-        )
+        ).text
         assert "agent identity" in output.lower(), (
             f"Should have Agent Identity section: {output[:500]}"
         )
@@ -943,7 +943,7 @@ class TestAgentScoping:
         output = memory_service.get_core_memories(
             user_id=self.USER,
             agent_id="parent:bob",
-        )
+        ).text
         assert "cheerful" in output.lower() or "bob" in output.lower(), (
             f"Sub-agent memory should be in core memories: {output[:500]}"
         )
@@ -1150,7 +1150,7 @@ class TestCRUD:
         time.sleep(0.3)
 
         # Verify via core memories (pinned should now appear)
-        output = memory_service.get_core_memories(user_id=self.USER)
+        output = memory_service.get_core_memories(user_id=self.USER).text
         assert "dentist" in output.lower(), (
             f"Pinned memory should appear in core memories: {output[:500]}"
         )

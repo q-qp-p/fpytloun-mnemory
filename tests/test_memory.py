@@ -47,6 +47,7 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     # Core memories: top-N non-pinned memories
     mock_config.memory.core_top_memories = 10
     mock_config.memory.core_min_importance = "normal"
+    mock_config.memory.core_recent_min_importance = "normal"
     # Hybrid search
     mock_config.memory.search_score_threshold_hybrid = 0.0
 
@@ -345,12 +346,13 @@ class TestCoreMemoryCache:
 
         # First call — queries the vector store
         result1 = service.get_core_memories(user_id="filip")
-        assert result1 == "No core memories found."
+        assert result1.text == "No core memories found."
+        assert result1.memory_ids == set()
         assert service.vector.get_pinned_memories.call_count == 1
 
         # Second call — should use cache
         result2 = service.get_core_memories(user_id="filip")
-        assert result2 == "No core memories found."
+        assert result2.text == "No core memories found."
         # Still only 1 call — cache was used
         assert service.vector.get_pinned_memories.call_count == 1
 
@@ -920,7 +922,7 @@ class TestCoreMemoriesRoleSections:
                 },
             },
         ]
-        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        result = service.get_core_memories(user_id="filip", agent_id="bob").text
         assert "## Agent Identity" in result
         assert "My name is Bob" in result
 
@@ -938,7 +940,7 @@ class TestCoreMemoriesRoleSections:
                 },
             },
         ]
-        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        result = service.get_core_memories(user_id="filip", agent_id="bob").text
         assert "## Agent Instructions" in result
         assert "User wants me to create commit messages" in result
 
@@ -965,7 +967,7 @@ class TestCoreMemoriesRoleSections:
                 },
             },
         ]
-        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        result = service.get_core_memories(user_id="filip", agent_id="bob").text
         assert "## Agent Identity" in result
         assert "My name is Bob" in result
         assert "## Agent Instructions" in result
@@ -985,7 +987,7 @@ class TestCoreMemoriesRoleSections:
                 },
             },
         ]
-        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        result = service.get_core_memories(user_id="filip", agent_id="bob").text
         # Without role, defaults to "user" → Agent Instructions
         assert "## Agent Instructions" in result
         assert "Some old agent memory" in result
@@ -1004,7 +1006,7 @@ class TestCoreMemoriesRoleSections:
                 },
             },
         ]
-        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        result = service.get_core_memories(user_id="filip", agent_id="bob").text
         assert "## Agent Knowledge" in result
         assert "Researched washing machines" in result
 
@@ -1033,7 +1035,7 @@ class TestCoreMemoriesBoundaryTags:
                 "metadata": {"memory_type": "fact", "pinned": True},
             },
         ]
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         open_tag = _BOUNDARY_TAGS["memory_item"][0]
         close_tag = _BOUNDARY_TAGS["memory_item"][1]
         assert open_tag in result
@@ -1056,7 +1058,7 @@ class TestCoreMemoriesBoundaryTags:
                 },
             },
         ]
-        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        result = service.get_core_memories(user_id="filip", agent_id="bob").text
         open_tag = _BOUNDARY_TAGS["memory_item"][0]
         assert open_tag in result
 
@@ -1069,7 +1071,7 @@ class TestCoreMemoriesBoundaryTags:
                 "metadata": {"memory_type": "fact", "pinned": True},
             },
         ]
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         assert "⟨memory_item⟩" in result
         assert "DATA" in result
 
@@ -1085,7 +1087,7 @@ class TestCoreMemoriesBoundaryTags:
                 "metadata": {"memory_type": "fact", "pinned": True},
             },
         ]
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         # The close tag should only appear as the wrapper's close tag
         # The injected one should be escaped (ZWSP inserted)
         lines = [line for line in result.split("\n") if "Normal text" in line]
@@ -1116,7 +1118,7 @@ class TestCoreMemoriesBoundaryTags:
                 },
             },
         ]
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         open_tag = _BOUNDARY_TAGS["memory_item"][0]
         assert open_tag in result
         assert "Had a meeting about project X" in result
@@ -1154,7 +1156,7 @@ class TestCoreMemoriesTopN:
                 },
             ]
         }
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         assert "## User Facts" in result
         assert "Acme Corp" in result
 
@@ -1174,7 +1176,7 @@ class TestCoreMemoriesTopN:
                 },
             ]
         }
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         assert "## User Preferences" in result
         assert "dark mode" in result
 
@@ -1205,7 +1207,7 @@ class TestCoreMemoriesTopN:
                 },
             ]
         }
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         assert "## User Facts" in result
         pinned_pos = result.index("PINNED_FACT")
         non_pinned_pos = result.index("NON_PINNED_FACT")
@@ -1227,7 +1229,7 @@ class TestCoreMemoriesTopN:
                 },
             ]
         }
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         assert "Should not appear" not in result
         # get_all should not be called for top-N when disabled
         # (it may still be called for other purposes, so check the result)
@@ -1239,7 +1241,7 @@ class TestCoreMemoriesTopN:
         # get_all is called with importance filter, so mock returns nothing
         # (the filter would exclude normal/low)
         service.vector.get_all.return_value = {"results": []}
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         assert "No core memories found." == result
 
     def test_top_n_limits_count(self):
@@ -1260,7 +1262,7 @@ class TestCoreMemoriesTopN:
                 for i in range(5)
             ]
         }
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         # Should only include 2 memories (top_n=2)
         count = sum(1 for i in range(5) if f"Memory {i}" in result)
         assert count == 2
@@ -1288,7 +1290,7 @@ class TestCoreMemoriesTopN:
                 },
             },
         ]
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         # Critical should appear before low
         crit_pos = result.index("CRITICAL_IMP")
         low_pos = result.index("LOW_IMP")
@@ -1321,7 +1323,7 @@ class TestCoreMemoriesTopN:
                 },
             ]
         }
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         assert "Pinned version" in result
         assert "Should be deduped" not in result
 
@@ -1356,7 +1358,7 @@ class TestCoreMemoriesTopN:
                 },
             ]
         }
-        result = service.get_core_memories(user_id="filip", agent_id="bob")
+        result = service.get_core_memories(user_id="filip", agent_id="bob").text
         assert "## Agent Identity" in result
         assert "My name is Bob" in result
         assert "I like helping with code" in result
@@ -1408,7 +1410,7 @@ class TestCoreMemoriesPartialTruncation:
             }
             for i in range(10)
         ]
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         # Should keep the pinned fact
         assert "User is a developer" in result
         # Should keep some recent entries (not all dropped)
@@ -1442,7 +1444,7 @@ class TestCoreMemoriesPartialTruncation:
                 "metadata": {"memory_type": "episodic"},
             },
         ]
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         # Recent context should be gone (trimmed to fit)
         assert "## Recent Context" not in result
         # But pinned facts should remain
@@ -1462,7 +1464,7 @@ class TestCoreMemoriesPartialTruncation:
                 },
             },
         ]
-        result = service.get_core_memories(user_id="filip")
+        result = service.get_core_memories(user_id="filip").text
         assert len(result) <= 100
         assert "[...truncated]" in result
 

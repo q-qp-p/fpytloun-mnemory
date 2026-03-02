@@ -233,12 +233,12 @@ def get_core_memories(
     """Load pinned + recent context memories."""
     _record("get_core_memories", ctx)
     service = _get_service()
-    text = service.get_core_memories(
+    core_result = service.get_core_memories(
         user_id=ctx.user_id,
         agent_id=ctx.agent_id,
         recent_days=recent_days,
     )
-    return CoreMemoriesResponse(text=text)
+    return CoreMemoriesResponse(text=core_result.text)
 
 
 @router.get("/recent", response_model=RecentMemoriesResponse)

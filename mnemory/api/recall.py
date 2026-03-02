@@ -152,17 +152,23 @@ def recall(
     # Load core memories on first call
     if is_first_call:
         try:
-            core_text = service.get_core_memories(
+            core_result = service.get_core_memories(
                 user_id=ctx.user_id,
                 agent_id=ctx.agent_id,
                 recent_days=req.recent_days,
             )
-            if core_text:
-                response.core_memories = core_text
+            if core_result.text:
+                response.core_memories = core_result.text
                 # Count core memories (rough: count lines starting with "- ")
-                stats.core_count = core_text.count("\n- ") + (
-                    1 if core_text.startswith("- ") else 0
+                stats.core_count = core_result.text.count("\n- ") + (
+                    1 if core_result.text.startswith("- ") else 0
                 )
+                # Add core memory IDs to known_ids so search results
+                # don't duplicate memories already in core context
+                if core_result.memory_ids:
+                    session_store.add_known_ids(
+                        session.session_id, core_result.memory_ids
+                    )
         except Exception:
             logger.warning("Failed to load core memories", exc_info=True)
 

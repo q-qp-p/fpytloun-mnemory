@@ -260,6 +260,13 @@ class MemoryConfig:
         default_factory=lambda: _env("CORE_MIN_IMPORTANCE", "normal")
     )
 
+    # Core memories: minimum importance for recent context memories.
+    # Filters low-importance session noise from the recent context section.
+    # Options: low, normal, high, critical
+    core_recent_min_importance: str = field(
+        default_factory=lambda: _env("CORE_RECENT_MIN_IMPORTANCE", "normal")
+    )
+
     # TTL defaults by memory type (days, None = permanent)
     ttl_fact: int | None = field(
         default_factory=lambda: _env_int_or_none("TTL_FACT", None)

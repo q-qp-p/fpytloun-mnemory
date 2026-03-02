@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -61,6 +64,20 @@ logger = logging.getLogger(__name__)
 
 # Max length for user_id and agent_id to prevent abuse
 _MAX_ID_LENGTH = 256
+
+
+@dataclass
+class CoreMemoriesResult:
+    """Result from get_core_memories() with text and included memory IDs.
+
+    Attributes:
+        text: Formatted core memories text for injection into LLM context.
+        memory_ids: Set of memory IDs included in the text, used to
+            deduplicate against search results.
+    """
+
+    text: str
+    memory_ids: set[str] = dataclass_field(default_factory=set)
 
 
 def _validate_id(value: str, name: str) -> str:
@@ -162,7 +179,7 @@ class MemoryService:
         self._category_cache: TTLCache[str, list[str]] = TTLCache(
             ttl_seconds=config.memory.classify_cache_ttl,
         )
-        self._core_cache: TTLCache[tuple, str] = TTLCache(
+        self._core_cache: TTLCache[tuple, CoreMemoriesResult] = TTLCache(
             ttl_seconds=config.memory.core_memories_cache_ttl,
         )
 
@@ -2163,30 +2180,21 @@ class MemoryService:
     def _format_recent_memory_line(self, memory: dict) -> str:
         """Format a memory for recent context display.
 
-        Format: - [YYYY-MM-DD HH:MM] [type | cat1, cat2] Memory text
+        Format: - [YYYY-MM-DD] [cat1, cat2] Memory text
+        Date-only timestamp (no HH:MM). Categories shown if present,
+        memory_type omitted (internal classification, not useful to LLM).
         """
         ts = memory.get("created_at", "")
         if ts and "T" in ts:
-            ts = ts.split("T")[0] + " " + ts.split("T")[1][:5]
+            ts = ts.split("T")[0]
 
         text = wrap_memory_item(memory.get("memory", ""))
         meta = memory.get("metadata") or {}
-        mtype = meta.get("memory_type", "")
         cats = meta.get("categories", [])
 
-        # Format: [type | cat1, cat2] or [type] or [cat1, cat2]
-        parts = []
-        if mtype:
-            parts.append(mtype)
-        if cats:
-            parts.append(", ".join(cats))
+        cat_str = f" [{', '.join(cats)}]" if cats else ""
 
-        if parts:
-            meta_str = f"[{' | '.join(parts)}] "
-        else:
-            meta_str = ""
-
-        return f"- [{ts}] {meta_str}{text}"
+        return f"- [{ts}]{cat_str} {text}"
 
     @staticmethod
     def _sort_memories_by_importance(memories: list[dict]) -> list[dict]:
@@ -2247,10 +2255,14 @@ class MemoryService:
         user_id: str,
         agent_id: str | None = None,
         recent_days: int | None = None,
-    ) -> str:
+    ) -> CoreMemoriesResult:
         """Assemble core context for conversation start.
 
-        Returns a structured text with:
+        Returns a CoreMemoriesResult with:
+        - text: Structured markdown with pinned + top-N + recent memories
+        - memory_ids: Set of all memory IDs included (for dedup vs search)
+
+        Sections:
         1. Pinned agent memories (identity, knowledge) — if agent_id provided
         2. Pinned user memories (facts, preferences) — shared across agents
         3. Top-N non-pinned memories by importance (configurable)
@@ -2297,6 +2309,34 @@ class MemoryService:
             if m.get("id"):
                 included_ids.add(m["id"])
 
+        # ── 2+3. Fetch top-N non-pinned memories (parallel) ─────────
+        # Agent and user top-N queries are independent — run in parallel.
+        imp_levels = importance_levels_at_or_above(min_importance) if top_n > 0 else []
+        agent_non_pinned_raw: dict = {"results": []}
+        user_non_pinned_raw: dict = {"results": []}
+
+        if top_n > 0:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = {}
+                if agent_id:
+                    futures["agent"] = pool.submit(
+                        self.vector.get_all,
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        filters={"pinned": False, "importance": imp_levels},
+                        limit=top_n * 3,
+                    )
+                futures["user"] = pool.submit(
+                    self.vector.get_all,
+                    user_id=user_id,
+                    shared_only=True,
+                    filters={"pinned": False, "importance": imp_levels},
+                    limit=top_n * 3,
+                )
+                if "agent" in futures:
+                    agent_non_pinned_raw = futures["agent"].result()
+                user_non_pinned_raw = futures["user"].result()
+
         # ── 2. Agent sections (pinned + top-N non-pinned) ────────────
         if agent_id:
             # Sort pinned agent memories by importance
@@ -2312,15 +2352,8 @@ class MemoryService:
                 key, line = self._classify_agent_memory(m)
                 agent_sections[key].append(line)
 
-            # Fetch top-N non-pinned agent memories
+            # Process top-N non-pinned agent memories
             if top_n > 0:
-                imp_levels = importance_levels_at_or_above(min_importance)
-                agent_non_pinned_raw = self.vector.get_all(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    filters={"pinned": False, "importance": imp_levels},
-                    limit=top_n * 3,
-                )
                 agent_non_pinned = [
                     m
                     for m in agent_non_pinned_raw.get("results", [])
@@ -2363,15 +2396,8 @@ class MemoryService:
             key, line = self._classify_user_memory(m)
             user_sections[key].append(line)
 
-        # Fetch top-N non-pinned user memories
+        # Process top-N non-pinned user memories
         if top_n > 0:
-            imp_levels = importance_levels_at_or_above(min_importance)
-            user_non_pinned_raw = self.vector.get_all(
-                user_id=user_id,
-                shared_only=True,
-                filters={"pinned": False, "importance": imp_levels},
-                limit=top_n * 3,
-            )
             user_non_pinned = [
                 m
                 for m in user_non_pinned_raw.get("results", [])
@@ -2390,51 +2416,75 @@ class MemoryService:
         if user_sections["prefs"]:
             sections.append("## User Preferences\n" + "\n".join(user_sections["prefs"]))
         if user_sections["other"]:
-            sections.append("## User Context\n" + "\n".join(user_sections["other"]))
+            sections.append(
+                "## Other User Memories\n" + "\n".join(user_sections["other"])
+            )
 
-        # ── 4. Recent context memories (dual-scope: user + agent) ─────
+        # ── 4. Recent context memories (parallel, dual-scope) ─────────
         since = datetime.now(timezone.utc) - timedelta(days=recent_days)
         limit_user = self._config.memory.recent_limit_user
         limit_agent = self._config.memory.recent_limit_agent
-
-        # Fetch user recent memories (no agent_id — shared)
-        user_recent = self.vector.get_recent_memories(
-            user_id=user_id,
-            agent_id=None,
-            since=since,
-            limit=limit_user,
-            memory_types=self.RECENT_MEMORY_TYPES,
+        recent_imp_levels = importance_levels_at_or_above(
+            self._config.memory.core_recent_min_importance
         )
+
+        # Fetch user + agent recent memories in parallel
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_user_recent = pool.submit(
+                self.vector.get_recent_memories,
+                user_id=user_id,
+                agent_id=None,
+                since=since,
+                limit=limit_user,
+                memory_types=self.RECENT_MEMORY_TYPES,
+                importance_levels=recent_imp_levels,
+            )
+            f_agent_recent = None
+            if agent_id:
+                f_agent_recent = pool.submit(
+                    self.vector.get_recent_memories,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    since=since,
+                    limit=limit_agent,
+                    memory_types=self.RECENT_MEMORY_TYPES,
+                    importance_levels=recent_imp_levels,
+                )
+            user_recent_raw = f_user_recent.result()
+            agent_recent_raw = f_agent_recent.result() if f_agent_recent else []
+
         user_recent = [
             m
-            for m in user_recent
+            for m in user_recent_raw
+            if not should_exclude(m) and m.get("id") not in included_ids
+        ]
+        agent_recent: list[dict] = [
+            m
+            for m in agent_recent_raw
             if not should_exclude(m) and m.get("id") not in included_ids
         ]
 
-        # Fetch agent recent memories (with agent_id)
-        agent_recent: list[dict] = []
-        if agent_id:
-            agent_recent = self.vector.get_recent_memories(
-                user_id=user_id,
-                agent_id=agent_id,
-                since=since,
-                limit=limit_agent,
-                memory_types=self.RECENT_MEMORY_TYPES,
-            )
-            agent_recent = [
-                m
-                for m in agent_recent
-                if not should_exclude(m) and m.get("id") not in included_ids
-            ]
+        # Sort recent by importance (desc) then date (desc) so truncation
+        # removes least important entries first
+        user_recent = self._sort_memories_by_importance(user_recent)
+        agent_recent = self._sort_memories_by_importance(agent_recent)
 
-        # Build recent context lines (kept as list for partial truncation)
-        recent_user_lines = [self._format_recent_memory_line(m) for m in user_recent]
-        recent_agent_lines = [self._format_recent_memory_line(m) for m in agent_recent]
+        # Build recent context lines paired with memory IDs so that
+        # truncation can remove IDs for entries that get dropped.
+        recent_user_pairs: list[tuple[str, str | None]] = [
+            (self._format_recent_memory_line(m), m.get("id")) for m in user_recent
+        ]
+        recent_agent_pairs: list[tuple[str, str | None]] = [
+            (self._format_recent_memory_line(m), m.get("id")) for m in agent_recent
+        ]
+
+        recent_user_lines = [line for line, _ in recent_user_pairs]
+        recent_agent_lines = [line for line, _ in recent_agent_pairs]
 
         if not sections and not recent_user_lines and not recent_agent_lines:
-            output = "No core memories found."
-            self._core_cache.set(cache_key, output)
-            return output
+            result = CoreMemoriesResult(text="No core memories found.")
+            self._core_cache.set(cache_key, result)
+            return result
 
         # ── 5. Assembly with graceful truncation ──────────────────────
         # Prepend security preamble
@@ -2450,11 +2500,13 @@ class MemoryService:
         parts = [p for p in [preamble, main_text, recent_section] if p]
         output = "\n\n".join(parts)
 
-        # Graceful truncation: trim recent entries one by one from the end
+        # Graceful truncation: trim recent entries one by one from the end.
+        # Also pop from the paired lists so we know which IDs survived.
         if len(output) > max_len and (recent_user_lines or recent_agent_lines):
             # Try trimming agent lines first, then user lines
             while len(output) > max_len and recent_agent_lines:
                 recent_agent_lines.pop()
+                recent_agent_pairs.pop()
                 recent_section = self._build_recent_section(
                     recent_user_lines, recent_agent_lines
                 )
@@ -2463,18 +2515,25 @@ class MemoryService:
 
             while len(output) > max_len and recent_user_lines:
                 recent_user_lines.pop()
+                recent_user_pairs.pop()
                 recent_section = self._build_recent_section(
                     recent_user_lines, recent_agent_lines
                 )
                 parts = [p for p in [preamble, main_text, recent_section] if p]
                 output = "\n\n".join(parts)
 
+        # Now collect IDs only for recent memories that survived truncation
+        for _, mid in recent_user_pairs + recent_agent_pairs:
+            if mid:
+                included_ids.add(mid)
+
         # If still too long after removing all recent context, hard truncate
         if len(output) > max_len:
             output = output[: max_len - 20] + "\n\n[...truncated]"
 
-        self._core_cache.set(cache_key, output)
-        return output
+        result = CoreMemoriesResult(text=output, memory_ids=included_ids)
+        self._core_cache.set(cache_key, result)
+        return result
 
     @staticmethod
     def _build_recent_section(user_lines: list[str], agent_lines: list[str]) -> str:

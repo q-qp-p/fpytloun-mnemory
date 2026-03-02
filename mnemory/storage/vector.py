@@ -984,6 +984,7 @@ class VectorStore:
         since: datetime,
         limit: int = 50,
         memory_types: list[str] | None = None,
+        importance_levels: list[str] | None = None,
     ) -> list[dict]:
         """Get memories created after a given timestamp.
 
@@ -996,6 +997,8 @@ class VectorStore:
             since: Only return memories created after this timestamp.
             limit: Maximum number of results.
             memory_types: If set, filter to only these memory types.
+            importance_levels: If set, filter to only these importance levels
+                (e.g., ["normal", "high", "critical"]).
 
         Returns memories ordered by created_at descending (most recent first).
         """
@@ -1031,6 +1034,12 @@ class VectorStore:
         if memory_types:
             must_conditions.append(
                 FieldCondition(key="memory_type", match=MatchAny(any=memory_types))
+            )
+
+        # Filter by importance levels if specified
+        if importance_levels:
+            must_conditions.append(
+                FieldCondition(key="importance", match=MatchAny(any=importance_levels))
             )
 
         points, _ = self._client.scroll(

@@ -368,7 +368,7 @@ def initialize_memory(
     instructions = build_instructions(effective_mode)
 
     # Get core memories (fail gracefully)
-    core_memories = None
+    core_memories_text = None
     core_memories_error = None
     try:
         uid = _resolve_user_id(user_id)
@@ -376,11 +376,12 @@ def initialize_memory(
         collector = get_collector()
         if collector:
             collector.record_operation("initialize_memory", uid, aid)
-        core_memories = _get_service().get_core_memories(
+        core_result = _get_service().get_core_memories(
             user_id=uid,
             agent_id=aid,
             recent_days=recent_days,
         )
+        core_memories_text = core_result.text
     except ValueError as e:
         # Sanitize error message to prevent user-influenced content
         # from being injected into the LLM context via error text
@@ -393,8 +394,8 @@ def initialize_memory(
     # Build response
     parts = ["## MEMORY INSTRUCTIONS", "", instructions]
 
-    if core_memories is not None:
-        parts.extend(["", "---", "", "## CORE MEMORIES", "", core_memories])
+    if core_memories_text is not None:
+        parts.extend(["", "---", "", "## CORE MEMORIES", "", core_memories_text])
     elif core_memories_error:
         parts.extend(
             [
@@ -878,6 +879,7 @@ def get_core_memories(
     - Agent Instructions: user preferences specific to you (role=user, agent-scoped)
     - User Facts: critical information about the user
     - User Preferences: how the user likes to interact
+    - Other User Memories: additional user context (episodic, procedural)
     - Recent Context: recent activity with User/Agent subsections
 
     Args:
@@ -893,10 +895,14 @@ def get_core_memories(
         collector = get_collector()
         if collector:
             collector.record_operation("get_core_memories", uid, aid)
-        return _get_service().get_core_memories(
-            user_id=uid,
-            agent_id=aid,
-            recent_days=recent_days,
+        return (
+            _get_service()
+            .get_core_memories(
+                user_id=uid,
+                agent_id=aid,
+                recent_days=recent_days,
+            )
+            .text
         )
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
