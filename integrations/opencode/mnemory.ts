@@ -19,7 +19,7 @@
  *   MNEMORY_AGENT_ID           - Agent ID (default: opencode)
  *   MNEMORY_USER_ID            - User ID (optional, can be set via API key mapping)
  *   MNEMORY_SCORE_THRESHOLD    - Min relevance score for recalled memories (default: 0.5)
- *   MNEMORY_INCLUDE_ASSISTANT  - Include assistant messages in remember calls (default: false)
+ *   MNEMORY_INCLUDE_ASSISTANT  - Include assistant messages in remember calls (default: true)
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
@@ -50,7 +50,7 @@ export const MnemoryPlugin: Plugin = async ({ client, worktree, directory }) => 
     process.env.MNEMORY_SCORE_THRESHOLD || "0.5",
   )
   const includeAssistant =
-    (process.env.MNEMORY_INCLUDE_ASSISTANT || "false").toLowerCase() === "true"
+    (process.env.MNEMORY_INCLUDE_ASSISTANT || "true").toLowerCase() === "true"
 
   // ── State ────────────────────────────────────────────────────────
   // Track mnemory session per OpenCode session.
