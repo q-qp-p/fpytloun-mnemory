@@ -74,6 +74,10 @@ mnemory/
 
 5. **Stateless HTTP**: The server runs in stateless mode (`stateless_http=True, json_response=True`) for Kubernetes compatibility.
 
+6. **Stateless deployment assumption**: Production deployments may have no persistent local filesystem (Kubernetes stateless pods). The only guaranteed persistent stores are Qdrant (always present) and optionally S3/Redis. Never store application state (migration tracking, caches, metadata) on the local filesystem unless it's explicitly configured as a backend (e.g., `ARTIFACT_BACKEND=filesystem` for dev). Use Qdrant or the configured session/artifact backend for any state that must survive restarts.
+
+7. **Hybrid search**: Search uses both dense vectors (semantic similarity via OpenAI embeddings) and sparse vectors (BM25 keyword matching via FastEmbed) fused with Qdrant's native RRF (Reciprocal Rank Fusion). FastEmbed is a required dependency. Importance reranking is applied in Python post-processing after RRF fusion (FormulaQuery is used only as a fallback when hybrid search fails at query time, see [qdrant/qdrant#6836](https://github.com/qdrant/qdrant/issues/6836)).
+
 ## Build / Run / Test
 
 ### Local development
@@ -207,6 +211,20 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 4. Add the backend selection logic in the store's `__init__`
 5. Add optional dependency to `pyproject.toml`
 6. Update `docs/configuration.md` configuration table
+
+### Data migrations
+
+Migrations run automatically on startup before the server accepts requests. State is tracked in a separate `_mnemory_meta` Qdrant collection (not the filesystem) to support stateless Kubernetes deployments.
+
+- Migration classes live in `mnemory/migration.py`
+- Each migration has a unique ID (e.g., `001_add_sparse_vectors`), a `description`, and a `run()` method
+- `MigrationRunner` loads applied migrations from `_mnemory_meta`, runs pending ones in order, and records completion
+- Migrations must be **idempotent** — safe to re-run if interrupted mid-way or if multiple instances start simultaneously
+- Migrations must log progress clearly (batch N/M, points processed, elapsed time, estimated total time) since they may take minutes for large instances
+- Progress checkpoints are saved to `_mnemory_meta` after each batch for resumable migrations
+- The health endpoint returns 503 during migration (Kubernetes readiness probe integration)
+- New migrations are added to the `get_migrations()` registry in `migration.py`
+- After adding a migration, document it in the changelog with performance expectations — startup migration may take a long time for large instances
 
 ## Important Notes
 

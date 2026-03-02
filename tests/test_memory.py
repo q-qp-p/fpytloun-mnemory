@@ -47,6 +47,8 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     # Core memories: top-N non-pinned memories
     mock_config.memory.core_top_memories = 10
     mock_config.memory.core_min_importance = "normal"
+    # Hybrid search
+    mock_config.memory.search_score_threshold_hybrid = 0.0
 
 
 def _make_service(auto_classify=False, track_access=False):
@@ -56,10 +58,14 @@ def _make_service(auto_classify=False, track_access=False):
     mock_config.memory.auto_classify = auto_classify
     mock_config.memory.track_memory_access = track_access
 
+    mock_sparse = MagicMock()
+    mock_sparse.embed.return_value = None
+
     with (
         patch("mnemory.memory.VectorStore"),
         patch("mnemory.memory.ArtifactStore"),
         patch("mnemory.memory.LLMClient"),
+        patch("mnemory.memory.SparseEmbeddingClient", return_value=mock_sparse),
     ):
         service = MemoryService(mock_config)
 
@@ -110,11 +116,7 @@ class TestSearchScoreThreshold:
     """Test that search results below the score threshold are filtered out."""
 
     def test_low_score_results_filtered_single_scope(self):
-        """Single-scope search should filter results below threshold.
-
-        Note: keyword boost runs BEFORE threshold filtering, but with
-        additive boost and no keyword overlap, scores are unchanged.
-        """
+        """Single-scope search should filter results below threshold."""
         service = _make_service()
         service.vector.search.return_value = {
             "results": [
@@ -187,13 +189,7 @@ class TestSearchScoreThreshold:
         assert "shared-low" not in ids
 
     def test_threshold_configurable(self):
-        """Custom threshold should be respected.
-
-        With additive keyword boost and no keyword overlap, scores are
-        unchanged:
-        - "above": 0.8, above 0.5 threshold
-        - "below": 0.4, below 0.5 threshold
-        """
+        """Custom threshold should be respected."""
         service = _make_service()
         service._config.memory.search_score_threshold = 0.5
         service.vector.search.return_value = {
@@ -465,10 +461,14 @@ class TestCoreMemoryCache:
         _mock_memory_config(mock_config)
         mock_config.memory.core_memories_cache_ttl = 0  # Disabled
 
+        mock_sparse = MagicMock()
+        mock_sparse.embed.return_value = None
+
         with (
             patch("mnemory.memory.VectorStore"),
             patch("mnemory.memory.ArtifactStore"),
             patch("mnemory.memory.LLMClient"),
+            patch("mnemory.memory.SparseEmbeddingClient", return_value=mock_sparse),
         ):
             service = MemoryService(mock_config)
 
@@ -3051,176 +3051,74 @@ class TestVectorSearchTTLFilter:
 # ── Keyword boost ─────────────────────────────────────────────────────
 
 
-class TestKeywordBoost:
-    """Test post-retrieval keyword boost in search results."""
+class TestImportanceBoost:
+    """Test post-retrieval importance boost in search results.
 
-    def test_keyword_match_boosts_score(self):
-        """Memories containing query keywords should be boosted."""
-        service = _make_service()
-        service.vector.search.return_value = {
-            "results": [
-                {
-                    "id": "no-match",
-                    "score": 0.50,
-                    "memory": "User is an AI enthusiast",
-                    "metadata": {},
-                },
-                {
-                    "id": "match",
-                    "score": 0.45,
-                    "memory": "User's family is selfish",
-                    "metadata": {},
-                },
-            ]
-        }
-        results = service.search_memories(query="family", user_id="filip")
-        # "family" match should now rank higher than "AI enthusiast"
-        assert results[0]["id"] == "match"
-        assert results[1]["id"] == "no-match"
+    _importance_boost applies a small additive bonus based on importance
+    level after RRF fusion (hybrid search mode). It replaces the old
+    keyword boost that was removed in favor of BM25 sparse vectors.
+    """
 
-    def test_no_keyword_match_keeps_score(self):
-        """Memories without query keywords keep their original score."""
+    def test_critical_boosted_above_normal(self):
+        """Critical importance should be boosted above normal."""
         service = _make_service()
-        service.vector.search.return_value = {
-            "results": [
-                {
-                    "id": "no-match",
-                    "score": 0.50,
-                    "memory": "User likes Python",
-                    "metadata": {},
-                },
-            ]
-        }
-        results = service.search_memories(query="family", user_id="filip")
-        # Additive boost with 0 overlap: min(1.0, 0.50 + 0.2 * 0) = 0.50
-        assert results[0]["score"] == 0.50
-
-    def test_multi_word_partial_match(self):
-        """Partial keyword matches should give proportional boost."""
-        service = _make_service()
-        service.vector.search.return_value = {
-            "results": [
-                {
-                    "id": "partial",
-                    "score": 0.40,
-                    "memory": "User has a dog named Rex",
-                    "metadata": {},
-                },
-                {
-                    "id": "full",
-                    "score": 0.38,
-                    "memory": "User wants to buy a dog for the house",
-                    "metadata": {},
-                },
-            ]
-        }
-        results = service.search_memories(query="buy dog house", user_id="filip")
-        # "full" has 3/3 keywords, "partial" has 1/3
-        assert results[0]["id"] == "full"
-
-    def test_all_stopwords_skips_boost(self):
-        """Query with only stopwords should skip keyword boost entirely."""
-        service = _make_service()
-        service.vector.search.return_value = {
-            "results": [
-                {
-                    "id": "mem1",
-                    "score": 0.50,
-                    "memory": "User likes cats",
-                    "metadata": {},
-                },
-            ]
-        }
-        results = service.search_memories(query="is the a", user_id="filip")
-        # Score should be unchanged (no keyword boost applied)
-        assert results[0]["score"] == 0.50
-
-    def test_weight_zero_disables_boost(self):
-        """Setting keyword weight to 0 should disable boosting."""
-        service = _make_service()
-        service._config.memory.search_keyword_weight = 0.0
-        service.vector.search.return_value = {
-            "results": [
-                {
-                    "id": "no-match",
-                    "score": 0.50,
-                    "memory": "User likes Python",
-                    "metadata": {},
-                },
-            ]
-        }
-        results = service.search_memories(query="family", user_id="filip")
-        assert results[0]["score"] == 0.50
-
-    def test_applied_in_dual_scope(self):
-        """Keyword boost should also apply in dual-scope search."""
-        service = _make_service()
-        service.vector.search.side_effect = [
-            {
-                "results": [
-                    {
-                        "id": "no-match",
-                        "score": 0.50,
-                        "memory": "User is an AI enthusiast",
-                        "metadata": {},
-                    },
-                ]
-            },
-            {
-                "results": [
-                    {
-                        "id": "match",
-                        "score": 0.45,
-                        "memory": "User's family is selfish",
-                        "metadata": {},
-                    },
-                ]
-            },
+        # importance_weight = 1.0 - 0.9 = 0.1
+        # critical: 0.40 + 0.1 * 1.0 = 0.50
+        # normal:   0.45 + 0.1 * 0.4 = 0.49
+        memories = [
+            {"id": "normal", "score": 0.45, "metadata": {"importance": "normal"}},
+            {"id": "critical", "score": 0.40, "metadata": {"importance": "critical"}},
         ]
-        results = service.search_memories_dual_scope(
-            "family",
-            user_id="filip",
-            session_agent_id="bot",
-        )
-        assert results[0]["id"] == "match"
+        result = service._importance_boost(memories)
+        assert result[0]["id"] == "critical"
+        assert result[1]["id"] == "normal"
 
+    def test_no_boost_when_weight_zero(self):
+        """similarity_weight=1.0 means importance_weight=0, no boost."""
+        service = _make_service()
+        service._config.memory.search_similarity_weight = 1.0
+        memories = [
+            {"id": "mem1", "score": 0.50, "metadata": {"importance": "critical"}},
+        ]
+        result = service._importance_boost(memories)
+        assert result[0]["score"] == 0.50
 
-# ── Tokenize helper ──────────────────────────────────────────────────
+    def test_empty_list_returns_empty(self):
+        """Empty input should return empty list."""
+        service = _make_service()
+        assert service._importance_boost([]) == []
 
+    def test_missing_metadata_uses_normal_default(self):
+        """Missing metadata should default to normal importance."""
+        service = _make_service()
+        memories = [
+            {"id": "mem1", "score": 0.50, "metadata": None},
+            {"id": "mem2", "score": 0.50},
+        ]
+        result = service._importance_boost(memories)
+        # Both should get normal boost: 0.50 + 0.1 * 0.4 = 0.54
+        assert result[0]["score"] == pytest.approx(0.54)
+        assert result[1]["score"] == pytest.approx(0.54)
 
-class TestTokenize:
-    """Test the _tokenize helper function."""
-
-    def test_basic_tokenization(self):
-        from mnemory.memory import _tokenize
-
-        tokens = _tokenize("User's family is selfish")
-        assert "user" in tokens
-        assert "family" in tokens
-        assert "selfish" in tokens
-        # "is" is a stopword
-        assert "is" not in tokens
-        # "s" is too short
-        assert "s" not in tokens
-
-    def test_empty_string(self):
-        from mnemory.memory import _tokenize
-
-        assert _tokenize("") == set()
-
-    def test_all_stopwords(self):
-        from mnemory.memory import _tokenize
-
-        assert _tokenize("is the a an") == set()
-
-    def test_mixed_case_and_punctuation(self):
-        from mnemory.memory import _tokenize
-
-        tokens = _tokenize("User's Dog-Walking habit!")
-        assert "user" in tokens
-        assert "dog" in tokens
-        assert "walking" in tokens
-        assert "habit" in tokens
+    def test_all_importance_levels(self):
+        """All importance levels should produce correct boost values."""
+        service = _make_service()
+        # importance_weight = 0.1
+        memories = [
+            {"id": "low", "score": 0.50, "metadata": {"importance": "low"}},
+            {"id": "normal", "score": 0.50, "metadata": {"importance": "normal"}},
+            {"id": "high", "score": 0.50, "metadata": {"importance": "high"}},
+            {"id": "critical", "score": 0.50, "metadata": {"importance": "critical"}},
+        ]
+        result = service._importance_boost(memories)
+        scores = {m["id"]: m["score"] for m in result}
+        assert scores["low"] == pytest.approx(0.51)  # 0.50 + 0.1 * 0.1
+        assert scores["normal"] == pytest.approx(0.54)  # 0.50 + 0.1 * 0.4
+        assert scores["high"] == pytest.approx(0.57)  # 0.50 + 0.1 * 0.7
+        assert scores["critical"] == pytest.approx(0.60)  # 0.50 + 0.1 * 1.0
+        # Should be sorted by score descending
+        assert result[0]["id"] == "critical"
+        assert result[-1]["id"] == "low"
 
 
 # ── find_memories ─────────────────────────────────────────────────────
@@ -3234,8 +3132,6 @@ class TestFindMemories:
         import json
 
         service = _make_service()
-        # Disable keyword boost to test merge/rerank logic in isolation
-        service._config.memory.search_keyword_weight = 0
 
         # Mock LLM: first call = query generation, second call = reranking
         # Rerank uses numeric indices: after sort by score, order is

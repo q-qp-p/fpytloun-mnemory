@@ -14,6 +14,10 @@ RUN pip install --no-cache-dir ".[all]" \
 COPY mnemory/ mnemory/
 RUN pip install --no-cache-dir --no-deps .
 
+# Pre-download BM25 sparse embedding model into the image so containers
+# start without network dependency (Kubernetes pods lose cache on restart).
+RUN python -c "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm25')"
+
 # Data directory for vector store, artifacts, and history.
 # Override ~/.mnemory default so Docker volumes mount cleanly at /data.
 ENV DATA_DIR=/data

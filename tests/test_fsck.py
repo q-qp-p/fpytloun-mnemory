@@ -1271,7 +1271,9 @@ class TestApplyCheck:
 
         result = svc.apply_check(check.check_id)
         assert result["applied"] == 1
-        svc._vector.update_content.assert_called_once_with("mem-1", "Fixed text")
+        svc._vector.update_content.assert_called_once_with(
+            "mem-1", "Fixed text", sparse_vector=None
+        )
 
     def test_apply_update_metadata(self):
         svc = _make_fsck_service()
@@ -1415,7 +1417,9 @@ class TestApplyCheck:
 
         result = svc.apply_check(check.check_id)
         assert result["applied"] == 1
-        svc._vector.update_content.assert_called_once_with("mem-1", "New text")
+        svc._vector.update_content.assert_called_once_with(
+            "mem-1", "New text", sparse_vector=None
+        )
         svc._vector.update_metadata.assert_called_once_with(
             "mem-1", {"importance": "high"}
         )

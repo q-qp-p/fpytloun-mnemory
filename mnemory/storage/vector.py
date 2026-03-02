@@ -89,10 +89,20 @@ class VectorStore:
             return QdrantClient(path=vc.qdrant_path)
 
     def _ensure_collection(self) -> None:
-        """Create the collection if it doesn't exist, then ensure indexes."""
+        """Create the collection if it doesn't exist, then ensure indexes.
+
+        New collections are created with both dense vector config and
+        sparse vector config (BM25) for hybrid search. Existing
+        collections get sparse config added via the migration framework.
+        """
         name = self.collection_name
         existing = [c.name for c in self._client.get_collections().collections]
         if name not in existing:
+            from qdrant_client.models import (
+                Modifier,
+                SparseVectorParams,
+            )
+
             logger.info(
                 "Creating collection '%s' (dims=%d, distance=COSINE)",
                 name,
@@ -104,6 +114,9 @@ class VectorStore:
                     size=self._embedding.dims,
                     distance=Distance.COSINE,
                 ),
+                sparse_vectors_config={
+                    "bm25": SparseVectorParams(modifier=Modifier.IDF),
+                },
             )
         else:
             logger.debug("Collection '%s' already exists", name)
@@ -177,16 +190,20 @@ class VectorStore:
         agent_id: str | None = None,
         metadata: dict[str, Any],
         role: str = "user",
+        sparse_vector: Any = None,
     ) -> str:
         """Insert a new memory point.
 
         Args:
             text: The memory content text.
-            vector: Pre-computed embedding vector.
+            vector: Pre-computed dense embedding vector.
             user_id: User scope.
             agent_id: Optional agent scope.
             metadata: Custom metadata fields (memory_type, categories, etc.).
             role: "user" or "assistant".
+            sparse_vector: Optional BM25 sparse vector for hybrid search.
+                When provided, stored alongside the dense vector as a
+                named vector ``{"": dense, "bm25": sparse}``.
 
         Returns:
             The generated memory ID (UUID string).
@@ -207,10 +224,17 @@ class VectorStore:
         # Merge custom metadata (memory_type, categories, importance, etc.)
         payload.update(metadata)
 
+        # Use named vectors when sparse is available, unnamed otherwise
+        point_vector: Any = (
+            {"": vector, "bm25": sparse_vector} if sparse_vector is not None else vector
+        )
+
         with self._write_guard():
             self._client.upsert(
                 collection_name=self.collection_name,
-                points=[PointStruct(id=memory_id, vector=vector, payload=payload)],
+                points=[
+                    PointStruct(id=memory_id, vector=point_vector, payload=payload)
+                ],
             )
         return memory_id
 
@@ -221,7 +245,7 @@ class VectorStore:
         """Insert multiple memory points in a single call.
 
         Each point dict should have: text, vector, user_id, agent_id (optional),
-        metadata, role.
+        metadata, role, sparse_vector (optional).
 
         Returns list of generated memory IDs.
         """
@@ -247,8 +271,16 @@ class VectorStore:
                 payload["agent_id"] = p["agent_id"]
             payload.update(p.get("metadata", {}))
 
+            # Use named vectors when sparse is available
+            sparse_vec = p.get("sparse_vector")
+            point_vector: Any = (
+                {"": p["vector"], "bm25": sparse_vec}
+                if sparse_vec is not None
+                else p["vector"]
+            )
+
             structs.append(
-                PointStruct(id=memory_id, vector=p["vector"], payload=payload)
+                PointStruct(id=memory_id, vector=point_vector, payload=payload)
             )
 
         with self._write_guard():
@@ -272,13 +304,25 @@ class VectorStore:
         include_decayed: bool = False,
         similarity_weight: float = 0.9,
         query_vector: list[float] | None = None,
+        query_sparse_vector: Any = None,
         date_start: str | None = None,
         date_end: str | None = None,
     ) -> dict:
-        """Semantic search with TTL, category, and importance filtering.
+        """Semantic search with optional hybrid (dense + sparse) retrieval.
 
-        Uses Qdrant's query_points() with native filtering and
-        formula-based importance reranking.
+        When ``query_sparse_vector`` is provided, uses Qdrant's native
+        hybrid search: two prefetch branches (dense + BM25 sparse) fused
+        via Reciprocal Rank Fusion (RRF). This surfaces results that
+        match by keyword even if they're not semantically similar.
+
+        When ``query_sparse_vector`` is None, falls back to dense-only
+        search with FormulaQuery importance reranking (original behavior).
+
+        Note: In hybrid mode, importance reranking is NOT applied
+        server-side (FormulaQuery cannot be reliably nested inside
+        Prefetch — see https://github.com/qdrant/qdrant/issues/6836).
+        The caller (memory.py) applies importance boost in Python
+        post-processing after RRF fusion.
 
         Args:
             query: Search query text.
@@ -295,21 +339,25 @@ class VectorStore:
             similarity_weight: Weight for cosine similarity in the combined
                 score formula (0.0-1.0). Importance gets 1 - similarity_weight.
                 Default 0.9 (90% similarity, 10% importance).
-            query_vector: Pre-computed embedding vector. If provided, skips
-                the embedding API call. Used by find_memories for batch
-                embedding optimization.
+                Only used in dense-only mode (FormulaQuery).
+            query_vector: Pre-computed dense embedding vector. If provided,
+                skips the embedding API call.
+            query_sparse_vector: Pre-computed BM25 sparse vector for hybrid
+                search. When provided, enables RRF fusion of dense + sparse.
             date_start: Optional start date (YYYY-MM-DD) for temporal
-                filtering. Matches memories where event_date >= start OR
-                (event_date is missing AND created_at >= start).
+                filtering.
             date_end: Optional end date (YYYY-MM-DD) for temporal filtering.
-                Matches memories where event_date <= end OR (event_date is
-                missing AND created_at <= end).
 
         Returns:
             Dict with "results" key containing list of memory dicts.
+            Each result has a "score" field. In hybrid mode, scores are
+            RRF-fused (range ~0.01-0.03); in dense-only mode, scores
+            are cosine similarity weighted by importance (range 0-1).
         """
         from qdrant_client.models import (
             DatetimeRange,
+            Fusion,
+            FusionQuery,
             IsEmptyCondition,
             MatchAny,
             Prefetch,
@@ -331,28 +379,18 @@ class VectorStore:
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
             )
         elif shared_only:
-            # Restrict to memories without any agent_id (shared user memories).
-            # Use IsEmptyCondition (not IsNullCondition) because agent_id is
-            # omitted from the payload for shared memories — IsNullCondition
-            # only matches keys explicitly set to null, not absent keys.
             must_conditions.append(
                 IsEmptyCondition(is_empty=PayloadField(key="agent_id"))
             )
-        # Metadata filters (memory_type, role)
         if filters:
             for key, value in filters.items():
                 must_conditions.append(
                     FieldCondition(key=key, match=MatchValue(value=value))
                 )
-        # Category filter (expanded list, OR logic via MatchAny)
         if categories:
             must_conditions.append(
                 FieldCondition(key="categories", match=MatchAny(any=categories))
             )
-        # TTL filter: active memories only.
-        # Use IsEmptyCondition (not IsNullCondition) because legacy memories
-        # may not have expires_at in their payload at all — IsNullCondition
-        # only matches keys explicitly set to null, not absent keys.
         if exclude_expired and not include_decayed:
             now = datetime.now(timezone.utc)
             ttl_filter = Filter(
@@ -364,10 +402,6 @@ class VectorStore:
             )
             must_conditions.append(ttl_filter)
 
-        # Date range filter: match memories by event_date OR created_at.
-        # Uses OR logic: event_date in range, OR (no event_date AND
-        # created_at in range). This ensures memories without event_date
-        # are still found based on when they were stored.
         if date_start or date_end:
             date_conditions = self._build_date_range_filter(date_start, date_end)
             if date_conditions:
@@ -375,55 +409,90 @@ class VectorStore:
 
         query_filter = Filter(must=must_conditions)
 
-        # 3. Build formula for importance reranking
-        importance_weight = 1.0 - similarity_weight
-        try:
-            from qdrant_client.models import (
-                FormulaQuery,
-                SumExpression,
-            )
+        # 3. Execute search — hybrid or dense-only
+        result = None
 
-            formula_terms: list = [
-                {"mult": [similarity_weight, "$score"]},
-            ]
-            for imp_level, imp_weight in IMPORTANCE_WEIGHTS.items():
-                boost = importance_weight * imp_weight
-                if boost > 0:
-                    formula_terms.append(
-                        {
-                            "mult": [
-                                boost,
-                                {
-                                    "key": "importance",
-                                    "match": {"value": imp_level},
-                                },
-                            ]
-                        }
-                    )
-
-            result = self._client.query_points(
-                collection_name=self.collection_name,
-                prefetch=Prefetch(
-                    query=embeddings,
-                    filter=query_filter,
+        if query_sparse_vector is not None:
+            # Hybrid search: dense + sparse → RRF fusion.
+            # Importance reranking is handled in Python post-processing
+            # by the caller (memory.py), not here, because FormulaQuery
+            # cannot be reliably nested inside Prefetch.
+            try:
+                result = self._client.query_points(
+                    collection_name=self.collection_name,
+                    prefetch=[
+                        Prefetch(
+                            query=embeddings,
+                            filter=query_filter,
+                            limit=limit,
+                        ),
+                        Prefetch(
+                            query=query_sparse_vector,
+                            using="bm25",
+                            filter=query_filter,
+                            limit=limit,
+                        ),
+                    ],
+                    query=FusionQuery(fusion=Fusion.RRF),
                     limit=limit,
-                ),
-                query=FormulaQuery(formula=SumExpression(sum=formula_terms)),
-                limit=limit,
-                with_payload=True,
-            )
-        except Exception:
-            # Fallback: if formula query fails (e.g., older Qdrant version)
-            logger.warning(
-                "Formula-based reranking failed, falling back to simple search"
-            )
-            result = self._client.query_points(
-                collection_name=self.collection_name,
-                query=embeddings,
-                query_filter=query_filter,
-                limit=limit,
-                with_payload=True,
-            )
+                    with_payload=True,
+                )
+            except Exception:
+                logger.warning(
+                    "Hybrid search failed, falling back to dense-only search",
+                    exc_info=True,
+                )
+                # Fall through to dense-only path
+
+        if result is None:
+            # Dense-only path with FormulaQuery importance reranking
+            importance_weight = 1.0 - similarity_weight
+            try:
+                from qdrant_client.models import (
+                    FormulaQuery,
+                    SumExpression,
+                )
+
+                formula_terms: list = [
+                    {"mult": [similarity_weight, "$score"]},
+                ]
+                for imp_level, imp_weight in IMPORTANCE_WEIGHTS.items():
+                    boost = importance_weight * imp_weight
+                    if boost > 0:
+                        formula_terms.append(
+                            {
+                                "mult": [
+                                    boost,
+                                    {
+                                        "key": "importance",
+                                        "match": {"value": imp_level},
+                                    },
+                                ]
+                            }
+                        )
+
+                result = self._client.query_points(
+                    collection_name=self.collection_name,
+                    prefetch=Prefetch(
+                        query=embeddings,
+                        filter=query_filter,
+                        limit=limit,
+                    ),
+                    query=FormulaQuery(formula=SumExpression(sum=formula_terms)),
+                    limit=limit,
+                    with_payload=True,
+                )
+            except Exception:
+                logger.warning(
+                    "Formula-based reranking failed, falling back to simple search"
+                )
+                result = self._client.query_points(
+                    collection_name=self.collection_name,
+                    query=embeddings,
+                    query_filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                )
 
         # 4. Convert to memory dicts
         memories = []
@@ -619,17 +688,20 @@ class VectorStore:
         memory_id: str,
         text: str,
         vector: list[float] | None = None,
+        sparse_vector: Any = None,
     ) -> None:
         """Update a memory's content text and re-embed.
 
         Preserves all existing metadata. Only changes: data, hash,
-        updated_at, and the embedding vector.
+        updated_at, and the embedding vector(s).
 
         Args:
             memory_id: The memory to update.
             text: New content text.
-            vector: Pre-computed embedding vector. If None, the text
+            vector: Pre-computed dense embedding vector. If None, the text
                     is re-embedded automatically.
+            sparse_vector: Optional BM25 sparse vector. When provided,
+                    stored alongside the dense vector.
         """
         # Fetch existing payload to preserve metadata
         existing = self._client.retrieve(
@@ -650,10 +722,17 @@ class VectorStore:
         if vector is None:
             vector = self._embedding.embed(text)
 
+        # Use named vectors when sparse is available
+        point_vector: Any = (
+            {"": vector, "bm25": sparse_vector} if sparse_vector is not None else vector
+        )
+
         with self._write_guard():
             self._client.upsert(
                 collection_name=self.collection_name,
-                points=[PointStruct(id=memory_id, vector=vector, payload=payload)],
+                points=[
+                    PointStruct(id=memory_id, vector=point_vector, payload=payload)
+                ],
             )
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:
@@ -820,7 +899,13 @@ class VectorStore:
             )
             for p in points:
                 mem = self._point_to_memory(p)
-                mem["vector"] = p.vector
+                # Normalize vector format: extract dense vector from named
+                # vectors dict (hybrid mode) or use as-is (legacy unnamed).
+                raw_vector = p.vector
+                if isinstance(raw_vector, dict):
+                    mem["vector"] = raw_vector.get("", raw_vector.get(None))
+                else:
+                    mem["vector"] = raw_vector
                 results.append(mem)
 
             if next_offset is None or len(points) < _PAGE_SIZE:

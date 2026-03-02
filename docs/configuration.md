@@ -73,10 +73,12 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `TTL_PROCEDURAL` | `60` | Default TTL in days for `procedural` memories |
 | `TTL_CONTEXT` | `7` | Default TTL in days for `context` memories |
 | `TRACK_MEMORY_ACCESS` | `true` | Update last_accessed_at and reset TTL on search/recall |
-| `SEARCH_SCORE_THRESHOLD` | `0.30` | Minimum score for search results (0.0-1.0). Results below this are filtered out |
+| `SEARCH_SCORE_THRESHOLD` | `0.30` | Minimum score for dense-only search results (0.0-1.0). Only used as fallback when hybrid search fails at query time |
+| `SEARCH_SCORE_THRESHOLD_HYBRID` | `0.0` | Minimum score for hybrid (RRF) search results. RRF scores are much smaller (~0.01-0.03) than cosine similarity. Default 0.0 disables threshold filtering |
 | `DEDUP_SIMILARITY_THRESHOLD` | `0.4` | Minimum similarity for deduplication matching during memory ingestion |
 | `SEARCH_SIMILARITY_WEIGHT` | `0.9` | Weight for cosine similarity in search ranking (remainder goes to importance). Default 0.9 = 90% similarity, 10% importance |
-| `SEARCH_KEYWORD_WEIGHT` | `0.2` | Weight for keyword overlap boost in search results. Set to 0.0 to disable |
+| `SEARCH_SPARSE_MODEL` | `Qdrant/bm25` | BM25 sparse embedding model for hybrid search. Default is recommended |
+| `SEARCH_KEYWORD_WEIGHT` | `0.2` | **Deprecated.** Ignored — replaced by BM25 hybrid search. Kept for backward compatibility |
 | `DEFAULT_TIMEZONE` | | Default IANA timezone for naive `event_date` values (e.g., `Europe/Prague`). Empty = server local timezone. Can be overridden per session via `X-Timezone` header |
 | `FIND_MEMORIES_QUERIES` | `5` | Maximum number of search queries the LLM generates for `find_memories` (may return fewer or zero) |
 | `MAX_INPUT_LENGTH` | `400000` | Max chars for input to `add_memory(infer=True)` and `remember()`. ~100k tokens |

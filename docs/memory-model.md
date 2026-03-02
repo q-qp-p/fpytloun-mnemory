@@ -49,7 +49,7 @@ Dynamic subcategories via prefix: `project:myapp`, `project:domecek/k8s-manifest
 | `high` | 0.7 | Important facts, key decisions |
 | `critical` | 1.0 | Essential information, always-relevant |
 
-Search results are reranked: `combined_score = similarity * 0.9 + importance_weight * 0.1` (configurable via `SEARCH_SIMILARITY_WEIGHT`). An additive keyword boost is then applied: `final = min(1.0, combined_score + keyword_weight * keyword_overlap)` (configurable via `SEARCH_KEYWORD_WEIGHT`, default 0.2). Keyword matching only boosts scores — memories without keyword overlap keep their original score. Results below `SEARCH_SCORE_THRESHOLD` (default 0.30) are filtered out.
+Search uses hybrid retrieval: dense vectors (semantic similarity via OpenAI embeddings) and BM25 sparse vectors (keyword matching via FastEmbed) are fused server-side using Qdrant's Reciprocal Rank Fusion (RRF). After fusion, an importance-based score boost is applied: `score = rrf_score + importance_weight * importance_value`, where `importance_weight = 1 - SEARCH_SIMILARITY_WEIGHT` (default 0.1). This makes importance a tiebreaker rather than a primary ranking factor. Results below `SEARCH_SCORE_THRESHOLD_HYBRID` (default 0.0) are filtered out. RRF scores are much smaller than cosine similarity (~0.01-0.03 range), so the hybrid threshold defaults to 0.0.
 
 ## Pinned Memories
 

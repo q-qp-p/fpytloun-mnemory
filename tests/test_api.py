@@ -327,10 +327,14 @@ class TestInputLengthGuard:
         _mock_memory_config(mock_config)
         mock_config.memory.max_input_length = 100  # Very low for testing
 
+        mock_sparse = MagicMock()
+        mock_sparse.embed.return_value = None
+
         with (
             patch("mnemory.memory.VectorStore"),
             patch("mnemory.memory.ArtifactStore"),
             patch("mnemory.memory.LLMClient"),
+            patch("mnemory.memory.SparseEmbeddingClient", return_value=mock_sparse),
         ):
             service = MemoryService(mock_config)
 
@@ -354,10 +358,14 @@ class TestInputLengthGuard:
         _mock_memory_config(mock_config)
         mock_config.memory.max_input_length = 400000
 
+        mock_sparse = MagicMock()
+        mock_sparse.embed.return_value = None
+
         with (
             patch("mnemory.memory.VectorStore"),
             patch("mnemory.memory.ArtifactStore"),
             patch("mnemory.memory.LLMClient"),
+            patch("mnemory.memory.SparseEmbeddingClient", return_value=mock_sparse),
         ):
             service = MemoryService(mock_config)
 
@@ -387,10 +395,14 @@ class TestInputLengthGuard:
         _mock_memory_config(mock_config)
         mock_config.memory.max_input_length = 100
 
+        mock_sparse = MagicMock()
+        mock_sparse.embed.return_value = None
+
         with (
             patch("mnemory.memory.VectorStore"),
             patch("mnemory.memory.ArtifactStore"),
             patch("mnemory.memory.LLMClient"),
+            patch("mnemory.memory.SparseEmbeddingClient", return_value=mock_sparse),
         ):
             service = MemoryService(mock_config)
 

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Hybrid Search
+
+- **BM25 sparse vectors + RRF fusion**: Search now uses Qdrant's native hybrid search — dense vectors (semantic similarity) and BM25 sparse vectors (keyword matching) fused with Reciprocal Rank Fusion (RRF). Replaces the old Python-side keyword boost post-processing. Results are more accurate for queries containing specific terms, names, or identifiers
+- **fastembed is now a required dependency**: `fastembed>=0.4.0` moved from optional to main dependencies. The BM25 model (~50MB) is pre-downloaded in the Docker image at build time
+- **Importance reranking**: Post-RRF importance boost applied in Python (weighted by `IMPORTANCE_WEIGHTS`), replacing the previous `FormulaQuery` approach which is unreliable inside Qdrant Prefetch ([qdrant/qdrant#6836](https://github.com/qdrant/qdrant/issues/6836))
+- **Automatic migration on startup**: Existing instances get sparse vectors added via an automatic migration (`001_add_sparse_vectors`) that runs on first startup. Migration is idempotent, resumable with checkpointing, and tracks state in a `_mnemory_meta` Qdrant collection. **Note: migration may take several minutes for large instances** (processes all existing memories in batches of 100). Health endpoint returns 503 during migration
+- **New config vars**: `SEARCH_SPARSE_MODEL` (default `Qdrant/bm25`), `SEARCH_SCORE_THRESHOLD_HYBRID` (default `0.0` — RRF scores are ~0.016–0.033, not 0–1 like cosine)
+- **Deprecated**: `SEARCH_KEYWORD_WEIGHT` is no longer used (keyword matching is now handled by BM25 sparse vectors natively in Qdrant)
+- **Dense-only fallback**: If hybrid search fails at query time (e.g., Qdrant version mismatch), the system gracefully falls back to dense-only search
+
 ### Session Persistence
 
 - **Persistent session storage**: Sessions now survive server restarts via pluggable backends — SQLite (default for local/single-node), Redis (for clustered deployments), or in-memory (tests). Uses a write-through cache pattern: in-memory dict for fast reads, backend for durability, lazy loading on cache miss

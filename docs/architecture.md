@@ -67,14 +67,15 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 
 ### Searching
 
-**search_memories** — fast single-query search:
+**search_memories** — fast single-query hybrid search:
 
 1. You call `search_memories(query="what car do I have")`
-2. Query is embedded, vector similarity search in Qdrant
-3. Results filtered by category/type/date range if specified
-4. Reranked by combined similarity + importance score, then keyword-boosted
-5. Results below score threshold (default 0.30) are filtered out
-6. Returns top N results with artifact indicators
+2. Query is embedded into both dense (OpenAI) and sparse (BM25) vectors
+3. Qdrant runs both searches in parallel and fuses results via Reciprocal Rank Fusion (RRF)
+4. Results filtered by category/type/date range if specified
+5. Importance-based score boost applied in post-processing (small additive bonus based on importance level)
+6. Results below score threshold filtered out
+7. Returns top N results with artifact indicators
 
 **find_memories** — AI-powered multi-query search:
 

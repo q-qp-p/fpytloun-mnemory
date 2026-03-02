@@ -11,7 +11,6 @@ classification, and deduplication against existing memories.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -48,6 +47,7 @@ from mnemory.sanitize import (
     log_injection_warning,
     wrap_memory_item,
 )
+from mnemory.sparse import SparseEmbeddingClient
 from mnemory.storage.artifact import ArtifactStore
 from mnemory.storage.vector import VectorStore
 from mnemory.ttl import (
@@ -61,97 +61,6 @@ logger = logging.getLogger(__name__)
 
 # Max length for user_id and agent_id to prevent abuse
 _MAX_ID_LENGTH = 256
-
-# Minimal English stopwords for keyword boost tokenization.
-# Kept small to avoid filtering meaningful short words.
-_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "in",
-        "on",
-        "at",
-        "to",
-        "for",
-        "of",
-        "and",
-        "or",
-        "but",
-        "not",
-        "with",
-        "by",
-        "from",
-        "as",
-        "if",
-        "it",
-        "its",
-        "this",
-        "that",
-        "my",
-        "your",
-        "his",
-        "her",
-        "our",
-        "their",
-        "me",
-        "him",
-        "us",
-        "them",
-        "i",
-        "you",
-        "he",
-        "she",
-        "we",
-        "they",
-        "do",
-        "does",
-        "did",
-        "has",
-        "have",
-        "had",
-        "will",
-        "would",
-        "can",
-        "could",
-        "should",
-        "what",
-        "which",
-        "who",
-        "whom",
-        "how",
-        "when",
-        "where",
-        "why",
-        "about",
-        "so",
-        "no",
-        "yes",
-        "all",
-        "any",
-        "some",
-    }
-)
-
-# Regex for splitting text into tokens (non-word characters)
-_TOKEN_SPLIT = re.compile(r"\W+")
-
-
-def _tokenize(text: str) -> set[str]:
-    """Tokenize text into a set of lowercase words for keyword matching.
-
-    Splits on non-word characters, lowercases, removes stopwords and
-    tokens shorter than 2 characters.
-    """
-    tokens = _TOKEN_SPLIT.split(text.lower())
-    return {t for t in tokens if t and len(t) >= 2 and t not in _STOPWORDS}
 
 
 def _validate_id(value: str, name: str) -> str:
@@ -268,6 +177,18 @@ class MemoryService:
         self._user_locks: dict[str, threading.Lock] = {}
         self._locks_lock = threading.Lock()
         self._max_user_locks = 1000
+
+        # Sparse embedding client for hybrid search (BM25).
+        # Initialized eagerly — fail fast at startup if model fails to load.
+        sparse_model = config.memory.search_sparse_model
+        self._sparse = SparseEmbeddingClient(model_name=sparse_model)
+
+        # Warn if deprecated keyword weight is set
+        if config.memory.search_keyword_weight > 0:
+            logger.warning(
+                "SEARCH_KEYWORD_WEIGHT is deprecated and ignored. "
+                "BM25 sparse vectors replace the Python keyword boost."
+            )
 
     # ── Add Memory ────────────────────────────────────────────────────
 
@@ -1345,6 +1266,7 @@ class MemoryService:
                 agent_id=agent_id,
                 metadata=metadata,
                 role=role,
+                sparse_vector=self._get_sparse_vector(text),
             )
             return {"id": memory_id, "memory": text, "event": "ADD"}
 
@@ -1399,7 +1321,12 @@ class MemoryService:
 
             # Update content + re-embed via full point replacement
             # (preserves all payload fields we set)
-            self.vector.update_content(target_id, text, vector=vector)
+            self.vector.update_content(
+                target_id,
+                text,
+                vector=vector,
+                sparse_vector=self._get_sparse_vector(text),
+            )
             # Then update metadata
             self.vector.update_metadata(target_id, metadata_update)
 
@@ -1664,6 +1591,7 @@ class MemoryService:
             agent_id=agent_id,
             metadata=metadata,
             role=role,
+            sparse_vector=self._get_sparse_vector(store_content),
         )
 
         response: dict[str, Any] = {
@@ -1676,44 +1604,37 @@ class MemoryService:
 
     # ── Search Helpers ────────────────────────────────────────────────
 
-    def _keyword_boost(self, query: str, memories: list[dict]) -> list[dict]:
-        """Apply post-retrieval keyword boost to search results.
+    def _importance_boost(self, memories: list[dict]) -> list[dict]:
+        """Apply importance-based score boost in Python post-processing.
 
-        Adds an additive bonus based on keyword overlap:
-        final = min(1.0, qdrant_score + weight * keyword_score)
+        Used after RRF fusion where FormulaQuery is not available
+        (hybrid search mode). Adds a small additive bonus based on
+        importance level, then re-sorts by score.
 
-        keyword_score = fraction of query tokens found in the memory text.
-        This is purely additive — memories without keyword matches keep
-        their original score (no penalty). Scores are capped at 1.0.
-
-        If the query has no meaningful tokens (all stopwords), results are
-        returned unchanged.
+        Formula: score = score + importance_weight * importance_value
+        Where importance_weight = 1 - similarity_weight (default 0.1)
 
         Args:
-            query: The original search query.
-            memories: Search results with "score" and "memory" fields.
+            memories: Search results with "score" and "metadata" fields.
 
         Returns:
             Memories with updated scores, re-sorted by new score.
         """
-        weight = self._config.memory.search_keyword_weight
-        if weight <= 0 or not memories:
-            return memories
-
-        query_tokens = _tokenize(query)
-        if not query_tokens:
-            # All stopwords or empty query — skip keyword boost
+        importance_weight = 1.0 - self._config.memory.search_similarity_weight
+        if importance_weight <= 0 or not memories:
             return memories
 
         for mem in memories:
-            mem_text = mem.get("memory", "")
-            mem_tokens = _tokenize(mem_text)
-            overlap = len(query_tokens & mem_tokens) / len(query_tokens)
-            original_score = mem.get("score", 0)
-            mem["score"] = round(min(1.0, original_score + weight * overlap), 4)
+            imp_level = (mem.get("metadata") or {}).get("importance", "normal")
+            imp_value = IMPORTANCE_WEIGHTS.get(imp_level, 0.4)
+            mem["score"] = mem.get("score", 0) + importance_weight * imp_value
 
         memories.sort(key=lambda m: m.get("score", 0), reverse=True)
         return memories
+
+    def _get_sparse_vector(self, text: str) -> Any | None:
+        """Generate a BM25 sparse vector for hybrid search."""
+        return self._sparse.embed(text)
 
     # ── Search Memories ───────────────────────────────────────────────
 
@@ -1729,18 +1650,23 @@ class MemoryService:
         limit: int = 10,
         include_decayed: bool = False,
         query_vector: list[float] | None = None,
+        query_sparse_vector: Any = None,
         date_start: str | None = None,
         date_end: str | None = None,
     ) -> list[dict]:
         """Search memories with semantic similarity, filtered and reranked.
 
-        Uses Qdrant's query_points() with native TTL, category, and
-        importance filtering via FormulaQuery reranking.
+        When hybrid search is available (fastembed installed), uses
+        dense + BM25 sparse vectors with RRF fusion. Falls back to
+        dense-only search with FormulaQuery importance reranking.
 
         Args:
-            query_vector: Pre-computed embedding vector. If provided, skips
-                the embedding API call. Used by find_memories for batch
-                embedding optimization.
+            query_vector: Pre-computed dense embedding vector. If provided,
+                skips the embedding API call. Used by find_memories for
+                batch embedding optimization.
+            query_sparse_vector: Pre-computed BM25 sparse vector. If
+                provided, enables hybrid search. If None and hybrid is
+                available, generated automatically from the query.
             date_start: Optional start date (YYYY-MM-DD) for temporal
                 filtering. Passed to Qdrant for event_date/created_at
                 range filtering.
@@ -1765,6 +1691,10 @@ class MemoryService:
         if categories:
             expanded_categories = self._expand_category_filter(categories, user_id)
 
+        # Generate sparse query vector if not provided and hybrid is available
+        if query_sparse_vector is None:
+            query_sparse_vector = self._get_sparse_vector(query)
+
         result = self.vector.search(
             query,
             user_id=user_id,
@@ -1776,18 +1706,25 @@ class MemoryService:
             include_decayed=include_decayed,
             similarity_weight=self._config.memory.search_similarity_weight,
             query_vector=query_vector,
+            query_sparse_vector=query_sparse_vector,
             date_start=date_start,
             date_end=date_end,
         )
 
         memories = result.get("results", [])
 
-        # Post-retrieval keyword boost: blend keyword overlap into scores
-        memories = self._keyword_boost(query, memories)
+        # In hybrid mode, apply importance boost in Python (FormulaQuery
+        # is not used with RRF fusion). In dense-only mode, FormulaQuery
+        # already handles importance reranking server-side.
+        if query_sparse_vector is not None:
+            memories = self._importance_boost(memories)
 
-        # Filter out low-relevance results (after keyword boost so that
-        # keyword-matching results aren't dropped before boosting)
-        threshold = self._config.memory.search_score_threshold
+        # Score threshold: use hybrid threshold for RRF scores (which are
+        # much smaller than cosine similarity), dense threshold otherwise
+        if query_sparse_vector is not None:
+            threshold = self._config.memory.search_score_threshold_hybrid
+        else:
+            threshold = self._config.memory.search_score_threshold
         memories = [m for m in memories if m.get("score", 0) >= threshold]
 
         # Post-filtering for decayed memories (when include_decayed=True,
@@ -1855,6 +1792,12 @@ class MemoryService:
             "date_end": date_end,
         }
 
+        # Generate sparse query vector for hybrid search (shared across
+        # both sub-searches to avoid redundant BM25 tokenization)
+        query_sparse_vector = self._get_sparse_vector(query)
+        if query_sparse_vector is not None:
+            search_kwargs["query_sparse_vector"] = query_sparse_vector
+
         # Search 1: agent-scoped memories
         agent_result = self.vector.search(
             query,
@@ -1882,16 +1825,20 @@ class MemoryService:
                 seen_ids.add(mid)
                 memories.append(mem)
 
-        # Sort merged results by score (Qdrant FormulaQuery already applied
-        # importance reranking, so the score already includes importance weight)
+        # Sort merged results by score
         memories.sort(key=lambda m: m.get("score", 0), reverse=True)
 
-        # Post-retrieval keyword boost: blend keyword overlap into scores
-        memories = self._keyword_boost(query, memories)
+        # In hybrid mode, apply importance boost in Python (FormulaQuery
+        # is not used with RRF fusion). In dense-only mode, FormulaQuery
+        # already handles importance reranking server-side.
+        if query_sparse_vector is not None:
+            memories = self._importance_boost(memories)
 
-        # Filter out low-relevance results (after keyword boost so that
-        # keyword-matching results aren't dropped before boosting)
-        threshold = self._config.memory.search_score_threshold
+        # Score threshold: use hybrid threshold for RRF scores
+        if query_sparse_vector is not None:
+            threshold = self._config.memory.search_score_threshold_hybrid
+        else:
+            threshold = self._config.memory.search_score_threshold
         memories = [m for m in memories if m.get("score", 0) >= threshold]
 
         memories = memories[:limit]
@@ -2919,7 +2866,11 @@ class MemoryService:
                         f"Content too long: {len(content)} chars (max {max_len})."
                     ),
                 }
-            self.vector.update_content(memory_id, content)
+            self.vector.update_content(
+                memory_id,
+                content,
+                sparse_vector=self._get_sparse_vector(content),
+            )
 
         # Update metadata directly on the vector store
         if metadata_updates:

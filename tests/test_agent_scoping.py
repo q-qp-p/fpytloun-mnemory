@@ -178,8 +178,11 @@ class TestSearchMemoriesDualScope:
         service._config.memory.track_memory_access = False
         service._config.memory.classify_cache_ttl = 300
         service._config.memory.search_score_threshold = 0.30
+        service._config.memory.search_score_threshold_hybrid = 0.0
         service._config.memory.search_similarity_weight = 0.9
         service._config.memory.search_keyword_weight = 0.2
+        service._sparse = MagicMock()
+        service._sparse.embed.return_value = None
         from mnemory.cache import TTLCache
 
         service._category_cache = TTLCache(ttl_seconds=300)
@@ -369,6 +372,8 @@ class TestListMemoriesDualScope:
         service.artifact = MagicMock()
         service._config = MagicMock()
         service._config.memory.track_memory_access = False
+        service._sparse = MagicMock()
+        service._sparse.embed.return_value = None
         return service
 
     def test_merges_agent_and_shared(self):
@@ -623,13 +628,18 @@ class TestNoneMetadataSafety:
         mock_config.memory.auto_classify = False
         mock_config.memory.track_memory_access = False
         mock_config.memory.search_score_threshold = 0.30
+        mock_config.memory.search_score_threshold_hybrid = 0.0
         mock_config.memory.search_similarity_weight = 0.9
         mock_config.memory.search_keyword_weight = 0.2
+
+        mock_sparse = MagicMock()
+        mock_sparse.embed.return_value = None
 
         with (
             patch("mnemory.memory.VectorStore"),
             patch("mnemory.memory.ArtifactStore"),
             patch("mnemory.memory.LLMClient"),
+            patch("mnemory.memory.SparseEmbeddingClient", return_value=mock_sparse),
         ):
             service = MemoryService(mock_config)
 

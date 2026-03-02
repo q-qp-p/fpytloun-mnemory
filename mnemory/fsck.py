@@ -1247,7 +1247,17 @@ class FsckService:
                     skipped += 1
                     continue
                 if action.new_content:
-                    self._vector.update_content(action.memory_id, action.new_content)
+                    # Generate sparse vector for hybrid search if available
+                    sparse_vector = None
+                    if self._memory_service is not None:
+                        sparse_vector = self._memory_service._get_sparse_vector(
+                            action.new_content
+                        )
+                    self._vector.update_content(
+                        action.memory_id,
+                        action.new_content,
+                        sparse_vector=sparse_vector,
+                    )
                     executed += 1
                 if action.new_metadata:
                     # Filter to allowed metadata fields, dropping None values

@@ -85,11 +85,44 @@ def _get_service():
         from mnemory.api import _session_store
 
         _service = MemoryService(_get_config(), session_store=_session_store)
+
+        # Run data migrations after service init (collection exists).
+        # Migrations run synchronously before the server accepts requests.
+        _run_migrations(_service)
     return _service
 
 
 _fsck_service = None
 _maintenance_service = None
+
+# Migration state flag — health endpoint returns 503 while True
+_migration_running = False
+
+
+def _run_migrations(service: MemoryService) -> None:
+    """Run pending data migrations on startup.
+
+    Called once during service initialization, before the server
+    accepts requests. The health endpoint returns 503 while
+    migrations are running (Kubernetes readiness probe integration).
+    """
+    global _migration_running
+    from mnemory.migration import MigrationRunner, get_migrations
+
+    sparse = getattr(service, "_sparse", None)
+    runner = MigrationRunner(
+        client=service.vector._client,
+        migrations=get_migrations(
+            collection_name=service.vector.collection_name,
+            sparse_client=sparse,
+        ),
+    )
+
+    _migration_running = True
+    try:
+        runner.run_pending()
+    finally:
+        _migration_running = False
 
 
 def _get_maintenance_service():
@@ -1593,7 +1626,19 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
 
 async def health_check(request: Request) -> JSONResponse:
-    """Health check endpoint for Kubernetes probes."""
+    """Health check endpoint for Kubernetes probes.
+
+    Returns 503 during data migrations so that Kubernetes readiness
+    probes wait for migration to complete before routing traffic.
+    """
+    if _migration_running:
+        return JSONResponse(
+            {
+                "status": "migrating",
+                "message": "Data migration in progress — server not ready",
+            },
+            status_code=503,
+        )
     cfg = _get_config()
     return JSONResponse(
         {

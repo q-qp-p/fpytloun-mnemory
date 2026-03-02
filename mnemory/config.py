@@ -300,12 +300,26 @@ class MemoryConfig:
         default_factory=lambda: _env_float("SEARCH_SIMILARITY_WEIGHT", 0.9)
     )
 
-    # Post-retrieval keyword boost weight. After vector search returns
-    # results, a keyword overlap score is blended in:
-    # final = (1 - keyword_weight) * qdrant_score + keyword_weight * keyword_score
-    # Set to 0.0 to disable keyword boosting entirely.
+    # DEPRECATED: Replaced by hybrid search (BM25 sparse vectors).
+    # Ignored — kept only for backward compatibility so existing configs
+    # don't break. Will be removed in a future version.
     search_keyword_weight: float = field(
         default_factory=lambda: _env_float("SEARCH_KEYWORD_WEIGHT", 0.2)
+    )
+
+    # Hybrid search: BM25 sparse model for keyword matching via FastEmbed.
+    # Default "Qdrant/bm25" is recommended. Can be changed to use a
+    # different FastEmbed sparse model.
+    search_sparse_model: str = field(
+        default_factory=lambda: _env("SEARCH_SPARSE_MODEL", "Qdrant/bm25")
+    )
+
+    # Score threshold for hybrid (RRF) search results.
+    # RRF scores are much smaller than cosine similarity (~0.01-0.03
+    # range with default k=60). Default 0.0 disables threshold filtering
+    # for hybrid search to avoid accidentally filtering all results.
+    search_score_threshold_hybrid: float = field(
+        default_factory=lambda: _env_float("SEARCH_SCORE_THRESHOLD_HYBRID", 0.0)
     )
 
     # find_memories: maximum number of search queries the LLM generates from
