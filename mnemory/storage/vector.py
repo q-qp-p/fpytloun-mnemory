@@ -411,6 +411,7 @@ class VectorStore:
 
         # 3. Execute search — hybrid or dense-only
         result = None
+        used_hybrid = False
 
         if query_sparse_vector is not None:
             # Hybrid search: dense + sparse → RRF fusion.
@@ -437,6 +438,7 @@ class VectorStore:
                     limit=limit,
                     with_payload=True,
                 )
+                used_hybrid = True
             except Exception:
                 logger.warning(
                     "Hybrid search failed, falling back to dense-only search",
@@ -501,7 +503,7 @@ class VectorStore:
             mem["score"] = point.score
             memories.append(mem)
 
-        return {"results": memories}
+        return {"results": memories, "used_hybrid": used_hybrid}
 
     def search_similar(
         self,

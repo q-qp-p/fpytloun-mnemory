@@ -1719,19 +1719,21 @@ class MemoryService:
         )
 
         memories = result.get("results", [])
+        used_hybrid = result.get("used_hybrid", False)
 
         # In hybrid mode, apply importance boost in Python (FormulaQuery
         # is not used with RRF fusion). In dense-only mode, FormulaQuery
         # already handles importance reranking server-side.
-        if query_sparse_vector is not None:
+        if used_hybrid:
             memories = self._importance_boost(memories)
 
         # Score threshold: use hybrid threshold for RRF scores (which are
         # much smaller than cosine similarity), dense threshold otherwise
-        if query_sparse_vector is not None:
-            threshold = self._config.memory.search_score_threshold_hybrid
-        else:
-            threshold = self._config.memory.search_score_threshold
+        threshold = (
+            self._config.memory.search_score_threshold_hybrid
+            if used_hybrid
+            else self._config.memory.search_score_threshold
+        )
         memories = [m for m in memories if m.get("score", 0) >= threshold]
 
         # Post-filtering for decayed memories (when include_decayed=True,
@@ -1835,17 +1837,23 @@ class MemoryService:
         # Sort merged results by score
         memories.sort(key=lambda m: m.get("score", 0), reverse=True)
 
+        # Use the actual mode that was used (either sub-search may have fallen back)
+        used_hybrid = agent_result.get("used_hybrid", False) or shared_result.get(
+            "used_hybrid", False
+        )
+
         # In hybrid mode, apply importance boost in Python (FormulaQuery
         # is not used with RRF fusion). In dense-only mode, FormulaQuery
         # already handles importance reranking server-side.
-        if query_sparse_vector is not None:
+        if used_hybrid:
             memories = self._importance_boost(memories)
 
         # Score threshold: use hybrid threshold for RRF scores
-        if query_sparse_vector is not None:
-            threshold = self._config.memory.search_score_threshold_hybrid
-        else:
-            threshold = self._config.memory.search_score_threshold
+        threshold = (
+            self._config.memory.search_score_threshold_hybrid
+            if used_hybrid
+            else self._config.memory.search_score_threshold
+        )
         memories = [m for m in memories if m.get("score", 0) >= threshold]
 
         memories = memories[:limit]
