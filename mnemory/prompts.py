@@ -1463,6 +1463,10 @@ You are a memory extraction system. Your job is to:
   live in Prague" → extract "User lives in Prague").
 - Do not extract generic responses, pleasantries, or procedural
   statements (e.g., "Sure, I can help with that" is not a fact).
+- If the conversation is purely greetings, small talk, or pleasantries
+  with no substantive personal information, return an empty memories
+  array. "User said hello" or "User greeted the assistant" are NOT
+  facts worth remembering.
 - When the user tells the assistant to perform a task (read files,
   run commands, check something, explore code), do NOT store the
   instruction itself. Instead, look for the underlying intent or
@@ -1525,10 +1529,30 @@ For each extracted fact, classify:
   - episodic = events, interactions, decisions, conclusions, goals,
     plans, intents, feature requests, current knowledge state.
     Anything that HAPPENED, was DECIDED, or is WANTED/PLANNED.
+    "User wants X", "User decided Y", "User doesn't know Z",
+    "User is working on X" are all episodic — they describe a
+    point-in-time state that will change once acted upon.
   - procedural = workflows, habits, how the user does things
   - context = session/short-term notes, current project/system state,
     technical observations, implementation details, bug reports,
     analysis findings, what a project currently lacks or has.
+    "Project X does not have feature Y" is context, not a fact.
+    Anything that may change soon or is only relevant to the
+    current task.
+
+  **Common classification mistakes to avoid**:
+  - "User wants to add distributed tracing" → **episodic** (goal/intent),
+    NOT fact
+  - "User decided to use PostgreSQL for billing" → **episodic** (decision),
+    NOT fact
+  - "User doesn't know how OpenTelemetry works" → **episodic** (current
+    knowledge state), NOT fact
+  - "User wants to implement canary deployments" → **episodic** (feature
+    request/goal), NOT fact
+  - "The project doesn't have rollback mechanism" → **context** (current
+    project state), NOT fact
+  - "User's name is Elena" → **fact** (stable biographical info)
+  - "User lives in Prague" → **fact** (stable biographical info)
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
@@ -1583,6 +1607,166 @@ When in doubt, prefer **false**.
 
 **Important**: When you set `store_artifact` to true, extract only a brief
 high-level summary as the memory — do NOT also extract individual details.
+
+## Examples
+
+### Example 1: Greeting-only conversation (no facts)
+
+Input:
+User: Hello!
+Assistant: Hi there! How can I help you today?
+User: Nothing, just saying hi.
+Assistant: Alright, have a great day!
+
+Output:
+{{"memories": [], "summary": "User greeted the assistant briefly with no specific request.", "store_artifact": false}}
+
+### Example 2: Personal facts (name and job)
+
+Input: "My name is John and I'm a software engineer at Google"
+
+Output:
+{{"memories": [
+  {{"text": "User's name is John", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": true, "event_date": null}},
+  {{"text": "User is a software engineer at Google", "memory_type": "fact", "categories": ["work"], "importance": "normal", "pinned": true, "event_date": null}}
+], "summary": "User introduced themselves as John, a software engineer at Google.", "store_artifact": false}}
+
+### Example 3: Preference change with date
+
+Input: "I switched from VS Code to Neovim last week"
+(Today's date: 2025-03-15)
+
+Output:
+{{"memories": [
+  {{"text": "User switched from VS Code to Neovim", "memory_type": "preference", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": "2025-03-08"}}
+], "summary": "User mentioned switching editors from VS Code to Neovim.", "store_artifact": false}}
+
+### Example 4: Named speaker — episodic event
+
+Input: "Caroline: I went to a LGBTQ support group yesterday"
+(Today's date: 2023-05-08)
+
+Output:
+{{"memories": [
+  {{"text": "Caroline attended a LGBTQ support group", "memory_type": "episodic", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": "2023-05-07"}}
+], "summary": "Caroline mentioned attending a LGBTQ support group.", "store_artifact": false}}
+
+### Example 5: Named speaker — biographical fact
+
+Input: "Caroline: I just got promoted to senior engineer at Google"
+(Today's date: 2025-03-15)
+
+Output:
+{{"memories": [
+  {{"text": "Caroline was promoted to senior engineer at Google", "memory_type": "fact", "categories": ["work"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
+], "summary": "Caroline shared news of her promotion to senior engineer at Google.", "store_artifact": false}}
+
+### Example 6: Multi-person conversation
+
+Input: "John: I think we should use Kubernetes. Sarah: I disagree, \
+ECS is better for our scale."
+
+Output:
+{{"memories": [
+  {{"text": "John proposed using Kubernetes", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "Sarah prefers ECS over Kubernetes for their scale", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "John and Sarah discussed container orchestration — John favors Kubernetes, Sarah prefers ECS.", "store_artifact": false}}
+
+### Example 7: Third-party facts (family, pets)
+
+Input:
+User: My mom likes sweet drinks, especially Malibu. She loves \
+Stephen King books and has a garden. I have a Kurilian Bobtail cat.
+Assistant: Nice! A Malibu set or a new Stephen King novel could be great gifts.
+
+Output:
+{{"memories": [
+  {{"text": "User's mother likes sweet drinks, especially Malibu", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "User's mother loves Stephen King books", "memory_type": "fact", "categories": ["personal", "entertainment"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "User's mother has a garden", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "User has a Kurilian Bobtail cat", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User described their mother's preferences and mentioned owning a Kurilian Bobtail cat.", "store_artifact": false}}
+
+### Example 8: Transient task instruction (no facts)
+
+Input:
+User: Read the Dockerfile and docker-compose.yml from the argocd-apps repo
+Assistant: The docker-compose.yml builds backend from ./backend and uses env_file: \
+.env at runtime but provides no build.args for the frontend and no image tags.
+
+Output:
+{{"memories": [], "summary": "User asked to review Docker files from argocd-apps repo. Assistant described the configuration.", "store_artifact": false}}
+(The user instruction is a transient task and the assistant response is an \
+implementation observation — neither is a fact worth remembering.)
+
+### Example 9: Goal extraction from task instruction
+
+Input:
+User: Help me set up OIDC authentication for our mfg-portal app
+Assistant: I'll implement this using the ALB OIDC action with Cognito.
+
+Output:
+{{"memories": [
+  {{"text": "User wants to implement OIDC authentication for mfg-portal using ALB and Cognito", "memory_type": "episodic", "categories": ["technical", "project:mfg-portal"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User wants to set up OIDC auth for mfg-portal. Assistant will use ALB OIDC with Cognito.", "store_artifact": false}}
+
+### Example 10: Goal + knowledge gap (episodic, NOT fact)
+
+Input:
+User: Our platform doesn't have distributed tracing yet, I want \
+to add it. I don't really understand how OpenTelemetry works.
+Assistant: OpenTelemetry provides a unified framework for traces, metrics \
+and logs. I'd recommend starting with automatic instrumentation.
+
+Output:
+{{"memories": [
+  {{"text": "User wants to add distributed tracing to their platform using OpenTelemetry", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User wants to add distributed tracing but is unfamiliar with OpenTelemetry. Assistant explained the basics.", "store_artifact": false}}
+(The user's intent/goal is episodic — it will be fulfilled eventually. \
+The knowledge gap is too transient to store separately.)
+
+### Example 11: Decision (episodic, NOT fact)
+
+Input:
+User: We decided to use PostgreSQL instead of MySQL for the \
+billing service.
+Assistant: Good choice. I'll update the docker-compose and migrations.
+
+Output:
+{{"memories": [
+  {{"text": "User decided to use PostgreSQL instead of MySQL for the billing service", "memory_type": "episodic", "categories": ["technical", "decisions"], "importance": "high", "pinned": false, "event_date": null}}
+], "summary": "User decided to switch from MySQL to PostgreSQL for billing service.", "store_artifact": false}}
+(A decision is episodic — it records what was decided at a point in time.)
+
+### Example 12: Non-English input (extract in English)
+
+Input:
+User: Ahoj, jmenuji se Petr a jsem z Ostravy. Rad varim a sbiram znamky.
+Assistant: Ahoj Petre! To jsou zajimave konicky!
+
+Output:
+{{"memories": [
+  {{"text": "User's name is Petr", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": true, "event_date": null}},
+  {{"text": "User is from Ostrava", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "User enjoys cooking and collecting stamps", "memory_type": "preference", "categories": ["personal", "entertainment"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User introduced themselves as Petr from Ostrava who enjoys cooking and stamp collecting.", "store_artifact": false}}
+(Always extract in English. Preserve proper nouns like Petr and Ostrava.)
+
+### Example 13: Feature request with knowledge gap (episodic, NOT fact)
+
+Input:
+User: We have no rollback mechanism at all right now. I want to \
+implement canary deployments with automatic rollback. I don't fully \
+understand how Argo Rollouts works, so I need to study that first.
+Assistant: Argo Rollouts extends Kubernetes with canary and blue-green \
+strategies. I'd suggest starting with one non-critical service.
+
+Output:
+{{"memories": [
+  {{"text": "User wants to implement canary deployments with automatic rollback using Argo Rollouts", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User wants canary deployments with auto-rollback via Argo Rollouts but needs to learn it first.", "store_artifact": false}}
+(The feature request and knowledge gap are episodic — they describe \
+current intent and state, not permanent facts.)
 
 ## Output Format
 
@@ -1796,7 +1980,11 @@ def parse_remember_extraction_response(
     try:
         data = parse_json_response(response_text)
     except ValueError:
-        logger.warning("Failed to parse remember extraction response, returning empty")
+        logger.warning(
+            "Failed to parse remember extraction response, returning empty. "
+            "Response (first 500 chars): %s",
+            response_text[:500],
+        )
         return [], "", False
 
     summary = str(data.get("summary", "")).strip()

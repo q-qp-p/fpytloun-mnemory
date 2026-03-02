@@ -113,6 +113,9 @@ class LLMClient:
         providers. When a model rejects a parameter (e.g., max_tokens,
         temperature), the fix is cached so subsequent calls skip the
         unsupported parameter without any retry overhead.
+
+        Also retries on empty or truncated responses (transient LLM
+        issues like content filters, refusals, or API glitches).
         """
         params = self._build_params(
             messages,
@@ -139,7 +142,47 @@ class LLMClient:
                 raise
 
         assert response is not None  # guaranteed by break or raise above
-        content = response.choices[0].message.content or ""
+
+        # Retry on empty content (transient LLM issues: content filters,
+        # refusals, API glitches). Non-empty but truncated responses are
+        # logged but not retried — the caller can decide how to handle.
+        content_retries = 2
+        for retry in range(content_retries):
+            choice = response.choices[0]
+            content = choice.message.content or ""
+
+            if content.strip():
+                if choice.finish_reason == "length":
+                    logger.warning(
+                        "LLM response truncated (finish_reason=length, content_len=%d)",
+                        len(content),
+                    )
+                break
+
+            refusal = getattr(choice.message, "refusal", None)
+            logger.warning(
+                "LLM returned empty content (finish_reason=%s, refusal=%s), "
+                "retrying (%d/%d)",
+                choice.finish_reason,
+                refusal,
+                retry + 1,
+                content_retries,
+            )
+            response = self._client.chat.completions.create(**params)
+        else:
+            # All retries exhausted — use whatever we got
+            choice = response.choices[0]
+            content = choice.message.content or ""
+            if not content.strip():
+                refusal = getattr(choice.message, "refusal", None)
+                logger.warning(
+                    "LLM returned empty content after %d retries "
+                    "(finish_reason=%s, refusal=%s)",
+                    content_retries,
+                    choice.finish_reason,
+                    refusal,
+                )
+
         return _clean_response(content)
 
     def _build_params(

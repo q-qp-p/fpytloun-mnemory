@@ -593,6 +593,9 @@ class MemoryService:
     ) -> tuple[list[dict[str, Any]], str, bool]:
         """Stage 1: Extract facts from conversation text.
 
+        Retries once if the LLM returns a non-empty response that fails
+        to parse (non-deterministic JSON formatting issues).
+
         Returns:
             Tuple of (facts, summary, store_artifact).
             facts: list of dicts with text, memory_type, categories,
@@ -609,21 +612,46 @@ class MemoryService:
             context=context,
         )
 
-        try:
-            response_text = self._llm.generate(
-                messages,
-                json_schema=json_schema,
-                max_tokens=2000,
+        facts: list[dict[str, Any]] = []
+        summary = ""
+        store_artifact = False
+
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            try:
+                response_text = self._llm.generate(
+                    messages,
+                    json_schema=json_schema,
+                    max_tokens=2000,
+                )
+            except Exception:
+                logger.exception("Remember extraction LLM call failed")
+                return [], "", False
+
+            logger.debug("Remember extraction response: %s", response_text)
+
+            facts, summary, store_artifact = parse_remember_extraction_response(
+                response_text
             )
-        except Exception:
-            logger.exception("Remember extraction LLM call failed")
-            return [], "", False
 
-        logger.debug("Remember extraction response: %s", response_text)
+            # Retry on parse failure: non-empty LLM response that produced
+            # no facts and no summary (likely malformed JSON). Empty LLM
+            # responses are already retried at the LLM client level.
+            if (
+                not facts
+                and not summary
+                and response_text.strip()
+                and attempt < max_attempts - 1
+            ):
+                logger.info(
+                    "Remember Stage 1: parse returned empty from non-empty "
+                    "response, retrying (attempt %d/%d)",
+                    attempt + 1,
+                    max_attempts,
+                )
+                continue
 
-        facts, summary, store_artifact = parse_remember_extraction_response(
-            response_text
-        )
+            break
 
         logger.info(
             "Remember Stage 1: extracted %d facts, summary=%d chars",
