@@ -2,6 +2,11 @@
 
 ## Setup
 
+> **Python 3.14 is not supported.** fastembed's BM25 model uses `py_rust_stemmers`,
+> a Rust extension that segfaults on Python 3.14 due to a PyO3/C API incompatibility
+> ([qdrant/fastembed#576](https://github.com/qdrant/fastembed/issues/576)).
+> Use **Python 3.11–3.13** (3.13 recommended).
+
 ```bash
 # Install with all optional dependencies
 pip install -e ".[all,dev]"

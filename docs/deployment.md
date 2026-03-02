@@ -1,5 +1,16 @@
 # Deployment
 
+## Python Version
+
+mnemory requires **Python 3.11–3.13**. Python 3.14 is not yet supported.
+
+The `fastembed` dependency (required for BM25 hybrid search) uses a Rust
+extension (`py_rust_stemmers`) that segfaults on Python 3.14 due to a
+PyO3/C API incompatibility. This is a known upstream issue
+([qdrant/fastembed#576](https://github.com/qdrant/fastembed/issues/576)).
+**Python 3.13 is recommended for production.** The Docker image uses
+`python:3.13-slim`.
+
 ## Installation Methods
 
 ### Using uvx (recommended)

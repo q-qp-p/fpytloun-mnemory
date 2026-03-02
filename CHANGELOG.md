@@ -11,6 +11,7 @@
 - **New config vars**: `SEARCH_SPARSE_MODEL` (default `Qdrant/bm25`), `SEARCH_SCORE_THRESHOLD_HYBRID` (default `0.0` — RRF scores are ~0.016–0.033, not 0–1 like cosine)
 - **Deprecated**: `SEARCH_KEYWORD_WEIGHT` is no longer used (keyword matching is now handled by BM25 sparse vectors natively in Qdrant)
 - **Dense-only fallback**: If hybrid search fails at query time (e.g., Qdrant version mismatch), the system gracefully falls back to dense-only search
+- **Python 3.14 not supported**: fastembed's BM25 model depends on `py_rust_stemmers`, a Rust extension that segfaults on Python 3.14 due to a PyO3/C API incompatibility ([qdrant/fastembed#576](https://github.com/qdrant/fastembed/issues/576)). Use Python 3.11–3.13 (3.13 recommended). The Docker image uses `python:3.13-slim`
 
 ### Session Persistence
 

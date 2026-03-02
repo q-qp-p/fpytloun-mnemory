@@ -1,4 +1,7 @@
-FROM python:3.12-slim
+# Python 3.13: fastembed's BM25 model uses py_rust_stemmers, a Rust extension
+# that segfaults on Python 3.14 due to PyO3/C API incompatibility.
+# Pin to 3.13 until upstream adds support (qdrant/fastembed#576).
+FROM python:3.13-slim
 
 WORKDIR /app
 
