@@ -124,6 +124,17 @@ def _run_migrations(service: MemoryService) -> None:
     finally:
         _migration_running = False
 
+    # Recreate payload indexes after migrations. If a migration recreated
+    # the collection (e.g. to add sparse vector config), the original
+    # payload indexes were lost. _ensure_indexes() is idempotent.
+    try:
+        service.vector._ensure_indexes()
+    except Exception:
+        logger.warning(
+            "Failed to ensure payload indexes after migration",
+            exc_info=True,
+        )
+
 
 def _get_maintenance_service():
     """Get the MaintenanceService singleton (may be None if not yet started)."""

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from mnemory.migration import (
+    _TEMP_COLLECTION,
     META_COLLECTION,
     AddSparseVectorsMigration,
     Migration,
@@ -287,11 +288,48 @@ class TestMigrationRunnerOptimisticLock:
         assert "test_001:running" not in upsert_payloads[-1]["applied"]
 
 
-# ── AddSparseVectorsMigration ────────────────────────────────────────
+# ── AddSparseVectorsMigration helpers ────────────────────────────────
+
+
+def _sparse_collection_info(points_count: int = 0):
+    """Create a mock collection info WITH sparse config (fast path)."""
+    from qdrant_client.models import Distance, VectorParams
+
+    info = MagicMock()
+    info.points_count = points_count
+    info.config.params.sparse_vectors = {"bm25": MagicMock()}
+    info.config.params.vectors = VectorParams(size=1536, distance=Distance.COSINE)
+    return info
+
+
+def _dense_only_collection_info(points_count: int = 0):
+    """Create a mock collection info WITHOUT sparse config (recreation path)."""
+    from qdrant_client.models import Distance, VectorParams
+
+    info = MagicMock()
+    info.points_count = points_count
+    info.config.params.sparse_vectors = {}
+    info.config.params.vectors = VectorParams(size=1536, distance=Distance.COSINE)
+    return info
+
+
+def _mock_sparse():
+    """Create a mock sparse client that's available."""
+    sparse = MagicMock()
+    sparse.available = True
+    return sparse
+
+
+# ── AddSparseVectorsMigration: fast path ─────────────────────────────
 
 
 class TestAddSparseVectorsMigration:
-    """Test the BM25 sparse vector migration."""
+    """Test the BM25 sparse vector migration (fast path).
+
+    These tests cover the case where update_collection() succeeds and
+    the collection has sparse config — sparse vectors are added to
+    existing points via update_vectors().
+    """
 
     def test_skips_when_sparse_unavailable(self):
         """Should skip gracefully when fastembed is not installed."""
@@ -326,14 +364,10 @@ class TestAddSparseVectorsMigration:
     def test_adds_sparse_config_to_collection(self):
         """Should call update_collection with sparse vector config."""
         client = MagicMock()
-        sparse = MagicMock()
-        sparse.available = True
-        sparse.embed_batch.return_value = []
+        sparse = _mock_sparse()
 
-        # Empty collection
-        collection_info = MagicMock()
-        collection_info.points_count = 0
-        client.get_collection.return_value = collection_info
+        # update_collection succeeds → sparse config exists
+        client.get_collection.return_value = _sparse_collection_info(0)
 
         migration = AddSparseVectorsMigration("memories", sparse)
         migration.run(
@@ -351,12 +385,9 @@ class TestAddSparseVectorsMigration:
     def test_skips_empty_collection(self):
         """Should skip scrolling when collection is empty."""
         client = MagicMock()
-        sparse = MagicMock()
-        sparse.available = True
+        sparse = _mock_sparse()
 
-        collection_info = MagicMock()
-        collection_info.points_count = 0
-        client.get_collection.return_value = collection_info
+        client.get_collection.return_value = _sparse_collection_info(0)
 
         migration = AddSparseVectorsMigration("memories", sparse)
         migration.run(
@@ -374,13 +405,9 @@ class TestAddSparseVectorsMigration:
         from qdrant_client.models import SparseVector
 
         client = MagicMock()
-        sparse = MagicMock()
-        sparse.available = True
+        sparse = _mock_sparse()
 
-        # Collection with 2 points
-        collection_info = MagicMock()
-        collection_info.points_count = 2
-        client.get_collection.return_value = collection_info
+        client.get_collection.return_value = _sparse_collection_info(2)
 
         # Mock scroll: one batch, then done
         point1 = MagicMock()
@@ -425,12 +452,9 @@ class TestAddSparseVectorsMigration:
         from qdrant_client.models import SparseVector
 
         client = MagicMock()
-        sparse = MagicMock()
-        sparse.available = True
+        sparse = _mock_sparse()
 
-        collection_info = MagicMock()
-        collection_info.points_count = 3
-        client.get_collection.return_value = collection_info
+        client.get_collection.return_value = _sparse_collection_info(3)
 
         # Mock scroll: two batches
         p1 = MagicMock()
@@ -468,12 +492,9 @@ class TestAddSparseVectorsMigration:
         from qdrant_client.models import SparseVector
 
         client = MagicMock()
-        sparse = MagicMock()
-        sparse.available = True
+        sparse = _mock_sparse()
 
-        collection_info = MagicMock()
-        collection_info.points_count = 2
-        client.get_collection.return_value = collection_info
+        client.get_collection.return_value = _sparse_collection_info(2)
 
         p1 = MagicMock()
         p1.id = "uuid-1"
@@ -510,12 +531,9 @@ class TestAddSparseVectorsMigration:
         from qdrant_client.models import SparseVector
 
         client = MagicMock()
-        sparse = MagicMock()
-        sparse.available = True
+        sparse = _mock_sparse()
 
-        collection_info = MagicMock()
-        collection_info.points_count = 10
-        client.get_collection.return_value = collection_info
+        client.get_collection.return_value = _sparse_collection_info(10)
 
         p1 = MagicMock()
         p1.id = "uuid-5"
@@ -545,12 +563,9 @@ class TestAddSparseVectorsMigration:
         from qdrant_client.models import SparseVector
 
         client = MagicMock()
-        sparse = MagicMock()
-        sparse.available = True
+        sparse = _mock_sparse()
 
-        collection_info = MagicMock()
-        collection_info.points_count = 2
-        client.get_collection.return_value = collection_info
+        client.get_collection.return_value = _sparse_collection_info(2)
 
         p1 = MagicMock()
         p1.id = "uuid-1"
@@ -577,12 +592,9 @@ class TestAddSparseVectorsMigration:
     def test_skips_update_when_no_sparse_vectors(self):
         """Should skip update_vectors when embed_batch returns None."""
         client = MagicMock()
-        sparse = MagicMock()
-        sparse.available = True
+        sparse = _mock_sparse()
 
-        collection_info = MagicMock()
-        collection_info.points_count = 1
-        client.get_collection.return_value = collection_info
+        client.get_collection.return_value = _sparse_collection_info(1)
 
         p1 = MagicMock()
         p1.id = "uuid-1"
@@ -601,6 +613,410 @@ class TestAddSparseVectorsMigration:
         )
 
         client.update_vectors.assert_not_called()
+
+
+# ── AddSparseVectorsMigration: recreation path ──────────────────────
+
+
+class TestAddSparseVectorsMigrationRecreation:
+    """Test collection recreation when update_collection() can't add sparse config.
+
+    This covers the case where remote Qdrant rejects adding new named
+    vectors to an existing collection (server limitation ≤1.16).
+    """
+
+    def _make_client_no_sparse(self, points_count: int = 2):
+        """Create a mock client that rejects update_collection for sparse config.
+
+        Simulates remote Qdrant where:
+        - update_collection() raises (can't add new vector names)
+        - get_collection() returns no sparse config
+        - Collection has points that need migrating
+        """
+        import httpx
+        from qdrant_client.http.exceptions import UnexpectedResponse
+        from qdrant_client.models import SparseVector
+
+        client = MagicMock()
+
+        # update_collection raises (remote Qdrant limitation)
+        client.update_collection.side_effect = UnexpectedResponse(
+            status_code=400,
+            reason_phrase="Bad Request",
+            content=b'{"status":{"error":"Wrong input"}}',
+            headers=httpx.Headers(),
+        )
+
+        # get_collection returns different info for different collections
+        original_info = _dense_only_collection_info(points_count)
+        temp_info = _sparse_collection_info(points_count)
+
+        def get_collection_side_effect(name):
+            if name == _TEMP_COLLECTION:
+                return temp_info
+            return original_info
+
+        client.get_collection.side_effect = get_collection_side_effect
+
+        # get_collections: original exists, temp does not (initially)
+        orig_col = MagicMock()
+        orig_col.name = "memories"
+        client.get_collections.return_value.collections = [orig_col]
+
+        # Mock scroll: return points with dense vectors
+        p1 = MagicMock()
+        p1.id = "uuid-1"
+        p1.payload = {"data": "User likes cats"}
+        p1.vector = [0.1] * 1536
+        p2 = MagicMock()
+        p2.id = "uuid-2"
+        p2.payload = {"data": "User works at Acme"}
+        p2.vector = [0.2] * 1536
+
+        points = [p1, p2][:points_count]
+        client.scroll.return_value = (points, None)
+
+        # Mock sparse embeddings
+        sv = SparseVector(indices=[1, 2], values=[0.5, 0.3])
+        sparse = _mock_sparse()
+        sparse.embed_batch.return_value = [sv] * points_count
+
+        return client, sparse
+
+    def test_detects_missing_sparse_config(self):
+        """Should detect when sparse config is missing after update_collection."""
+        client, sparse = self._make_client_no_sparse(0)
+
+        # Empty collection — should detect missing sparse and skip
+        original_info = _dense_only_collection_info(0)
+        client.get_collection.side_effect = None
+        client.get_collection.return_value = original_info
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # update_collection was attempted
+        client.update_collection.assert_called_once()
+        # No update_vectors (fast path not used — no sparse config)
+        client.update_vectors.assert_not_called()
+
+    def test_recreation_creates_temp_collection(self):
+        """Should create temp collection with dense + sparse config."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should have created temp collection
+        create_calls = client.create_collection.call_args_list
+        temp_creates = [
+            c for c in create_calls if c[1].get("collection_name") == _TEMP_COLLECTION
+        ]
+        assert len(temp_creates) >= 1
+        # Temp collection should have sparse config
+        assert "bm25" in temp_creates[0][1]["sparse_vectors_config"]
+
+    def test_recreation_copies_points_to_temp(self):
+        """Should copy all points from original to temp with sparse vectors."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should have upserted points into temp collection
+        upsert_calls = client.upsert.call_args_list
+        temp_upserts = [
+            c for c in upsert_calls if c[1].get("collection_name") == _TEMP_COLLECTION
+        ]
+        assert len(temp_upserts) >= 1
+        # Points should have been upserted
+        points = temp_upserts[0][1]["points"]
+        assert len(points) == 2
+        assert points[0].id == "uuid-1"
+        assert points[1].id == "uuid-2"
+
+    def test_recreation_deletes_original(self):
+        """Should delete the original collection during recreation."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should have deleted original collection
+        delete_calls = client.delete_collection.call_args_list
+        assert any(
+            c.args == ("memories",) or c[0] == ("memories",) for c in delete_calls
+        )
+
+    def test_recreation_recreates_original_with_sparse(self):
+        """Should recreate original collection with sparse config."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should have created original collection with sparse config
+        create_calls = client.create_collection.call_args_list
+        orig_creates = [
+            c for c in create_calls if c[1].get("collection_name") == "memories"
+        ]
+        assert len(orig_creates) >= 1
+        assert "bm25" in orig_creates[0][1]["sparse_vectors_config"]
+
+    def test_recreation_copies_back_from_temp(self):
+        """Should copy points from temp back to recreated original."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should have upserted into original collection (copy back)
+        upsert_calls = client.upsert.call_args_list
+        orig_upserts = [
+            c for c in upsert_calls if c[1].get("collection_name") == "memories"
+        ]
+        assert len(orig_upserts) >= 1
+
+    def test_recreation_deletes_temp_on_success(self):
+        """Should delete temp collection after successful recreation."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should have deleted temp collection
+        delete_calls = client.delete_collection.call_args_list
+        assert any(
+            c.args == (_TEMP_COLLECTION,) or c[0] == (_TEMP_COLLECTION,)
+            for c in delete_calls
+        )
+
+    def test_recreation_saves_phase_checkpoints(self):
+        """Should save phase checkpoints during recreation."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        state = {}
+        state_callback = MagicMock()
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=state_callback,
+            state=state,
+        )
+
+        # State callback should have been called multiple times
+        assert state_callback.call_count >= 2
+        # Should have saved phase transitions
+        progress_key = f"{migration.id}_progress"
+        assert progress_key in state
+
+    def test_recreation_aborts_on_count_mismatch(self):
+        """Should abort if temp collection has fewer points than original."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        # Make temp collection report fewer points than original
+        original_info = _dense_only_collection_info(2)
+        temp_info = _sparse_collection_info(1)  # Only 1 point copied
+
+        def get_collection_side_effect(name):
+            if name == _TEMP_COLLECTION:
+                return temp_info
+            return original_info
+
+        client.get_collection.side_effect = get_collection_side_effect
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        with pytest.raises(RuntimeError, match="temp collection has 1"):
+            migration.run(
+                client,
+                progress=None,
+                state_callback=MagicMock(),
+                state={},
+            )
+
+        # Should NOT have deleted original (safety)
+        delete_calls = [
+            c
+            for c in client.delete_collection.call_args_list
+            if c.args == ("memories",) or c[0] == ("memories",)
+        ]
+        assert len(delete_calls) == 0
+
+    def test_recreation_resumes_copy_to_temp(self):
+        """Should resume copy-to-temp phase from checkpoint."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        # Simulate resuming from copy_to_temp phase
+        progress = {
+            "phase": "copy_to_temp",
+            "offset": "resume-offset",
+            "processed": 1,
+        }
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=progress,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should have scrolled from the resume offset
+        scroll_calls = client.scroll.call_args_list
+        assert len(scroll_calls) >= 1
+        # First scroll should use the resume offset
+        first_scroll = scroll_calls[0]
+        assert first_scroll[1].get("offset") == "resume-offset"
+
+    def test_recreation_resumes_copy_back(self):
+        """Should resume copy-back phase from checkpoint."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        # For copy_back phase, temp collection must exist and have points
+        temp_col = MagicMock()
+        temp_col.name = _TEMP_COLLECTION
+        orig_col = MagicMock()
+        orig_col.name = "memories"
+        client.get_collections.return_value.collections = [temp_col]
+
+        # Simulate resuming from copy_back phase
+        progress = {
+            "phase": "copy_back",
+            "offset": None,
+            "processed": 0,
+        }
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=progress,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should have created original collection (it was deleted in phase 1)
+        create_calls = [
+            c
+            for c in client.create_collection.call_args_list
+            if c[1].get("collection_name") == "memories"
+        ]
+        assert len(create_calls) >= 1
+
+    def test_recreation_skips_existing_temp(self):
+        """Should reuse existing temp collection (from interrupted migration)."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        # Temp collection already exists
+        temp_col = MagicMock()
+        temp_col.name = _TEMP_COLLECTION
+        orig_col = MagicMock()
+        orig_col.name = "memories"
+        client.get_collections.return_value.collections = [orig_col, temp_col]
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should NOT have created temp collection (it already exists)
+        temp_creates = [
+            c
+            for c in client.create_collection.call_args_list
+            if c[1].get("collection_name") == _TEMP_COLLECTION
+        ]
+        assert len(temp_creates) == 0
+
+    def test_recreation_generates_sparse_vectors(self):
+        """Should generate sparse vectors during copy to temp."""
+        client, sparse = self._make_client_no_sparse(2)
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should have called embed_batch with the memory texts
+        sparse.embed_batch.assert_called_with(["User likes cats", "User works at Acme"])
+
+    def test_fast_path_when_update_succeeds(self):
+        """Should use fast path when update_collection succeeds."""
+        from qdrant_client.models import SparseVector
+
+        client = MagicMock()
+        sparse = _mock_sparse()
+
+        # update_collection succeeds (no exception)
+        # get_collection returns sparse config
+        client.get_collection.return_value = _sparse_collection_info(1)
+
+        p1 = MagicMock()
+        p1.id = "uuid-1"
+        p1.payload = {"data": "text"}
+        client.scroll.return_value = ([p1], None)
+
+        sv = SparseVector(indices=[1], values=[0.5])
+        sparse.embed_batch.return_value = [sv]
+
+        migration = AddSparseVectorsMigration("memories", sparse)
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        # Should use update_vectors (fast path), not upsert (recreation)
+        client.update_vectors.assert_called_once()
+        # Should NOT create temp collection
+        temp_creates = [
+            c
+            for c in client.create_collection.call_args_list
+            if c[1].get("collection_name") == _TEMP_COLLECTION
+        ]
+        assert len(temp_creates) == 0
 
 
 # ── get_migrations registry ──────────────────────────────────────────

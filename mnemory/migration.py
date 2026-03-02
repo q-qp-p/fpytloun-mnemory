@@ -199,25 +199,38 @@ class MigrationRunner:
                 raise
 
 
+# Temp collection used during collection recreation when the Qdrant
+# server doesn't support adding new named vectors to existing collections.
+_TEMP_COLLECTION = "_mnemory_migration_temp"
+
+
 # ── Migration 001: Add BM25 sparse vectors ──────────────────────────
 
 
 class AddSparseVectorsMigration(Migration):
     """Add BM25 sparse vectors to existing memories for hybrid search.
 
-    Steps:
-    1. Add sparse vector config to the collection (``update_collection``)
-    2. Scroll all existing points in batches
-    3. Generate BM25 sparse vectors from each memory's text
-    4. Use ``update_vectors()`` to add sparse vectors without touching
-       the existing dense vectors
+    Two paths depending on Qdrant server capabilities:
 
-    This migration is idempotent: ``update_collection`` is a no-op if
-    the sparse config already exists, and ``update_vectors`` safely
-    overwrites sparse vectors on already-migrated points.
+    **Fast path** (QdrantLocal / future Qdrant versions):
+    1. ``update_collection()`` adds sparse vector config to the collection
+    2. Scroll existing points in batches, generate BM25 sparse vectors
+    3. ``update_vectors()`` adds sparse vectors without touching dense vectors
+
+    **Recreation path** (remote Qdrant ≤1.16 — cannot add new named vectors):
+    1. ``update_collection()`` fails (server rejects adding new vector names)
+    2. Create a temp collection with both dense + sparse config
+    3. Copy all points from original → temp (with dense vectors + new sparse)
+    4. Delete original, recreate with sparse config, copy back from temp
+    5. Delete temp collection
+
+    Both paths are idempotent and resumable via checkpoints. The recreation
+    path uses a temp collection as a safety buffer — data is never deleted
+    until it's fully copied.
 
     Performance: BM25 via FastEmbed runs at ~1000 texts/sec on CPU.
-    10K memories ≈ 10s, 100K ≈ 2-3 minutes.
+    Fast path: 10K ≈ 10s, 100K ≈ 2-3 min.
+    Recreation path: ~2x slower (two full copies + sparse generation).
     """
 
     id = "001_add_sparse_vectors"
@@ -241,7 +254,6 @@ class AddSparseVectorsMigration(Migration):
     ) -> None:
         from qdrant_client.models import (
             Modifier,
-            PointVectors,
             SparseVectorParams,
         )
 
@@ -253,8 +265,21 @@ class AddSparseVectorsMigration(Migration):
             )
             return
 
-        # Step 1: Add sparse vector config to collection.
-        # This is idempotent — Qdrant ignores if the config already exists.
+        # Check if we're resuming a recreation that was already in progress
+        phase = (progress or {}).get("phase")
+        if phase in ("copy_to_temp", "copy_back"):
+            logger.info(
+                "Resuming interrupted collection recreation (phase: %s)",
+                phase,
+            )
+            self._run_recreation(
+                client, progress=progress, state_callback=state_callback, state=state
+            )
+            return
+
+        # Step 1: Try to add sparse vector config via update_collection.
+        # Works on QdrantLocal (embedded) and may work on future Qdrant
+        # server versions. Remote Qdrant ≤1.16 rejects this with 400.
         try:
             client.update_collection(
                 collection_name=self._collection_name,
@@ -267,30 +292,87 @@ class AddSparseVectorsMigration(Migration):
                 self._collection_name,
             )
         except Exception:
-            # May already exist (new collection created with sparse config)
             logger.debug(
-                "Sparse vector config may already exist on '%s', continuing",
+                "update_collection with sparse config failed on '%s' "
+                "(expected on remote Qdrant ≤1.16)",
                 self._collection_name,
+                exc_info=True,
             )
 
-        # Step 2: Count total points for progress estimation
+        # Step 2: Verify sparse config actually exists.
+        has_sparse = self._has_sparse_config(client)
+
+        if has_sparse:
+            # Fast path: sparse config exists, just add sparse vectors
+            # to existing points via update_vectors().
+            self._run_fast_path(
+                client, progress=progress, state_callback=state_callback, state=state
+            )
+        else:
+            # Recreation path: server can't add new vector names to an
+            # existing collection. Recreate the collection with sparse
+            # config included from the start.
+            logger.warning(
+                "Cannot add sparse vectors to existing collection '%s' — "
+                "Qdrant server does not support adding new named vectors. "
+                "Recreating collection with sparse config (data is preserved "
+                "via temp collection '%s').",
+                self._collection_name,
+                _TEMP_COLLECTION,
+            )
+            self._run_recreation(
+                client, progress=progress, state_callback=state_callback, state=state
+            )
+
+    def _has_sparse_config(self, client: QdrantClient) -> bool:
+        """Check if the collection has 'bm25' sparse vector config."""
+        try:
+            info = client.get_collection(self._collection_name)
+            sparse = info.config.params.sparse_vectors
+            if sparse and "bm25" in sparse:
+                return True
+        except Exception:
+            logger.debug(
+                "Could not check sparse config on '%s'",
+                self._collection_name,
+                exc_info=True,
+            )
+        return False
+
+    # ── Fast path: update_vectors on existing collection ─────────────
+
+    def _run_fast_path(
+        self,
+        client: QdrantClient,
+        *,
+        progress: dict[str, Any] | None,
+        state_callback: Callable[[dict[str, Any]], None],
+        state: dict[str, Any],
+    ) -> None:
+        """Add sparse vectors to existing points via update_vectors().
+
+        Used when the collection already has 'bm25' sparse vector config
+        (either added by update_collection or created with it).
+        """
+        from qdrant_client.models import PointVectors
+
         collection_info = client.get_collection(self._collection_name)
         total_points = collection_info.points_count or 0
         if total_points == 0:
             logger.info(
-                "Collection '%s' is empty, nothing to migrate", self._collection_name
+                "Collection '%s' is empty, nothing to migrate",
+                self._collection_name,
             )
             return
 
         estimated_seconds = max(1, total_points / 1000)
         logger.info(
-            "Migrating %d points — generating BM25 sparse vectors "
-            "(estimated %.0f seconds)",
+            "Fast path: migrating %d points — generating BM25 sparse "
+            "vectors (estimated %.0f seconds)",
             total_points,
             estimated_seconds,
         )
 
-        # Step 3: Resume from checkpoint if available
         resume_offset: str | None = None
         processed = 0
         if progress:
@@ -298,7 +380,7 @@ class AddSparseVectorsMigration(Migration):
             processed = progress.get("processed", 0)
             if resume_offset:
                 logger.info(
-                    "Resuming migration from checkpoint: %d points already processed",
+                    "Resuming from checkpoint: %d points already processed",
                     processed,
                 )
 
@@ -307,7 +389,6 @@ class AddSparseVectorsMigration(Migration):
         start_time = time.monotonic()
 
         while True:
-            # Scroll batch — payload only (we need the text), no vectors
             points, next_offset = client.scroll(
                 collection_name=self._collection_name,
                 limit=BATCH_SIZE,
@@ -319,14 +400,10 @@ class AddSparseVectorsMigration(Migration):
             if not points:
                 break
 
-            # Generate BM25 sparse vectors from memory text
             texts = [p.payload.get("data", "") if p.payload else "" for p in points]
             sparse_vectors = self._sparse.embed_batch(texts)
 
             if sparse_vectors:
-                # Add sparse vectors to existing points without touching
-                # the dense vectors. update_vectors() only modifies the
-                # specified named vectors, leaving others intact.
                 point_vectors = [
                     PointVectors(
                         id=p.id,
@@ -354,7 +431,6 @@ class AddSparseVectorsMigration(Migration):
                 elapsed,
             )
 
-            # Save checkpoint for resumable migration
             state[f"{self.id}_progress"] = {
                 "offset": str(next_offset) if next_offset else None,
                 "processed": processed,
@@ -372,6 +448,404 @@ class AddSparseVectorsMigration(Migration):
             processed,
             elapsed,
         )
+
+    # ── Recreation path: copy via temp collection ────────────────────
+
+    def _run_recreation(
+        self,
+        client: QdrantClient,
+        *,
+        progress: dict[str, Any] | None,
+        state_callback: Callable[[dict[str, Any]], None],
+        state: dict[str, Any],
+    ) -> None:
+        """Recreate the collection with sparse vector config.
+
+        Uses a temp collection as a safety buffer:
+        1. Copy original → temp (with sparse vectors)
+        2. Delete original, recreate with sparse config
+        3. Copy temp → original
+        4. Delete temp
+
+        Resumable: checkpoints track phase and offset.
+        """
+        from qdrant_client.models import (
+            Modifier,
+            SparseVectorParams,
+        )
+
+        phase = (progress or {}).get("phase", "copy_to_temp")
+        processed = (progress or {}).get("processed", 0)
+        resume_offset = (progress or {}).get("offset")
+
+        # ── Phase 1: Copy original → temp ────────────────────────────
+
+        if phase == "copy_to_temp":
+            # Get original collection config for dense vectors
+            original_info = client.get_collection(self._collection_name)
+            total_points = original_info.points_count or 0
+
+            if total_points == 0:
+                logger.info(
+                    "Collection '%s' is empty, nothing to recreate",
+                    self._collection_name,
+                )
+                return
+
+            # Read dense vector config from the original collection
+            dense_config = self._get_dense_config(original_info)
+
+            # Create temp collection with dense + sparse config
+            existing = [c.name for c in client.get_collections().collections]
+            if _TEMP_COLLECTION not in existing:
+                client.create_collection(
+                    collection_name=_TEMP_COLLECTION,
+                    vectors_config=dense_config,
+                    sparse_vectors_config={
+                        "bm25": SparseVectorParams(modifier=Modifier.IDF),
+                    },
+                )
+                logger.info(
+                    "Created temp collection '%s' for recreation",
+                    _TEMP_COLLECTION,
+                )
+            else:
+                logger.info(
+                    "Temp collection '%s' already exists (resuming)",
+                    _TEMP_COLLECTION,
+                )
+
+            # Copy points from original → temp with sparse vectors
+            logger.info(
+                "Recreation phase 1: copying %d points from '%s' → '%s'",
+                total_points,
+                self._collection_name,
+                _TEMP_COLLECTION,
+            )
+
+            self._copy_with_sparse(
+                client,
+                source=self._collection_name,
+                target=_TEMP_COLLECTION,
+                total_points=total_points,
+                phase="copy_to_temp",
+                resume_offset=resume_offset,
+                processed=processed,
+                state_callback=state_callback,
+                state=state,
+            )
+
+            # Verify counts match
+            temp_info = client.get_collection(_TEMP_COLLECTION)
+            temp_count = temp_info.points_count or 0
+            if temp_count < total_points:
+                raise RuntimeError(
+                    f"Recreation failed: temp collection has {temp_count} "
+                    f"points but original has {total_points}. Aborting to "
+                    f"prevent data loss."
+                )
+
+            logger.info(
+                "Phase 1 complete: %d points copied to temp collection",
+                temp_count,
+            )
+
+            # Transition to phase 2
+            processed = 0
+            resume_offset = None
+            phase = "copy_back"
+            state[f"{self.id}_progress"] = {
+                "phase": "copy_back",
+                "offset": None,
+                "processed": 0,
+            }
+            state_callback(state)
+
+        # ── Phase 2: Delete original, recreate, copy back ────────────
+
+        if phase == "copy_back":
+            # Read config from temp collection (it has the correct config)
+            temp_info = client.get_collection(_TEMP_COLLECTION)
+            total_points = temp_info.points_count or 0
+            dense_config = self._get_dense_config(temp_info)
+
+            # Delete original collection
+            existing = [c.name for c in client.get_collections().collections]
+            if self._collection_name in existing:
+                logger.info(
+                    "Deleting original collection '%s'",
+                    self._collection_name,
+                )
+                client.delete_collection(self._collection_name)
+
+            # Recreate with sparse config
+            logger.info(
+                "Recreating collection '%s' with sparse vector config",
+                self._collection_name,
+            )
+            client.create_collection(
+                collection_name=self._collection_name,
+                vectors_config=dense_config,
+                sparse_vectors_config={
+                    "bm25": SparseVectorParams(modifier=Modifier.IDF),
+                },
+            )
+
+            # Copy points from temp → original (already have sparse vectors)
+            logger.info(
+                "Recreation phase 2: copying %d points from '%s' → '%s'",
+                total_points,
+                _TEMP_COLLECTION,
+                self._collection_name,
+            )
+
+            self._copy_points(
+                client,
+                source=_TEMP_COLLECTION,
+                target=self._collection_name,
+                total_points=total_points,
+                phase="copy_back",
+                resume_offset=resume_offset,
+                processed=processed,
+                state_callback=state_callback,
+                state=state,
+            )
+
+            # Verify counts match
+            final_info = client.get_collection(self._collection_name)
+            final_count = final_info.points_count or 0
+            if final_count < total_points:
+                raise RuntimeError(
+                    f"Recreation failed: new collection has {final_count} "
+                    f"points but temp has {total_points}. Temp collection "
+                    f"'{_TEMP_COLLECTION}' preserved for recovery."
+                )
+
+            # Clean up temp collection
+            logger.info("Deleting temp collection '%s'", _TEMP_COLLECTION)
+            client.delete_collection(_TEMP_COLLECTION)
+
+            logger.info(
+                "Migration %s complete: collection '%s' recreated with "
+                "sparse vector config (%d points preserved)",
+                self.id,
+                self._collection_name,
+                final_count,
+            )
+
+    @staticmethod
+    def _get_dense_config(
+        collection_info: Any,
+    ) -> VectorParams | dict[str, VectorParams]:
+        """Extract dense vector config from a collection info object.
+
+        Handles both single (unnamed) vector config and named vector
+        configs. Returns the appropriate format for ``create_collection``.
+        """
+        params = collection_info.config.params
+        vectors = params.vectors
+
+        # Single unnamed vector (most common for mnemory)
+        if isinstance(vectors, VectorParams):
+            return vectors
+
+        # Named vectors — return as dict
+        if isinstance(vectors, dict):
+            return {
+                name: VectorParams(
+                    size=cfg.size,
+                    distance=cfg.distance,
+                )
+                for name, cfg in vectors.items()
+            }
+
+        # Fallback: try to read size/distance from the object
+        try:
+            return VectorParams(
+                size=vectors.size,
+                distance=vectors.distance,
+            )
+        except AttributeError:
+            raise RuntimeError(
+                f"Cannot extract dense vector config from collection: {type(vectors)}"
+            )
+
+    def _copy_with_sparse(
+        self,
+        client: QdrantClient,
+        *,
+        source: str,
+        target: str,
+        total_points: int,
+        phase: str,
+        resume_offset: str | None,
+        processed: int,
+        state_callback: Callable[[dict[str, Any]], None],
+        state: dict[str, Any],
+    ) -> None:
+        """Copy points from source → target, adding sparse vectors.
+
+        Reads dense vectors + payload from source, generates BM25 sparse
+        vectors, and upserts into target with both vector types.
+        """
+        BATCH_SIZE = 256
+        offset = resume_offset
+        start_time = time.monotonic()
+
+        while True:
+            points, next_offset = client.scroll(
+                collection_name=source,
+                limit=BATCH_SIZE,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+
+            if not points:
+                break
+
+            # Generate sparse vectors from memory text
+            texts = [p.payload.get("data", "") if p.payload else "" for p in points]
+            sparse_vectors = self._sparse.embed_batch(texts)
+
+            # Build points with both dense + sparse vectors
+            new_points = []
+            for i, p in enumerate(points):
+                # Get the dense vector (unnamed or named)
+                dense_vec = p.vector
+                if isinstance(dense_vec, dict):
+                    # Named vectors — keep as-is, add sparse
+                    vectors = dict(dense_vec)
+                else:
+                    # Unnamed vector — use empty string key (Qdrant default)
+                    vectors = {"": dense_vec}
+
+                if sparse_vectors and i < len(sparse_vectors):
+                    vectors["bm25"] = sparse_vectors[i]
+
+                new_points.append(
+                    PointStruct(
+                        id=p.id,
+                        vector=vectors,
+                        payload=p.payload or {},
+                    )
+                )
+
+            if new_points:
+                client.upsert(
+                    collection_name=target,
+                    points=new_points,
+                )
+
+            processed += len(points)
+            elapsed = time.monotonic() - start_time
+            total_batches = max(1, (total_points + BATCH_SIZE - 1) // BATCH_SIZE)
+            batch_num = min(total_batches, (processed + BATCH_SIZE - 1) // BATCH_SIZE)
+
+            logger.info(
+                "Migration %s [%s]: batch %d/%d (%d/%d points, %.1fs)",
+                self.id,
+                phase,
+                batch_num,
+                total_batches,
+                processed,
+                total_points,
+                elapsed,
+            )
+
+            state[f"{self.id}_progress"] = {
+                "phase": phase,
+                "offset": str(next_offset) if next_offset else None,
+                "processed": processed,
+            }
+            state_callback(state)
+
+            if next_offset is None:
+                break
+            offset = next_offset
+
+    def _copy_points(
+        self,
+        client: QdrantClient,
+        *,
+        source: str,
+        target: str,
+        total_points: int,
+        phase: str,
+        resume_offset: str | None,
+        processed: int,
+        state_callback: Callable[[dict[str, Any]], None],
+        state: dict[str, Any],
+    ) -> None:
+        """Copy points from source → target (no sparse generation).
+
+        Used for the copy-back phase where points already have sparse
+        vectors from the copy-to-temp phase.
+        """
+        BATCH_SIZE = 256
+        offset = resume_offset
+        start_time = time.monotonic()
+
+        while True:
+            points, next_offset = client.scroll(
+                collection_name=source,
+                limit=BATCH_SIZE,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+
+            if not points:
+                break
+
+            new_points = []
+            for p in points:
+                dense_vec = p.vector
+                if isinstance(dense_vec, dict):
+                    vectors = dict(dense_vec)
+                else:
+                    vectors = {"": dense_vec}
+
+                new_points.append(
+                    PointStruct(
+                        id=p.id,
+                        vector=vectors,
+                        payload=p.payload or {},
+                    )
+                )
+
+            if new_points:
+                client.upsert(
+                    collection_name=target,
+                    points=new_points,
+                )
+
+            processed += len(points)
+            elapsed = time.monotonic() - start_time
+            total_batches = max(1, (total_points + BATCH_SIZE - 1) // BATCH_SIZE)
+            batch_num = min(total_batches, (processed + BATCH_SIZE - 1) // BATCH_SIZE)
+
+            logger.info(
+                "Migration %s [%s]: batch %d/%d (%d/%d points, %.1fs)",
+                self.id,
+                phase,
+                batch_num,
+                total_batches,
+                processed,
+                total_points,
+                elapsed,
+            )
+
+            state[f"{self.id}_progress"] = {
+                "phase": phase,
+                "offset": str(next_offset) if next_offset else None,
+                "processed": processed,
+            }
+            state_callback(state)
+
+            if next_offset is None:
+                break
+            offset = next_offset
 
 
 # ── Migration registry ───────────────────────────────────────────────
