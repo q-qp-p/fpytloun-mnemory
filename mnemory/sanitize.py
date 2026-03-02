@@ -29,6 +29,9 @@ _BOUNDARY_TAGS = {
     "context": ("⟨context⟩", "⟨/context⟩"),
     "memory_item": ("⟨memory_item⟩", "⟨/memory_item⟩"),
     "content": ("⟨content⟩", "⟨/content⟩"),
+    "conversation_summary": ("⟨conversation_summary⟩", "⟨/conversation_summary⟩"),
+    "extracted_memories": ("⟨extracted_memories⟩", "⟨/extracted_memories⟩"),
+    "summary": ("⟨summary⟩", "⟨/summary⟩"),
 }
 
 

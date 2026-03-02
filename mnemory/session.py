@@ -15,6 +15,7 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 logger = logging.getLogger("mnemory")
 
@@ -30,6 +31,11 @@ class MemorySession:
 
     Keeps track of which memories the client already has in its context,
     so subsequent recall calls only return NEW relevant memories.
+
+    Also maintains remember pipeline context: a running conversation
+    summary and list of already-extracted memory texts, so subsequent
+    remember calls can avoid re-extracting known facts and maintain
+    conversation continuity.
     """
 
     session_id: str
@@ -39,6 +45,14 @@ class MemorySession:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_accessed: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ttl_seconds: int = 3600
+
+    # Remember pipeline context — accumulated across remember calls.
+    # extracted_memories: texts of facts already extracted in this session,
+    #   used to tell the extraction LLM to skip known facts.
+    # conversation_summary: running summary of all conversation turns,
+    #   used to give the extraction LLM conversation continuity.
+    extracted_memories: list[str] = field(default_factory=list)
+    conversation_summary: str = ""
 
     @property
     def is_expired(self) -> bool:
@@ -148,6 +162,78 @@ class SessionStore:
             if session and not session.is_expired:
                 return set(session.known_memory_ids)
             return set()
+
+    # ── Remember pipeline context ────────────────────────────────────
+
+    def add_extracted_memories(
+        self,
+        session_id: str,
+        texts: list[str],
+        *,
+        max_entries: int = 50,
+    ) -> None:
+        """Append extracted memory texts to the session.
+
+        Used by the remember pipeline to track which facts have already
+        been extracted, so subsequent calls skip them.
+
+        Capped at max_entries with FIFO eviction — older entries are
+        still findable via Stage 2's per-fact vector search.
+        """
+        if not texts:
+            return
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session and not session.is_expired:
+                session.extracted_memories.extend(texts)
+                if len(session.extracted_memories) > max_entries:
+                    session.extracted_memories = session.extracted_memories[
+                        -max_entries:
+                    ]
+
+    def append_summary(self, session_id: str, turn_summary: str) -> None:
+        """Append a turn summary to the session's conversation summary.
+
+        Each remember call produces a 1-2 sentence summary of the
+        exchange. These are accumulated to give the extraction LLM
+        full conversation context.
+
+        Summaries are appended as-is. Compaction (if needed) is handled
+        by the caller when the summary exceeds a threshold.
+        """
+        if not turn_summary or not turn_summary.strip():
+            return
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session and not session.is_expired:
+                if session.conversation_summary:
+                    session.conversation_summary += "\n" + turn_summary.strip()
+                else:
+                    session.conversation_summary = turn_summary.strip()
+
+    def set_summary(self, session_id: str, summary: str) -> None:
+        """Replace the conversation summary (used after compaction)."""
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session and not session.is_expired:
+                session.conversation_summary = summary
+
+    def get_remember_context(self, session_id: str) -> dict[str, Any]:
+        """Get remember pipeline context for prompt building.
+
+        Returns:
+            Dict with 'extracted_memories' (list[str]) and
+            'conversation_summary' (str). Empty values if session
+            is missing or expired.
+        """
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session and not session.is_expired:
+                return {
+                    "extracted_memories": list(session.extracted_memories),
+                    "conversation_summary": session.conversation_summary,
+                }
+            return {"extracted_memories": [], "conversation_summary": ""}
 
     @property
     def active_count(self) -> int:

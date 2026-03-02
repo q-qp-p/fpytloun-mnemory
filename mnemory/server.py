@@ -82,7 +82,9 @@ def _get_config():
 def _get_service():
     global _service
     if _service is None:
-        _service = MemoryService(_get_config())
+        from mnemory.api import _session_store
+
+        _service = MemoryService(_get_config(), session_store=_session_store)
     return _service
 
 

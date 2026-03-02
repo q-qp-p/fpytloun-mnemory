@@ -11,8 +11,12 @@ from mnemory.prompts import (
     build_classification_prompt,
     build_extraction_prompt,
     build_query_generation_prompt,
+    build_remember_extraction_prompt,
     build_rerank_prompt,
+    build_summary_compaction_prompt,
+    parse_dedup_response,
     parse_extraction_response,
+    parse_remember_extraction_response,
 )
 from mnemory.sanitize import _BOUNDARY_TAGS, ANTI_INJECTION_PREAMBLE
 
@@ -796,3 +800,311 @@ class TestPromptInjectionSafeguards:
         """The anti-injection preamble should mention boundary tags."""
         assert "boundary tags" in ANTI_INJECTION_PREAMBLE.lower()
         assert "DATA" in ANTI_INJECTION_PREAMBLE
+
+
+# ── parse_dedup_response ─────────────────────────────────────────────
+
+
+class TestParseDedupResponse:
+    """Test Stage 2 dedup response parsing."""
+
+    def _make_facts(self, n: int = 3) -> list[dict]:
+        return [
+            {
+                "text": f"Fact {i}",
+                "memory_type": "fact",
+                "categories": ["personal"],
+                "importance": "normal",
+                "pinned": False,
+                "event_date": None,
+            }
+            for i in range(n)
+        ]
+
+    def test_returns_tuple(self):
+        """parse_dedup_response should return (actions, decided_indices) tuple."""
+        facts = self._make_facts(2)
+        response = json.dumps(
+            {
+                "decisions": [
+                    {"fact_index": 0, "action": "ADD", "text": "Fact 0"},
+                    {"fact_index": 1, "action": "ADD", "text": "Fact 1"},
+                ]
+            }
+        )
+        actions, decided = parse_dedup_response(response, {}, facts)
+        assert isinstance(actions, list)
+        assert isinstance(decided, set)
+        assert len(actions) == 2
+        assert decided == {0, 1}
+
+    def test_skip_tracked_in_decided_indices(self):
+        """SKIP actions should be in decided_indices but not in actions."""
+        facts = self._make_facts(3)
+        response = json.dumps(
+            {
+                "decisions": [
+                    {"fact_index": 0, "action": "ADD", "text": "Fact 0"},
+                    {"fact_index": 1, "action": "SKIP", "text": "Fact 1"},
+                    {"fact_index": 2, "action": "ADD", "text": "Fact 2"},
+                ]
+            }
+        )
+        actions, decided = parse_dedup_response(response, {}, facts)
+        assert len(actions) == 2  # SKIP filtered out
+        assert decided == {0, 1, 2}  # All three tracked
+
+    def test_update_action_with_id_mapping(self):
+        """UPDATE actions should map integer IDs back to real UUIDs."""
+        facts = self._make_facts(1)
+        id_mapping = {"1": "real-uuid-abc"}
+        response = json.dumps(
+            {
+                "decisions": [
+                    {
+                        "fact_index": 0,
+                        "action": "UPDATE",
+                        "text": "Updated fact text",
+                        "target_id": 1,
+                    },
+                ]
+            }
+        )
+        actions, decided = parse_dedup_response(response, id_mapping, facts)
+        assert len(actions) == 1
+        assert actions[0]["action"] == "UPDATE"
+        assert actions[0]["target_id"] == "real-uuid-abc"
+        assert actions[0]["text"] == "Updated fact text"
+        assert decided == {0}
+
+    def test_update_with_unknown_target_skipped(self):
+        """UPDATE with unknown target_id should be skipped."""
+        facts = self._make_facts(1)
+        id_mapping = {"1": "real-uuid-abc"}
+        response = json.dumps(
+            {
+                "decisions": [
+                    {
+                        "fact_index": 0,
+                        "action": "UPDATE",
+                        "text": "Updated text",
+                        "target_id": 999,
+                    },
+                ]
+            }
+        )
+        actions, decided = parse_dedup_response(response, id_mapping, facts)
+        assert len(actions) == 0
+        # fact_index is still tracked even though action was skipped
+        assert decided == {0}
+
+    def test_unmentioned_facts_not_in_decided(self):
+        """Facts not in the response should not appear in decided_indices."""
+        facts = self._make_facts(3)
+        response = json.dumps(
+            {
+                "decisions": [
+                    {"fact_index": 0, "action": "ADD", "text": "Fact 0"},
+                    # fact_index 1 and 2 not mentioned
+                ]
+            }
+        )
+        actions, decided = parse_dedup_response(response, {}, facts)
+        assert len(actions) == 1
+        assert decided == {0}
+
+    def test_invalid_json_returns_empty(self):
+        """Invalid JSON should return empty actions and empty decided set."""
+        facts = self._make_facts(1)
+        actions, decided = parse_dedup_response("not json", {}, facts)
+        assert actions == []
+        assert decided == set()
+
+    def test_metadata_from_facts(self):
+        """Actions should inherit metadata from the original Stage 1 facts."""
+        facts = [
+            {
+                "text": "User likes Python",
+                "memory_type": "preference",
+                "categories": ["technical"],
+                "importance": "high",
+                "pinned": True,
+                "event_date": "2025-01-15",
+            }
+        ]
+        response = json.dumps(
+            {
+                "decisions": [
+                    {"fact_index": 0, "action": "ADD", "text": "User likes Python"},
+                ]
+            }
+        )
+        actions, decided = parse_dedup_response(response, {}, facts)
+        assert len(actions) == 1
+        assert actions[0]["memory_type"] == "preference"
+        assert actions[0]["categories"] == ["technical"]
+        assert actions[0]["importance"] == "high"
+        assert actions[0]["pinned"] is True
+        assert actions[0]["event_date"] == "2025-01-15"
+
+
+# ── parse_remember_extraction_response ───────────────────────────────
+
+
+class TestParseRememberExtractionResponse:
+    """Test Stage 1 remember extraction response parsing."""
+
+    def test_basic_extraction(self):
+        """Should parse facts, summary, and store_artifact."""
+        response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User prefers dark mode",
+                        "memory_type": "preference",
+                        "categories": ["preferences"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+                "summary": "User discussed editor preferences.",
+                "store_artifact": False,
+            }
+        )
+        facts, summary, store_artifact = parse_remember_extraction_response(response)
+        assert len(facts) == 1
+        assert facts[0]["text"] == "User prefers dark mode"
+        assert facts[0]["memory_type"] == "preference"
+        assert summary == "User discussed editor preferences."
+        assert store_artifact is False
+
+    def test_empty_memories(self):
+        """Empty memories list should return empty facts."""
+        response = json.dumps({"memories": [], "summary": "Chitchat."})
+        facts, summary, store_artifact = parse_remember_extraction_response(response)
+        assert facts == []
+        assert summary == "Chitchat."
+
+    def test_invalid_json(self):
+        """Invalid JSON should return empty results."""
+        facts, summary, store_artifact = parse_remember_extraction_response("not json")
+        assert facts == []
+        assert summary == ""
+        assert store_artifact is False
+
+    def test_event_date_preserved(self):
+        """event_date should be preserved in extracted facts."""
+        response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Meeting happened",
+                        "memory_type": "episodic",
+                        "categories": ["work"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": "2025-06-15",
+                    }
+                ],
+                "summary": "Discussed a meeting.",
+            }
+        )
+        facts, _, _ = parse_remember_extraction_response(response)
+        assert facts[0]["event_date"] == "2025-06-15"
+
+    def test_store_artifact_true(self):
+        """store_artifact=true should be parsed correctly."""
+        response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Architecture discussion",
+                        "memory_type": "episodic",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                    }
+                ],
+                "summary": "Detailed architecture review.",
+                "store_artifact": True,
+            }
+        )
+        _, _, store_artifact = parse_remember_extraction_response(response)
+        assert store_artifact is True
+
+
+# ── build_remember_extraction_prompt ─────────────────────────────────
+
+
+class TestBuildRememberExtractionPrompt:
+    """Test Stage 1 extraction prompt building."""
+
+    def test_basic_prompt(self):
+        """Should produce system + user messages with schema."""
+        messages, schema = build_remember_extraction_prompt(
+            "User said they like Python"
+        )
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert schema is not None
+
+    def test_session_context_included(self):
+        """Session context should be included in the system prompt."""
+        session_context = {
+            "extracted_memories": ["User likes Python"],
+            "conversation_summary": "Discussed programming preferences.",
+        }
+        messages, _ = build_remember_extraction_prompt(
+            "User also likes Rust",
+            session_context=session_context,
+        )
+        system = messages[0]["content"]
+        assert "User likes Python" in system
+        assert "Discussed programming preferences" in system
+
+    def test_context_hint_included(self):
+        """Context hint should be appended to system prompt."""
+        messages, _ = build_remember_extraction_prompt(
+            "Working on the API",
+            context="Working directory: /home/user/myproject",
+        )
+        system = messages[0]["content"]
+        assert "myproject" in system
+
+    def test_anti_injection_in_prompt(self):
+        """Anti-injection preamble should be in the system prompt."""
+        messages, _ = build_remember_extraction_prompt("test content")
+        system = messages[0]["content"]
+        assert "boundary tags" in system.lower() or "DATA" in system
+
+
+# ── build_summary_compaction_prompt ──────────────────────────────────
+
+
+class TestBuildSummaryCompactionPrompt:
+    """Test summary compaction prompt building."""
+
+    def test_basic_prompt(self):
+        """Should produce system + user messages with schema."""
+        messages, schema = build_summary_compaction_prompt(
+            "Long conversation summary..."
+        )
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert schema is not None
+
+    def test_anti_injection_in_prompt(self):
+        """Anti-injection preamble should be in the system prompt."""
+        messages, _ = build_summary_compaction_prompt("summary text")
+        system = messages[0]["content"]
+        assert "boundary tags" in system.lower() or "DATA" in system
+
+    def test_summary_wrapped_with_boundary(self):
+        """Summary input should be wrapped with boundary tags."""
+        messages, _ = build_summary_compaction_prompt("my summary content")
+        user_msg = messages[1]["content"]
+        # Should contain boundary tags around the summary
+        assert "summary" in user_msg.lower()
+        assert "my summary content" in user_msg

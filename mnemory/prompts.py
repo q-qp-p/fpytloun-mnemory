@@ -447,6 +447,11 @@ Compare each extracted fact against the existing memories below.
 - **DELETE**: Contradicts an existing memory that should be removed. Set target_id to the existing memory's ID. The text field should contain the memory being deleted.
 - **NONE**: Already captured in existing memories. Skip it (do not include in output).
 
+**CRITICAL**: When an existing memory already captures the same
+information as the extracted fact (same meaning, same subject), you
+MUST use action NONE. Do NOT add duplicates. An empty memories array
+is a perfectly valid response when everything is already known.
+
 ### Subject preservation
 
 - Only UPDATE when the new fact is about the SAME subject
@@ -455,11 +460,27 @@ Compare each extracted fact against the existing memories below.
   "User does not like dogs" — different subjects.
 - "User moved to Berlin" CAN update "User lives in Prague"
   — same subject (user's location).
-- When in doubt, prefer ADD over UPDATE.
+- When in doubt between ADD and UPDATE, prefer ADD.
+- When in doubt between ADD and NONE, prefer NONE if ANY existing
+  memory covers the same information.
 
 When updating, keep the same meaning but incorporate new
 information. When facts overlap, merge them into a single
 updated memory.
+
+### Dedup examples
+
+Existing: [{{"id": "0", "text": "User's email is john@example.com"}}]
+Extracted fact: "User's email is john@example.com"
+→ action: NONE (already captured exactly)
+
+Existing: [{{"id": "0", "text": "User is a senior developer at Acme Corp"}}]
+Extracted fact: "User works at Acme Corp"
+→ action: NONE (existing memory already captures this with more detail)
+
+Existing: [{{"id": "0", "text": "User lives in Prague"}}]
+Extracted fact: "User moved to Berlin"
+→ action: UPDATE, target_id="0" (same subject, new information)
 
 {existing_section}
 
@@ -616,6 +637,11 @@ Compare each extracted fact against the existing memories below.
 - **DELETE**: Contradicts an existing memory that should be removed. Set target_id to the existing memory's ID. The text field should contain the memory being deleted.
 - **NONE**: Already captured in existing memories. Skip it (do not include in output).
 
+**CRITICAL**: When an existing memory already captures the same
+information as the extracted fact (same meaning, same subject), you
+MUST use action NONE. Do NOT add duplicates. An empty memories array
+is a perfectly valid response when everything is already known.
+
 ### Subject preservation
 
 - Only UPDATE when the new fact is about the SAME subject
@@ -624,11 +650,23 @@ Compare each extracted fact against the existing memories below.
   "Assistant is expert in Kubernetes" — different subjects.
 - "Assistant now prefers brief responses" CAN update
   "Assistant prefers verbose responses" — same subject.
-- When in doubt, prefer ADD over UPDATE.
+- When in doubt between ADD and UPDATE, prefer ADD.
+- When in doubt between ADD and NONE, prefer NONE if ANY existing
+  memory covers the same information.
 
 When updating, keep the same meaning but incorporate new
 information. When facts overlap, merge them into a single
 updated memory.
+
+### Dedup examples
+
+Existing: [{{"id": "0", "text": "Assistant's name is Bob"}}]
+Extracted fact: "Assistant is called Bob"
+→ action: NONE (already captured)
+
+Existing: [{{"id": "0", "text": "Assistant prefers verbose responses"}}]
+Extracted fact: "Assistant now prefers brief responses"
+→ action: UPDATE, target_id="0" (same subject, changed preference)
 
 {existing_section}
 
@@ -1377,6 +1415,771 @@ def build_rerank_prompt(
     ]
 
     return messages, RERANK_SCHEMA
+
+
+# ── Remember pipeline: two-stage extraction + dedup ──────────────────
+
+# Stage 1: Extract facts from conversation text (no dedup).
+# Receives session context (conversation summary + already extracted
+# memories) to avoid re-extracting known facts and maintain continuity.
+
+_REMEMBER_EXTRACTION_SYSTEM_PROMPT = """\
+You are a memory extraction system. Your job is to:
+1. Extract distinct facts from the current conversation exchange
+2. Classify each fact
+3. Generate a brief summary of this exchange
+
+## Security
+
+{anti_injection}
+
+## Fact Extraction Rules
+
+- Extract distinct facts from the provided conversation exchange.
+- Each fact should be a single, atomic piece of information.
+- Identify the subject of each fact from the content itself:
+  - When a named person is the subject, use their name
+    (e.g., "Caroline prefers dark mode", "John works at Google").
+  - When the content is first-person with no named speaker,
+    use "User" as the subject (e.g., "User prefers dark mode").
+- Write facts in third person, always including the subject
+  explicitly.
+- Extract facts stated or revealed by the user — about themselves,
+  their family, friends, colleagues, pets, possessions, home,
+  preferences, and anything else they mention. If the user describes
+  someone or something, those are facts worth remembering.
+- Use relationship-based subjects for third parties: "User's mother",
+  "User's partner", "User's cat", etc.
+- Do NOT extract the assistant's own reasoning, analysis,
+  recommendations, or observations as separate memories. The
+  assistant's responses are context, not facts to remember.
+- Do NOT extract the assistant's observations about file contents,
+  configurations, build setups, infrastructure details, or
+  implementation specifics — these are transient working context.
+  Only extract if the observation leads to a concrete decision
+  or conclusion.
+- You may extract from assistant messages only when they paraphrase
+  or confirm a user fact (e.g., assistant says "you mentioned you
+  live in Prague" → extract "User lives in Prague").
+- Do not extract generic responses, pleasantries, or procedural
+  statements (e.g., "Sure, I can help with that" is not a fact).
+- When the user tells the assistant to perform a task (read files,
+  run commands, check something, explore code), do NOT store the
+  instruction itself. Instead, look for the underlying intent or
+  goal — WHY the user wants this done. Store the goal, not the
+  action.
+- Each extracted fact must be self-contained and understandable
+  without the original conversation. A reader seeing this fact
+  in isolation must know: WHAT it's about, WHO it concerns, and
+  WHERE it applies (which project/system/feature). Never extract
+  vague facts like "User set a limit of 500" — specify what
+  limit and where. Include the project, application, or system name
+  when identifiable. If additional context is provided (e.g.,
+  working directory), use it to identify the project or
+  application name.
+- Preserve all important information — do not over-compress
+  at the cost of losing detail.
+- Preserve specific details exactly: proper nouns, names, titles
+  (book/movie/song titles), numbers, quantities, and places.
+- When a message contains multiple distinct facts, extract each
+  as a separate memory.
+- Each fact must be under {max_length} characters. If content
+  is too detailed for a single fact, split into multiple facts.
+- Always write extracted facts in English, regardless of the input
+  language. Preserve proper nouns, names, titles, and specific terms
+  in their original form.
+- If no relevant facts can be extracted, return an empty list.
+- Today's date is {today}.
+- Each fact has an event_date field (YYYY-MM-DD or null). Use it to
+  record WHEN something happened or was mentioned:
+  - Set event_date when the fact has a temporal anchor — an event,
+    observation, or statement tied to a specific date.
+  - Convert relative references (yesterday, last week, last year,
+    recently, etc.) to absolute dates using Today's date.
+  - Set event_date to null when the fact is timeless (e.g., a name,
+    a preference, a permanent trait).
+- Do NOT embed dates in the fact text unless the date IS the core
+  fact (e.g., "User's birthday is August 13"). For episodic events,
+  the date goes in event_date only — keep the text clean.
+- Do NOT append storage dates, creation timestamps, or "(stored ...)"
+  annotations to extracted facts.
+- Do not extract the same fact twice. Each extracted fact must be
+  unique — if two pieces of information overlap, merge them into
+  a single fact.
+
+## Classification Rules
+
+For each extracted fact, classify:
+
+- **memory_type**: {memory_types}
+  - preference = likes, dislikes, style choices, tool preferences
+  - fact = stable biographical or personal information that remains
+    true until explicitly changed (names, roles, locations,
+    relationships, long-term traits, enduring preferences). NOT for
+    goals, plans, intents, current knowledge gaps, feature requests,
+    transient technical observations, or project-specific
+    implementation details.
+    Heuristic: "Will this still be true in 3 months if nothing
+    changes?" If yes → fact. If it depends on completing a task or
+    learning something → episodic or context.
+  - episodic = events, interactions, decisions, conclusions, goals,
+    plans, intents, feature requests, current knowledge state.
+    Anything that HAPPENED, was DECIDED, or is WANTED/PLANNED.
+  - procedural = workflows, habits, how the user does things
+  - context = session/short-term notes, current project/system state,
+    technical observations, implementation details, bug reports,
+    analysis findings, what a project currently lacks or has.
+
+- **categories**: Pick from the available list below. Use [] if none fit.
+  "project" is for general project content. When the conversation
+  clearly involves a specific named project, create a subcategory by
+  appending the project name (e.g., project:mnemory, project:argocd-apps).
+  Only do this when the project name is clearly identifiable from the
+  content or additional context — do not guess.
+
+- **importance**: {importance_levels}
+  - low = minor details, temporary notes
+  - normal = standard memories (default for most)
+  - high = important facts, key decisions
+  - critical = essential, always-relevant information
+
+- **pinned**: true ONLY for essential identity facts (name, job, location),
+  core preferences, or critical information that should always be loaded
+  at conversation start. Most memories should be false.
+
+{categories_section}
+
+{session_context_section}
+
+## Exchange Summary
+
+Generate a brief 1-3 sentence summary of this conversation exchange.
+The summary should capture:
+- The main topic or intent of the exchange
+- Any key decisions or outcomes
+- Enough context to understand pronoun references in future exchanges
+
+This summary will be used as context for processing future exchanges
+in the same conversation.
+
+## Artifact Decision
+
+Decide whether the original input content should be preserved as an
+artifact (a detailed document attached to the extracted memories for
+later retrieval).
+
+Set `store_artifact` to **true** when:
+- The content is a structured document (design doc, spec, report, analysis)
+- The content contains code, configuration, or technical reference material
+- The content has detailed information that would lose significant value
+  if only the extracted key facts are kept
+
+Set `store_artifact` to **false** when:
+- The extracted memories fully capture the content's value
+- The content is casual conversation or simple statements
+- The content is a greeting, question, or short exchange
+
+When in doubt, prefer **false**.
+
+**Important**: When you set `store_artifact` to true, extract only a brief
+high-level summary as the memory — do NOT also extract individual details.
+
+## Output Format
+
+Return a JSON object with a "memories" array, a "summary" string, and a
+"store_artifact" boolean. Each memory entry must have ALL fields: text,
+memory_type, categories, importance, pinned, event_date.
+
+Return ONLY the JSON object. No explanation, no markdown."""
+
+
+REMEMBER_EXTRACTION_SCHEMA: dict[str, Any] = {
+    "name": "remember_extraction",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "required": ["memories", "summary", "store_artifact"],
+        "additionalProperties": False,
+        "properties": {
+            "memories": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "text",
+                        "memory_type",
+                        "categories",
+                        "importance",
+                        "pinned",
+                        "event_date",
+                    ],
+                    "additionalProperties": False,
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The extracted fact text",
+                        },
+                        "memory_type": {
+                            "type": "string",
+                            "enum": list(VALID_MEMORY_TYPES),
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "importance": {
+                            "type": "string",
+                            "enum": list(IMPORTANCE_WEIGHTS.keys()),
+                        },
+                        "pinned": {"type": "boolean"},
+                        "event_date": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "ISO 8601 date (YYYY-MM-DD) when the event "
+                                "occurred, or null if no temporal anchor"
+                            ),
+                        },
+                    },
+                },
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "Brief 1-3 sentence summary of this conversation "
+                    "exchange for context continuity."
+                ),
+            },
+            "store_artifact": {
+                "type": "boolean",
+                "description": (
+                    "Whether the original content should be preserved as an artifact."
+                ),
+            },
+        },
+    },
+}
+
+
+def build_remember_extraction_prompt(
+    content: str,
+    *,
+    session_context: dict[str, Any] | None = None,
+    available_categories: list[str] | None = None,
+    max_memory_length: int = 1000,
+    session_timezone: str | None = None,
+    context: str | None = None,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Build the Stage 1 remember extraction prompt.
+
+    Extracts facts from conversation text with session context awareness.
+    No dedup against stored memories — that's Stage 2's job.
+
+    Args:
+        content: Formatted conversation text (e.g., "User: ...\nAssistant: ...").
+        session_context: Dict with 'extracted_memories' (list[str]) and
+            'conversation_summary' (str) from the session.
+        available_categories: Valid category names.
+        max_memory_length: Max chars per extracted fact.
+        session_timezone: IANA timezone for date resolution.
+        context: Optional context hint (e.g., working directory).
+
+    Returns:
+        Tuple of (messages, json_schema) for the LLM call.
+    """
+    if available_categories is None:
+        available_categories = list(PREDEFINED_CATEGORIES.keys())
+
+    # Compute today's date
+    if session_timezone:
+        try:
+            from zoneinfo import ZoneInfo
+
+            today = datetime.now(ZoneInfo(session_timezone)).strftime("%Y-%m-%d")
+        except Exception:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    else:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    memory_types = ", ".join(VALID_MEMORY_TYPES)
+    importance_levels = ", ".join(IMPORTANCE_WEIGHTS.keys())
+    cats_str = ", ".join(available_categories)
+    categories_section = f"**Available categories**: [{cats_str}]"
+
+    # Build session context section
+    session_context_section = _build_session_context_section(session_context)
+
+    system_prompt = _REMEMBER_EXTRACTION_SYSTEM_PROMPT.format(
+        today=today,
+        max_length=max_memory_length,
+        memory_types=memory_types,
+        importance_levels=importance_levels,
+        categories_section=categories_section,
+        session_context_section=session_context_section,
+        anti_injection=ANTI_INJECTION_PREAMBLE,
+    )
+
+    # Inject additional context (e.g., working directory)
+    if context:
+        system_prompt += (
+            "\n\n## Additional Context\n"
+            + wrap_with_boundary(context, "context")
+            + "\nUse this to identify which project or application the "
+            "conversation is about. Include the project/application name "
+            "in extracted facts to make them self-contained."
+        )
+
+    user_content = wrap_with_boundary(content, "user_input")
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    return messages, REMEMBER_EXTRACTION_SCHEMA
+
+
+def _build_session_context_section(
+    session_context: dict[str, Any] | None,
+) -> str:
+    """Build the session context section for the extraction prompt."""
+    if not session_context:
+        return (
+            "## Session Context\n\n"
+            "This is the first exchange in this conversation. "
+            "No previous context available."
+        )
+
+    parts = ["## Session Context\n"]
+
+    summary = session_context.get("conversation_summary", "")
+    if summary:
+        parts.append(
+            "**Conversation so far**:\n"
+            + wrap_with_boundary(summary, "conversation_summary")
+        )
+
+    extracted = session_context.get("extracted_memories", [])
+    if extracted:
+        mem_list = "\n".join(f"- {m}" for m in extracted)
+        parts.append(
+            "\n**Already extracted memories from this conversation** "
+            "(do NOT re-extract these — they are already stored):\n"
+            + wrap_with_boundary(mem_list, "extracted_memories")
+        )
+
+    if not summary and not extracted:
+        parts.append(
+            "This is the first exchange in this conversation. "
+            "No previous context available."
+        )
+
+    return "\n".join(parts)
+
+
+def parse_remember_extraction_response(
+    response_text: str,
+) -> tuple[list[dict[str, Any]], str, bool]:
+    """Parse Stage 1 remember extraction response.
+
+    Args:
+        response_text: Raw JSON string from the LLM.
+
+    Returns:
+        Tuple of (facts, summary, store_artifact):
+        - facts: List of extracted fact dicts, each with:
+          text, memory_type, categories, importance, pinned, event_date
+        - summary: Turn summary string
+        - store_artifact: Whether to save original content as artifact
+    """
+    from mnemory.llm import parse_json_response
+
+    try:
+        data = parse_json_response(response_text)
+    except ValueError:
+        logger.warning("Failed to parse remember extraction response, returning empty")
+        return [], "", False
+
+    summary = str(data.get("summary", "")).strip()
+    store_artifact = bool(data.get("store_artifact", False))
+
+    raw_memories = data.get("memories", [])
+    if not isinstance(raw_memories, list):
+        logger.warning("'memories' is not a list in remember extraction response")
+        return [], summary, store_artifact
+
+    facts = []
+    for entry in raw_memories:
+        if not isinstance(entry, dict):
+            continue
+
+        text = entry.get("text", "").strip()
+        if not text:
+            continue
+
+        memory_type = _validate_memory_type(entry.get("memory_type"))
+        categories = _validate_categories(entry.get("categories"))
+        importance = _validate_importance(entry.get("importance"))
+        pinned = bool(entry.get("pinned", False))
+
+        raw_event_date = entry.get("event_date")
+        event_date: str | None = None
+        if isinstance(raw_event_date, str) and raw_event_date.strip():
+            event_date = raw_event_date.strip()
+
+        facts.append(
+            {
+                "text": text,
+                "memory_type": memory_type,
+                "categories": categories,
+                "importance": importance,
+                "pinned": pinned,
+                "event_date": event_date,
+            }
+        )
+
+    return facts, summary, store_artifact
+
+
+# Stage 2: Dedup extracted facts against existing stored memories.
+# Each fact is paired with its similar existing memories from Qdrant.
+
+_DEDUP_SYSTEM_PROMPT = """\
+You are a memory deduplication system. You receive a list of newly
+extracted facts and, for each fact, a list of similar existing memories
+from the database. Your job is to decide what to do with each fact.
+
+## Security
+
+{anti_injection}
+
+## Actions
+
+For each fact, choose ONE action:
+
+- **ADD**: The fact is genuinely new — not captured by any existing memory.
+  Use this when the fact adds information not present in existing memories.
+- **UPDATE**: The fact modifies, enriches, or replaces an existing memory.
+  Set target_id to the existing memory's ID. The text field should contain
+  the NEW, updated content (merged with the existing memory if appropriate).
+- **DELETE**: The fact contradicts an existing memory that should be removed.
+  Set target_id to the existing memory's ID.
+- **SKIP**: The fact is already fully captured by an existing memory.
+  The existing memory already says the same thing. Do NOT re-add it.
+
+**CRITICAL**: When an existing memory already captures the same information
+as the extracted fact (same meaning, same subject), you MUST use SKIP.
+Do NOT add duplicates. Duplicates waste storage and confuse the user.
+An empty decisions array is a perfectly valid response when all facts
+are already known.
+
+### Subject preservation
+
+- Only UPDATE when the new fact is about the SAME subject as the existing
+  memory.
+- "User's partner likes dogs" must NOT update "User does not like dogs"
+  — different subjects.
+- "User moved to Berlin" CAN update "User lives in Prague" — same subject.
+- When in doubt between ADD and UPDATE, prefer ADD.
+- When in doubt between ADD and SKIP, prefer SKIP if ANY existing memory
+  covers the same information.
+
+### Examples
+
+Facts: [{{"index": 0, "text": "User's email is john@example.com"}}]
+Existing for fact 0: [{{"id": "0", "text": "User's email is john@example.com"}}]
+→ Decision: SKIP (already captured exactly)
+
+Facts: [{{"index": 0, "text": "User lives in Berlin"}}]
+Existing for fact 0: [{{"id": "0", "text": "User lives in Prague"}}]
+→ Decision: UPDATE target_id="0" (same subject, new information)
+
+Facts: [{{"index": 0, "text": "User has a cat named Luna"}}]
+Existing for fact 0: []
+→ Decision: ADD (no existing memories match)
+
+Facts: [{{"index": 0, "text": "User works at Google"}}]
+Existing for fact 0: [{{"id": "0", "text": "User is a software engineer at Google"}}]
+→ Decision: SKIP (the existing memory already captures that User works at Google, \
+with even more detail)
+
+## Output Format
+
+Return a JSON object with a "decisions" array. Each entry must have ALL
+fields: fact_index, action, target_id, text.
+
+Return ONLY the JSON object. No explanation, no markdown."""
+
+
+DEDUP_SCHEMA: dict[str, Any] = {
+    "name": "memory_dedup",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "required": ["decisions"],
+        "additionalProperties": False,
+        "properties": {
+            "decisions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["fact_index", "action", "target_id", "text"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "fact_index": {
+                            "type": "integer",
+                            "description": (
+                                "Index of the fact in the input list (0-based)"
+                            ),
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["ADD", "UPDATE", "DELETE", "SKIP"],
+                        },
+                        "target_id": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "ID of existing memory for UPDATE/DELETE, "
+                                "null for ADD/SKIP"
+                            ),
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": (
+                                "Final memory text. For ADD: the extracted "
+                                "fact. For UPDATE: the merged/updated text. "
+                                "For DELETE/SKIP: the existing memory text."
+                            ),
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def build_dedup_prompt(
+    facts_with_candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], dict[str, Any], dict[str, str]]:
+    """Build the Stage 2 dedup prompt.
+
+    Each fact is paired with its similar existing memories from Qdrant.
+
+    Args:
+        facts_with_candidates: List of dicts, each with:
+            - "index": int (fact index)
+            - "text": str (extracted fact text)
+            - "candidates": list of dicts with "id", "text", "score"
+
+    Returns:
+        Tuple of (messages, json_schema, id_mapping).
+        id_mapping maps integer string IDs to real UUIDs.
+    """
+    id_mapping: dict[str, str] = {}
+    id_counter = 0
+
+    parts = []
+    for item in facts_with_candidates:
+        idx = item["index"]
+        text = item["text"]
+        candidates = item.get("candidates", [])
+
+        # Use json.dumps for safe escaping of text content
+        fact_line = f"Fact {idx}: {json.dumps(text)}"
+
+        if candidates:
+            cand_mapped = []
+            for cand in candidates:
+                str_id = str(id_counter)
+                id_mapping[str_id] = cand["id"]
+                cand_mapped.append(
+                    {
+                        "id": str_id,
+                        "text": cand.get("memory", cand.get("text", "")),
+                        "score": round(cand.get("score", 0), 2),
+                    }
+                )
+                id_counter += 1
+            cand_text = json.dumps(cand_mapped, indent=2)
+            parts.append(f"{fact_line}\nSimilar existing memories:\n{cand_text}")
+        else:
+            parts.append(f"{fact_line}\nSimilar existing memories: none")
+
+    user_content = "\n\n".join(parts)
+
+    system_prompt = _DEDUP_SYSTEM_PROMPT.format(
+        anti_injection=ANTI_INJECTION_PREAMBLE,
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    return messages, DEDUP_SCHEMA, id_mapping
+
+
+def parse_dedup_response(
+    response_text: str,
+    id_mapping: dict[str, str],
+    facts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], set[int]]:
+    """Parse Stage 2 dedup response.
+
+    Maps integer IDs back to real UUIDs and merges dedup decisions
+    with the original fact metadata from Stage 1.
+
+    Args:
+        response_text: Raw JSON string from the LLM.
+        id_mapping: Mapping from integer IDs to real UUIDs.
+        facts: Original facts from Stage 1 (for metadata).
+
+    Returns:
+        Tuple of (actions, decided_indices) where:
+        - actions: List of action dicts compatible with _execute_action(),
+          each with: text, action, target_id, old_memory, memory_type,
+          categories, importance, pinned, event_date.
+          SKIP actions are filtered out of this list.
+        - decided_indices: Set of all fact_index values the LLM addressed
+          (including SKIPs), used to detect unmentioned facts.
+    """
+    from mnemory.llm import parse_json_response
+
+    try:
+        data = parse_json_response(response_text)
+    except ValueError:
+        logger.warning("Failed to parse dedup response, returning empty list")
+        return [], set()
+
+    raw_decisions = data.get("decisions", [])
+    if not isinstance(raw_decisions, list):
+        logger.warning("'decisions' is not a list in dedup response")
+        return [], set()
+
+    # Build fact index lookup
+    fact_by_index = {i: f for i, f in enumerate(facts)}
+
+    results = []
+    decided_indices: set[int] = set()
+
+    for entry in raw_decisions:
+        if not isinstance(entry, dict):
+            continue
+
+        action = entry.get("action", "").upper()
+        fact_index = entry.get("fact_index")
+        text = entry.get("text", "").strip()
+
+        # Track all fact indices the LLM addressed (including SKIPs)
+        if isinstance(fact_index, int):
+            decided_indices.add(fact_index)
+
+        # Skip SKIP actions (but we already tracked the index above)
+        if action == "SKIP" or not text:
+            continue
+
+        if action not in ("ADD", "UPDATE", "DELETE"):
+            logger.warning("Invalid action '%s' in dedup response, skipping", action)
+            continue
+
+        # Map target_id back to real UUID
+        target_id = None
+        if action in ("UPDATE", "DELETE"):
+            raw_target = entry.get("target_id")
+            if raw_target is not None:
+                raw_target = str(raw_target)
+                target_id = id_mapping.get(raw_target)
+                if target_id is None:
+                    logger.warning(
+                        "Unknown target_id '%s' in dedup response, skipping %s action",
+                        raw_target,
+                        action,
+                    )
+                    continue
+            else:
+                logger.warning("%s action without target_id, skipping", action)
+                continue
+
+        # Get metadata from the original Stage 1 fact
+        fact = fact_by_index.get(fact_index, {}) if fact_index is not None else {}
+
+        results.append(
+            {
+                "text": text,
+                "action": action,
+                "target_id": target_id,
+                "old_memory": None,
+                "memory_type": fact.get("memory_type", "fact"),
+                "categories": fact.get("categories", []),
+                "importance": fact.get("importance", "normal"),
+                "pinned": fact.get("pinned", False),
+                "event_date": fact.get("event_date"),
+            }
+        )
+
+    return results, decided_indices
+
+
+# ── Summary compaction prompt ────────────────────────────────────────
+
+_SUMMARY_COMPACTION_PROMPT = """\
+{anti_injection}
+
+Condense the following conversation summary into a shorter version.
+
+CRITICAL: Preserve ALL of the following:
+- The user's original motivation/intent for the conversation
+- All key decisions and outcomes
+- All named entities (people, projects, tools, places)
+- Important context needed to understand future exchanges
+- Chronological flow of the conversation
+
+Do NOT lose any important information. Compress by removing redundancy
+and verbose phrasing, not by dropping content.
+
+Return ONLY the condensed summary text. No explanation, no markdown."""
+
+
+SUMMARY_COMPACTION_SCHEMA: dict[str, Any] = {
+    "name": "summary_compaction",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "required": ["summary"],
+        "additionalProperties": False,
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "The condensed conversation summary",
+            },
+        },
+    },
+}
+
+
+def build_summary_compaction_prompt(
+    summary: str,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Build prompt to compact a conversation summary.
+
+    Used when the running summary exceeds the compaction threshold.
+
+    Args:
+        summary: The current (too long) conversation summary.
+
+    Returns:
+        Tuple of (messages, json_schema) for the LLM call.
+    """
+    system_prompt = _SUMMARY_COMPACTION_PROMPT.format(
+        anti_injection=ANTI_INJECTION_PREAMBLE,
+    )
+    user_content = wrap_with_boundary(summary, "summary")
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+    return messages, SUMMARY_COMPACTION_SCHEMA
 
 
 # ── Fsck (memory consistency check) prompts ──────────────────────────

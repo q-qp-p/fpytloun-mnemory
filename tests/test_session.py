@@ -194,3 +194,141 @@ class TestSessionStore:
         store.add_known_ids(s2.session_id, {"mem-2"})
         assert store.get_known_ids(s1.session_id) == {"mem-1"}
         assert store.get_known_ids(s2.session_id) == {"mem-2"}
+
+
+class TestSessionStoreRememberContext:
+    """Test remember pipeline context methods on SessionStore."""
+
+    def test_add_extracted_memories(self):
+        """Should append extracted memory texts to session."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.add_extracted_memories(session.session_id, ["fact A", "fact B"])
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx["extracted_memories"] == ["fact A", "fact B"]
+
+    def test_add_extracted_memories_accumulates(self):
+        """Multiple calls should accumulate texts."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.add_extracted_memories(session.session_id, ["fact A"])
+        store.add_extracted_memories(session.session_id, ["fact B", "fact C"])
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx["extracted_memories"] == ["fact A", "fact B", "fact C"]
+
+    def test_add_extracted_memories_fifo_eviction(self):
+        """Should evict oldest entries when exceeding max_entries."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.add_extracted_memories(
+            session.session_id, [f"fact-{i}" for i in range(10)], max_entries=5
+        )
+        ctx = store.get_remember_context(session.session_id)
+        assert len(ctx["extracted_memories"]) == 5
+        # Should keep the most recent 5
+        assert ctx["extracted_memories"] == [f"fact-{i}" for i in range(5, 10)]
+
+    def test_add_extracted_memories_empty_list_noop(self):
+        """Empty list should be a no-op."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.add_extracted_memories(session.session_id, [])
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx["extracted_memories"] == []
+
+    def test_add_extracted_memories_nonexistent_session(self):
+        """Adding to nonexistent session should be a no-op."""
+        store = SessionStore()
+        store.add_extracted_memories("nonexistent", ["fact A"])
+        # Should not raise
+
+    def test_append_summary(self):
+        """Should append turn summary to session."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.append_summary(session.session_id, "Turn 1 summary")
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx["conversation_summary"] == "Turn 1 summary"
+
+    def test_append_summary_accumulates(self):
+        """Multiple appends should join with newlines."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.append_summary(session.session_id, "Turn 1 summary")
+        store.append_summary(session.session_id, "Turn 2 summary")
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx["conversation_summary"] == "Turn 1 summary\nTurn 2 summary"
+
+    def test_append_summary_strips_whitespace(self):
+        """Should strip whitespace from turn summaries."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.append_summary(session.session_id, "  Turn 1  ")
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx["conversation_summary"] == "Turn 1"
+
+    def test_append_summary_empty_noop(self):
+        """Empty or whitespace-only summary should be a no-op."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.append_summary(session.session_id, "")
+        store.append_summary(session.session_id, "   ")
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx["conversation_summary"] == ""
+
+    def test_append_summary_nonexistent_session(self):
+        """Appending to nonexistent session should be a no-op."""
+        store = SessionStore()
+        store.append_summary("nonexistent", "Turn 1 summary")
+        # Should not raise
+
+    def test_set_summary(self):
+        """Should replace the conversation summary."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.append_summary(session.session_id, "Turn 1")
+        store.append_summary(session.session_id, "Turn 2")
+        store.set_summary(session.session_id, "Compacted summary")
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx["conversation_summary"] == "Compacted summary"
+
+    def test_set_summary_nonexistent_session(self):
+        """Setting summary on nonexistent session should be a no-op."""
+        store = SessionStore()
+        store.set_summary("nonexistent", "summary")
+        # Should not raise
+
+    def test_get_remember_context_empty(self):
+        """Fresh session should return empty context."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx == {"extracted_memories": [], "conversation_summary": ""}
+
+    def test_get_remember_context_nonexistent(self):
+        """Nonexistent session should return empty context."""
+        store = SessionStore()
+        ctx = store.get_remember_context("nonexistent")
+        assert ctx == {"extracted_memories": [], "conversation_summary": ""}
+
+    def test_get_remember_context_returns_copy(self):
+        """Returned extracted_memories should be a copy, not a reference."""
+        store = SessionStore()
+        session = store.create(user_id="filip")
+        store.add_extracted_memories(session.session_id, ["fact A"])
+        ctx = store.get_remember_context(session.session_id)
+        ctx["extracted_memories"].append("injected")
+        # Original should be unaffected
+        ctx2 = store.get_remember_context(session.session_id)
+        assert ctx2["extracted_memories"] == ["fact A"]
+
+    def test_expired_session_returns_empty_context(self):
+        """Expired session should return empty context."""
+        store = SessionStore(default_ttl=1)
+        session = store.create(user_id="filip")
+        store.add_extracted_memories(session.session_id, ["fact A"])
+        store.append_summary(session.session_id, "Turn 1")
+        # Manually expire
+        session.last_accessed = datetime.now(timezone.utc) - timedelta(seconds=2)
+        ctx = store.get_remember_context(session.session_id)
+        assert ctx == {"extracted_memories": [], "conversation_summary": ""}

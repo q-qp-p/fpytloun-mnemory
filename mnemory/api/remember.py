@@ -125,6 +125,7 @@ def _process_remember(
             content=content,
             user_id=user_id,
             agent_id=agent_id,
+            session_id=session_id,
             session_timezone=timezone,
             context=context,
         )

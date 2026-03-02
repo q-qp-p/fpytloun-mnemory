@@ -39,6 +39,9 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.find_memories_queries = 5
     # Auto-artifact threshold for remember()
     mock_config.memory.remember_artifact_threshold = 4000
+    # Remember pipeline session config
+    mock_config.memory.remember_max_session_memories = 50
+    mock_config.memory.remember_summary_compaction_threshold = 10000
     # Input length cap
     mock_config.memory.max_input_length = 400000
     # Core memories: top-N non-pinned memories
@@ -4492,6 +4495,321 @@ class TestRemember:
 
         assert result["results"] == []
         service.vector.insert.assert_not_called()
+
+
+class TestRememberTwoStagePipeline:
+    """Test the two-stage remember pipeline (extract → dedup)."""
+
+    def _make_extraction_response(
+        self, facts, summary="Turn summary.", store_artifact=False
+    ):
+        """Build a Stage 1 extraction LLM response."""
+        import json
+
+        return json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": f["text"],
+                        "memory_type": f.get("memory_type", "fact"),
+                        "categories": f.get("categories", ["personal"]),
+                        "importance": f.get("importance", "normal"),
+                        "pinned": f.get("pinned", False),
+                    }
+                    for f in facts
+                ],
+                "summary": summary,
+                "store_artifact": store_artifact,
+            }
+        )
+
+    def _make_dedup_response(self, decisions):
+        """Build a Stage 2 dedup LLM response."""
+        import json
+
+        return json.dumps({"decisions": decisions})
+
+    def test_two_stage_with_dedup_candidates(self):
+        """When dedup candidates exist, Stage 2 LLM should be called."""
+
+        service = _make_service()
+
+        # Stage 1 extraction response
+        extraction_resp = self._make_extraction_response(
+            [{"text": "User lives in Prague"}]
+        )
+        # Stage 2 dedup response — SKIP because it already exists
+        dedup_resp = self._make_dedup_response(
+            [{"fact_index": 0, "action": "SKIP", "text": "User lives in Prague"}]
+        )
+
+        # LLM called twice: extraction then dedup
+        service._llm.generate.side_effect = [extraction_resp, dedup_resp]
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        # Return a candidate above dedup threshold
+        service.vector.search_similar.return_value = [
+            {
+                "id": "existing-1",
+                "memory": "User lives in Prague",
+                "score": 0.95,
+                "metadata": {},
+            }
+        ]
+
+        result = service.remember(
+            content="I live in Prague",
+            user_id="filip",
+        )
+
+        assert result.get("error") is None
+        assert result["results"] == []  # SKIP means nothing stored
+        assert service._llm.generate.call_count == 2
+
+    def test_two_stage_no_candidates_skips_dedup_llm(self):
+        """When no dedup candidates, Stage 2 LLM should NOT be called."""
+        service = _make_service()
+
+        extraction_resp = self._make_extraction_response(
+            [{"text": "User likes hiking"}]
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = []  # No candidates
+        service.vector.insert.return_value = "mem-1"
+
+        result = service.remember(
+            content="I enjoy hiking in the mountains",
+            user_id="filip",
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        # Only 1 LLM call (extraction), no dedup call
+        assert service._llm.generate.call_count == 1
+
+    def test_dedup_update_action(self):
+        """UPDATE action from dedup should update existing memory."""
+
+        service = _make_service()
+
+        extraction_resp = self._make_extraction_response(
+            [{"text": "User drives a Tesla"}]
+        )
+        dedup_resp = self._make_dedup_response(
+            [
+                {
+                    "fact_index": 0,
+                    "action": "UPDATE",
+                    "text": "User drives a Tesla (previously Skoda)",
+                    "target_id": 0,
+                }
+            ]
+        )
+
+        service._llm.generate.side_effect = [extraction_resp, dedup_resp]
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = [
+            {
+                "id": "existing-car",
+                "memory": "User drives a Skoda",
+                "score": 0.85,
+                "metadata": {},
+            }
+        ]
+        service.vector.embedding.embed.return_value = [0.2] * 1536
+
+        result = service.remember(
+            content="I just bought a Tesla, sold my Skoda",
+            user_id="filip",
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        assert result["results"][0]["event"] == "UPDATE"
+
+    def test_unmentioned_facts_default_to_add(self):
+        """Facts not mentioned in dedup response should default to ADD."""
+
+        service = _make_service()
+
+        extraction_resp = self._make_extraction_response(
+            [
+                {"text": "User likes Python"},
+                {"text": "User likes Rust"},
+                {"text": "User likes Go"},
+            ]
+        )
+        # Dedup only mentions fact 0, skips 1 and 2
+        dedup_resp = self._make_dedup_response(
+            [{"fact_index": 0, "action": "SKIP", "text": "User likes Python"}]
+        )
+
+        service._llm.generate.side_effect = [extraction_resp, dedup_resp]
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536 for _ in range(3)
+        ]
+        service.vector.search_similar.return_value = [
+            {
+                "id": "existing-1",
+                "memory": "User likes Python",
+                "score": 0.95,
+                "metadata": {},
+            }
+        ]
+        service.vector.insert.side_effect = ["mem-1", "mem-2"]
+
+        result = service.remember(
+            content="I like Python, Rust, and Go",
+            user_id="filip",
+        )
+
+        assert result.get("error") is None
+        # Fact 0 was SKIPped, facts 1 and 2 should be ADDed
+        assert len(result["results"]) == 2
+        assert all(r["event"] == "ADD" for r in result["results"])
+
+    def test_oversized_fact_truncated(self):
+        """Oversized facts from extraction should be truncated."""
+        service = _make_service()
+        max_len = service._config.memory.max_memory_length  # 1000
+
+        # Create a fact that exceeds max_memory_length
+        long_text = "x" * (max_len + 500)
+        extraction_resp = self._make_extraction_response([{"text": long_text}])
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.return_value = "mem-1"
+
+        result = service.remember(
+            content="Some very long content",
+            user_id="filip",
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        # The stored memory should be truncated to max_len
+        stored_text = result["results"][0]["memory"]
+        assert len(stored_text) <= max_len
+
+    def test_session_context_passed_to_extraction(self):
+        """Session context should be passed to the extraction prompt."""
+        from mnemory.session import SessionStore
+
+        service = _make_service()
+        store = SessionStore()
+        service._session_store = store
+
+        session = store.create(user_id="filip")
+        store.add_extracted_memories(session.session_id, ["User likes Python"])
+        store.append_summary(session.session_id, "Discussed programming.")
+
+        extraction_resp = self._make_extraction_response(
+            [{"text": "User also likes Rust"}],
+            summary="Also discussed Rust.",
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.return_value = "mem-1"
+
+        result = service.remember(
+            content="I also like Rust",
+            user_id="filip",
+            session_id=session.session_id,
+        )
+
+        assert result.get("error") is None
+        # Verify extraction LLM was called with session context in the prompt
+        call_args = service._llm.generate.call_args_list[0]
+        messages = call_args[0][0]
+        system_prompt = messages[0]["content"]
+        assert "User likes Python" in system_prompt
+        assert "Discussed programming" in system_prompt
+
+    def test_session_context_updated_after_remember(self):
+        """Session context should be updated after successful remember."""
+        from mnemory.session import SessionStore
+
+        service = _make_service()
+        store = SessionStore()
+        service._session_store = store
+
+        session = store.create(user_id="filip")
+
+        extraction_resp = self._make_extraction_response(
+            [{"text": "User likes hiking"}],
+            summary="Discussed outdoor activities.",
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.return_value = "mem-1"
+
+        service.remember(
+            content="I enjoy hiking",
+            user_id="filip",
+            session_id=session.session_id,
+        )
+
+        ctx = store.get_remember_context(session.session_id)
+        assert "User likes hiking" in ctx["extracted_memories"]
+        assert "Discussed outdoor activities" in ctx["conversation_summary"]
+
+    def test_session_context_updated_even_on_empty_extraction(self):
+        """Session summary should be updated even when no facts extracted."""
+        from mnemory.session import SessionStore
+
+        service = _make_service()
+        store = SessionStore()
+        service._session_store = store
+
+        session = store.create(user_id="filip")
+
+        extraction_resp = self._make_extraction_response(
+            [],
+            summary="User greeted the assistant.",
+        )
+
+        service._llm.generate.return_value = extraction_resp
+
+        result = service.remember(
+            content="Hi, how are you?",
+            user_id="filip",
+            session_id=session.session_id,
+        )
+
+        assert result["results"] == []
+        ctx = store.get_remember_context(session.session_id)
+        assert "User greeted" in ctx["conversation_summary"]
+
+    def test_per_user_lock_serialization(self):
+        """Per-user lock should be created and reused."""
+        service = _make_service()
+        lock1 = service._get_user_lock("filip")
+        lock2 = service._get_user_lock("filip")
+        assert lock1 is lock2  # Same lock object
+
+        lock3 = service._get_user_lock("other-user")
+        assert lock3 is not lock1  # Different user, different lock
+
+    def test_user_lock_eviction(self):
+        """User locks should be evicted when exceeding max limit."""
+        service = _make_service()
+        service._max_user_locks = 3
+
+        service._get_user_lock("user1")
+        service._get_user_lock("user2")
+        service._get_user_lock("user3")
+        # This should evict user1
+        service._get_user_lock("user4")
+
+        assert "user1" not in service._user_locks
+        assert "user4" in service._user_locks
 
 
 class TestMNArtifactLinking:

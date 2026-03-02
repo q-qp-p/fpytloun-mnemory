@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -30,11 +31,16 @@ from mnemory.config import Config
 from mnemory.llm import LLMClient, parse_json_response
 from mnemory.prompts import (
     build_classification_prompt,
+    build_dedup_prompt,
     build_extraction_prompt,
     build_query_generation_prompt,
+    build_remember_extraction_prompt,
     build_rerank_prompt,
     build_shorten_prompt,
+    build_summary_compaction_prompt,
+    parse_dedup_response,
     parse_extraction_response,
+    parse_remember_extraction_response,
 )
 from mnemory.sanitize import (
     CORE_MEMORIES_PREAMBLE,
@@ -232,7 +238,11 @@ class MemoryService:
     Slow memory: detailed artifacts in S3/filesystem (retrieved on demand).
     """
 
-    def __init__(self, config: Config):
+    def __init__(
+        self,
+        config: Config,
+        session_store: Any | None = None,
+    ):
         self._config = config
         self._llm = LLMClient(config.llm)
         self.vector = VectorStore(config)
@@ -246,6 +256,18 @@ class MemoryService:
         self._core_cache: TTLCache[tuple, str] = TTLCache(
             ttl_seconds=config.memory.core_memories_cache_ttl,
         )
+
+        # Session store for remember pipeline context (optional).
+        # When set, remember() uses session context for better extraction
+        # and dedup. When None, remember() falls back to stateless mode.
+        self._session_store = session_store
+
+        # Per-user lock for serializing concurrent remember calls.
+        # Prevents race conditions where two calls search before either
+        # writes, causing both to ADD the same fact.
+        self._user_locks: dict[str, threading.Lock] = {}
+        self._locks_lock = threading.Lock()
+        self._max_user_locks = 1000
 
     # ── Add Memory ────────────────────────────────────────────────────
 
@@ -392,19 +414,29 @@ class MemoryService:
         user_id: str,
         agent_id: str | None = None,
         role: str = "user",
+        session_id: str | None = None,
         session_timezone: str | None = None,
         context: str | None = None,
     ) -> dict:
         """Process conversation content for memory extraction.
+
+        Uses a two-stage pipeline:
+        1. Extract facts from conversation text (with session context)
+        2. Dedup each extracted fact against stored memories (per-fact
+           embedding for accurate similarity search)
 
         Unlike add_memory, this method:
         - Accepts longer input (conversation turns) without MAX_MEMORY_LENGTH
           check on input
         - Auto-classifies everything (no explicit metadata)
         - Uses REMEMBER_ARTIFACT_THRESHOLD for auto-artifact decisions
+        - Maintains session context (conversation summary + extracted facts)
         - Designed for fire-and-forget background processing from plugins
 
         Args:
+            session_id: Session ID for context tracking. When provided,
+                the pipeline uses accumulated conversation context from
+                previous remember calls in the same session.
             context: Optional context hint (e.g., working directory, active
                 project). Passed to the extraction prompt to help identify
                 the project and produce self-contained memories.
@@ -426,30 +458,467 @@ class MemoryService:
         if len(content) > max_input:
             content = content[-max_input:]
 
-        # Determine artifact threshold (0 = disabled)
-        artifact_threshold = self._config.memory.remember_artifact_threshold
-
-        result = self._add_with_inference(
-            content,
-            user_id=user_id,
-            agent_id=agent_id,
-            memory_type=None,
-            categories=None,
-            importance=None,
-            pinned=None,
-            role=role,
-            ttl_days=None,
-            event_date=None,
-            artifact_threshold=artifact_threshold,
-            session_timezone=session_timezone,
-            context=context,
-        )
+        # Acquire per-user lock to serialize concurrent remember calls.
+        # This prevents race conditions where two calls search before
+        # either writes, causing both to ADD the same fact.
+        lock = self._get_user_lock(user_id)
+        with lock:
+            result = self._remember_pipeline(
+                content,
+                user_id=user_id,
+                agent_id=agent_id,
+                role=role,
+                session_id=session_id,
+                session_timezone=session_timezone,
+                context=context,
+            )
 
         # Invalidate caches
         self._core_cache.invalidate_prefix(user_id)
         self._category_cache.invalidate(user_id)
 
         return result
+
+    def _get_user_lock(self, user_id: str) -> threading.Lock:
+        """Get or create a per-user lock for serializing remember calls."""
+        with self._locks_lock:
+            lock = self._user_locks.get(user_id)
+            if lock is None:
+                # Evict oldest entries if over limit
+                if len(self._user_locks) >= self._max_user_locks:
+                    # Remove first entry (oldest insertion in CPython 3.7+)
+                    oldest_key = next(iter(self._user_locks))
+                    del self._user_locks[oldest_key]
+                lock = threading.Lock()
+                self._user_locks[user_id] = lock
+            return lock
+
+    def _remember_pipeline(
+        self,
+        content: str,
+        *,
+        user_id: str,
+        agent_id: str | None,
+        role: str,
+        session_id: str | None,
+        session_timezone: str | None,
+        context: str | None,
+    ) -> dict:
+        """Two-stage remember pipeline: extract then dedup.
+
+        Stage 1: Extract facts from conversation text with session context.
+        Stage 2: Dedup each fact against stored memories using per-fact
+                 embeddings for accurate similarity search.
+        """
+        # 1. Get session context (if available)
+        session_context: dict[str, Any] | None = None
+        if session_id and self._session_store:
+            session_context = self._session_store.get_remember_context(session_id)
+            # Empty context is equivalent to no context
+            if session_context and not (
+                session_context.get("extracted_memories")
+                or session_context.get("conversation_summary")
+            ):
+                session_context = None
+
+        # 2. Stage 1: Extract facts from conversation
+        available_cats = self._get_available_categories(user_id)
+        max_len = self._config.memory.max_memory_length
+
+        facts, summary, store_artifact = self._remember_extract(
+            content,
+            session_context=session_context,
+            available_categories=available_cats,
+            max_memory_length=max_len,
+            session_timezone=session_timezone,
+            context=context,
+        )
+
+        if not facts:
+            # Still update session with summary even if no facts extracted
+            self._update_session_context(session_id, [], summary)
+            return {"results": []}
+
+        # 2b. Truncate any oversized facts (the extraction prompt already
+        # constrains length via max_length, so this is a rare safety net).
+        # We skip _validate_fact_lengths here because its split logic can
+        # change the list length, breaking the 1:1 correspondence with facts.
+        for f in facts:
+            if len(f["text"]) > max_len:
+                logger.warning(
+                    "Remember extraction produced oversized fact (%d chars, "
+                    "max %d), truncating: %.80s...",
+                    len(f["text"]),
+                    max_len,
+                    f["text"],
+                )
+                f["text"] = f["text"][:max_len]
+
+        # 3. Stage 2: Dedup + Store
+        results = self._remember_dedup_and_store(
+            facts,
+            user_id=user_id,
+            agent_id=agent_id,
+            role=role,
+        )
+
+        # 4. Update session context
+        extracted_texts = [f["text"] for f in facts]
+        self._update_session_context(session_id, extracted_texts, summary)
+
+        # 5. Auto-artifact
+        artifact_threshold = self._config.memory.remember_artifact_threshold
+        response: dict[str, Any] = {"results": results}
+        artifact_info = self._maybe_create_auto_artifact(
+            store_artifact=store_artifact,
+            content=content,
+            user_id=user_id,
+            results=results,
+            threshold=artifact_threshold,
+        )
+        if artifact_info:
+            response["artifact"] = artifact_info
+
+        return response
+
+    def _remember_extract(
+        self,
+        content: str,
+        *,
+        session_context: dict[str, Any] | None,
+        available_categories: list[str],
+        max_memory_length: int,
+        session_timezone: str | None,
+        context: str | None,
+    ) -> tuple[list[dict[str, Any]], str, bool]:
+        """Stage 1: Extract facts from conversation text.
+
+        Returns:
+            Tuple of (facts, summary, store_artifact).
+            facts: list of dicts with text, memory_type, categories,
+                   importance, pinned, event_date.
+            summary: turn summary for session context.
+            store_artifact: whether to save original as artifact.
+        """
+        messages, json_schema = build_remember_extraction_prompt(
+            content,
+            session_context=session_context,
+            available_categories=available_categories,
+            max_memory_length=max_memory_length,
+            session_timezone=session_timezone,
+            context=context,
+        )
+
+        try:
+            response_text = self._llm.generate(
+                messages,
+                json_schema=json_schema,
+                max_tokens=2000,
+            )
+        except Exception:
+            logger.exception("Remember extraction LLM call failed")
+            return [], "", False
+
+        logger.debug("Remember extraction response: %s", response_text)
+
+        facts, summary, store_artifact = parse_remember_extraction_response(
+            response_text
+        )
+
+        logger.info(
+            "Remember Stage 1: extracted %d facts, summary=%d chars",
+            len(facts),
+            len(summary),
+        )
+
+        return facts, summary, store_artifact
+
+    def _remember_dedup_and_store(
+        self,
+        facts: list[dict[str, Any]],
+        *,
+        user_id: str,
+        agent_id: str | None,
+        role: str,
+    ) -> list[dict[str, Any]]:
+        """Stage 2: Dedup extracted facts against stored memories and store.
+
+        For each fact:
+        1. Embed the fact text (batch)
+        2. Search Qdrant for similar existing memories
+        3. If any facts have candidates: LLM dedup call
+        4. Execute actions (ADD/UPDATE/DELETE)
+
+        Returns list of result dicts from _execute_action.
+        """
+        # 1. Batch embed all fact texts
+        fact_texts = [f["text"] for f in facts]
+        try:
+            vectors = self.vector.embedding.embed_batch(fact_texts)
+        except Exception:
+            logger.exception("Remember dedup: batch embedding failed")
+            return []
+        fact_vectors = dict(zip(fact_texts, vectors))
+
+        # 2. Per-fact similarity search
+        dedup_threshold = self._config.memory.dedup_similarity_threshold
+        facts_with_candidates: list[dict[str, Any]] = []
+        has_any_candidates = False
+
+        for i, fact in enumerate(facts):
+            vector = fact_vectors.get(fact["text"])
+            if vector is None:
+                facts_with_candidates.append(
+                    {"index": i, "text": fact["text"], "candidates": []}
+                )
+                continue
+
+            # Search for similar existing memories using the fact's embedding
+            existing_raw = self.vector.search_similar(
+                vector,
+                user_id=user_id,
+                agent_id=agent_id,
+                limit=5,
+            )
+            # Dual-scope: also check shared memories when agent_id is set
+            if agent_id:
+                shared_raw = self.vector.search_similar(
+                    vector,
+                    user_id=user_id,
+                    agent_id=None,
+                    shared_only=True,
+                    limit=5,
+                )
+                seen_ids: set[str] = set()
+                merged: list[dict[str, Any]] = []
+                for mem in sorted(
+                    existing_raw + shared_raw,
+                    key=lambda m: m.get("score", 0),
+                    reverse=True,
+                ):
+                    mid = mem.get("id")
+                    if mid and mid not in seen_ids:
+                        seen_ids.add(mid)
+                        merged.append(mem)
+                existing_raw = merged[:5]
+
+            # Filter by dedup threshold
+            candidates = [
+                m for m in existing_raw if m.get("score", 0) >= dedup_threshold
+            ]
+
+            if candidates:
+                has_any_candidates = True
+
+            facts_with_candidates.append(
+                {"index": i, "text": fact["text"], "candidates": candidates}
+            )
+
+        # 3. Dedup decision
+        if has_any_candidates:
+            # Build dedup prompt and make LLM call
+            actions = self._dedup_with_llm(facts_with_candidates, facts)
+        else:
+            # No candidates for any fact — all are new, skip LLM call
+            logger.debug(
+                "Remember Stage 2: no dedup candidates, adding all %d facts",
+                len(facts),
+            )
+            actions = [
+                {
+                    "text": f["text"],
+                    "action": "ADD",
+                    "target_id": None,
+                    "old_memory": None,
+                    "memory_type": f["memory_type"],
+                    "categories": f["categories"],
+                    "importance": f["importance"],
+                    "pinned": f["pinned"],
+                    "event_date": f.get("event_date"),
+                }
+                for f in facts
+            ]
+
+        if not actions:
+            return []
+
+        # 4. Build vector map for execution (reuse embeddings from step 1)
+        vector_map = fact_vectors
+
+        # 5. Execute actions
+        results = []
+        for action in actions:
+            try:
+                result_entry = self._execute_action(
+                    action,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    role=role,
+                    ttl_days=None,
+                    explicit_fields={},
+                    vector_map=vector_map,
+                    event_date=None,
+                )
+                if result_entry:
+                    results.append(result_entry)
+            except Exception:
+                logger.exception(
+                    "Failed to execute %s action in remember pipeline",
+                    action["action"],
+                )
+
+        logger.info(
+            "Remember Stage 2: executed %d actions (%s)",
+            len(results),
+            [r.get("event") for r in results],
+        )
+
+        return results
+
+    def _dedup_with_llm(
+        self,
+        facts_with_candidates: list[dict[str, Any]],
+        facts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Make a single LLM call for dedup decisions.
+
+        Returns list of action dicts compatible with _execute_action.
+        Falls back to ADD-all on LLM failure.
+        """
+        messages, json_schema, id_mapping = build_dedup_prompt(facts_with_candidates)
+
+        try:
+            response_text = self._llm.generate(
+                messages,
+                json_schema=json_schema,
+                max_tokens=2000,
+            )
+        except Exception:
+            logger.exception("Remember dedup LLM call failed, falling back to ADD-all")
+            return [
+                {
+                    "text": f["text"],
+                    "action": "ADD",
+                    "target_id": None,
+                    "old_memory": None,
+                    "memory_type": f["memory_type"],
+                    "categories": f["categories"],
+                    "importance": f["importance"],
+                    "pinned": f["pinned"],
+                    "event_date": f.get("event_date"),
+                }
+                for f in facts
+            ]
+
+        logger.debug("Remember dedup response: %s", response_text)
+
+        actions, decided_indices = parse_dedup_response(
+            response_text, id_mapping, facts
+        )
+
+        # For facts not mentioned in the dedup response, default to ADD
+        for i, f in enumerate(facts):
+            if i not in decided_indices:
+                logger.debug(
+                    "Remember dedup: fact %d not in response, defaulting to ADD",
+                    i,
+                )
+                actions.append(
+                    {
+                        "text": f["text"],
+                        "action": "ADD",
+                        "target_id": None,
+                        "old_memory": None,
+                        "memory_type": f["memory_type"],
+                        "categories": f["categories"],
+                        "importance": f["importance"],
+                        "pinned": f["pinned"],
+                        "event_date": f.get("event_date"),
+                    }
+                )
+
+        return actions
+
+    def _update_session_context(
+        self,
+        session_id: str | None,
+        extracted_texts: list[str],
+        summary: str,
+    ) -> None:
+        """Update session with extracted memories and conversation summary.
+
+        Also handles summary compaction when the summary exceeds the
+        configured threshold.
+        """
+        if not session_id or not self._session_store:
+            return
+
+        try:
+            max_memories = self._config.memory.remember_max_session_memories
+            if extracted_texts:
+                self._session_store.add_extracted_memories(
+                    session_id, extracted_texts, max_entries=max_memories
+                )
+
+            if summary:
+                self._session_store.append_summary(session_id, summary)
+
+                # Check if compaction is needed
+                compaction_threshold = (
+                    self._config.memory.remember_summary_compaction_threshold
+                )
+                if compaction_threshold > 0:
+                    ctx = self._session_store.get_remember_context(session_id)
+                    current_summary = ctx.get("conversation_summary", "")
+                    if len(current_summary) > compaction_threshold:
+                        self._compact_summary(session_id, current_summary)
+
+        except Exception:
+            logger.warning(
+                "Failed to update session context for %s",
+                session_id,
+                exc_info=True,
+            )
+
+    def _compact_summary(self, session_id: str, summary: str) -> None:
+        """Compact a conversation summary that exceeds the threshold.
+
+        Makes an LLM call to condense the summary. On failure, keeps
+        the original (never replaces with a failed result).
+        """
+        logger.info(
+            "Compacting conversation summary (%d chars) for session %s",
+            len(summary),
+            session_id,
+        )
+
+        messages, json_schema = build_summary_compaction_prompt(summary)
+
+        try:
+            response_text = self._llm.generate(
+                messages,
+                json_schema=json_schema,
+                max_tokens=2000,
+            )
+            data = parse_json_response(response_text)
+            compacted = str(data.get("summary", "")).strip()
+
+            if compacted and len(compacted) < len(summary):
+                self._session_store.set_summary(session_id, compacted)
+                logger.info(
+                    "Summary compacted: %d -> %d chars",
+                    len(summary),
+                    len(compacted),
+                )
+            else:
+                logger.warning(
+                    "Summary compaction produced no improvement, keeping original"
+                )
+        except Exception:
+            logger.warning(
+                "Summary compaction failed, keeping original",
+                exc_info=True,
+            )
 
     def _add_with_inference(
         self,

@@ -351,6 +351,20 @@ class MemoryConfig:
         default_factory=lambda: _env_int("REMEMBER_RATE_LIMIT", 10)
     )
 
+    # Remember session context limits.
+    # Max extracted memory texts kept in session (FIFO eviction).
+    # Older entries are still findable via Stage 2's per-fact vector search.
+    remember_max_session_memories: int = field(
+        default_factory=lambda: _env_int("REMEMBER_MAX_SESSION_MEMORIES", 50)
+    )
+
+    # Conversation summary compaction threshold (chars). When the running
+    # summary exceeds this, an LLM call condenses it. Set generously —
+    # most sessions never hit this. 0 = disable compaction.
+    remember_summary_compaction_threshold: int = field(
+        default_factory=lambda: _env_int("REMEMBER_SUMMARY_COMPACTION_THRESHOLD", 10000)
+    )
+
     # Fsck (memory check) settings — how long check results are cached (seconds)
     fsck_cache_ttl: int = field(
         default_factory=lambda: _env_int("FSCK_CACHE_TTL", 86400)
