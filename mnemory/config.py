@@ -303,8 +303,10 @@ class MemoryConfig:
     # DEPRECATED: Replaced by hybrid search (BM25 sparse vectors).
     # Ignored — kept only for backward compatibility so existing configs
     # don't break. Will be removed in a future version.
+    # Default changed to 0.0 so deprecation warning only fires when
+    # explicitly set via env var.
     search_keyword_weight: float = field(
-        default_factory=lambda: _env_float("SEARCH_KEYWORD_WEIGHT", 0.2)
+        default_factory=lambda: _env_float("SEARCH_KEYWORD_WEIGHT", 0.0)
     )
 
     # Hybrid search: BM25 sparse model for keyword matching via FastEmbed.

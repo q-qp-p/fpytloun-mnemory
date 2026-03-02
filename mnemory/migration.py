@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -59,7 +60,7 @@ class Migration(ABC):
         client: QdrantClient,
         *,
         progress: dict[str, Any] | None,
-        state_callback: Any,
+        state_callback: Callable[[dict[str, Any]], None],
         state: dict[str, Any],
     ) -> None:
         """Execute the migration.
@@ -235,7 +236,7 @@ class AddSparseVectorsMigration(Migration):
         client: QdrantClient,
         *,
         progress: dict[str, Any] | None,
-        state_callback: Any,
+        state_callback: Callable[[dict[str, Any]], None],
         state: dict[str, Any],
     ) -> None:
         from qdrant_client.models import (

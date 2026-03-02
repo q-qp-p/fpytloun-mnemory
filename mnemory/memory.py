@@ -1627,14 +1627,21 @@ class MemoryService:
         for mem in memories:
             imp_level = (mem.get("metadata") or {}).get("importance", "normal")
             imp_value = IMPORTANCE_WEIGHTS.get(imp_level, 0.4)
-            mem["score"] = mem.get("score", 0) + importance_weight * imp_value
+            mem["score"] = round(mem.get("score", 0) + importance_weight * imp_value, 4)
 
         memories.sort(key=lambda m: m.get("score", 0), reverse=True)
         return memories
 
     def _get_sparse_vector(self, text: str) -> Any | None:
-        """Generate a BM25 sparse vector for hybrid search."""
-        return self._sparse.embed(text)
+        """Generate a BM25 sparse vector for hybrid search.
+
+        Returns None on failure so callers fall back to dense-only mode.
+        """
+        try:
+            return self._sparse.embed(text)
+        except Exception:
+            logger.warning("Sparse embedding failed, using dense-only", exc_info=True)
+            return None
 
     # ── Search Memories ───────────────────────────────────────────────
 
