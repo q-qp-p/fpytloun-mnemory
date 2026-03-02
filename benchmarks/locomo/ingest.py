@@ -215,8 +215,9 @@ def _ingest_batch(
         total,
     )
 
-    # Batch embed in chunks
+    # Batch embed in chunks (dense + sparse)
     all_vectors: list[list[float]] = []
+    all_sparse: list[Any] = []  # SparseVector | None per text
     errors = 0
     for i in range(0, total, EMBED_BATCH_SIZE):
         chunk = texts[i : i + EMBED_BATCH_SIZE]
@@ -233,6 +234,18 @@ def _ingest_batch(
             errors += 1
             # Fill with empty vectors so indices stay aligned
             all_vectors.extend([[] for _ in chunk])
+
+        # Generate BM25 sparse vectors (local CPU, no API calls)
+        try:
+            sparse_vecs = memory_service._sparse.embed_batch(chunk)
+            all_sparse.extend(sparse_vecs or [None] * len(chunk))
+        except Exception:
+            logger.warning(
+                "Sparse embedding failed for chunk %d-%d, skipping",
+                i,
+                i + len(chunk),
+            )
+            all_sparse.extend([None] * len(chunk))
 
     if len(all_vectors) != total:
         logger.error(
@@ -256,21 +269,22 @@ def _ingest_batch(
 
     # Build points for batch insert (skip any with empty vectors from errors)
     points = []
-    for text, vec, event_date in zip(texts, all_vectors, event_dates):
+    for idx, (text, vec, event_date) in enumerate(zip(texts, all_vectors, event_dates)):
         if not vec:
             continue
         meta = dict(base_metadata)
         if event_date:
             meta["event_date"] = event_date
-        points.append(
-            {
-                "text": text,
-                "vector": vec,
-                "user_id": user_id,
-                "metadata": meta,
-                "role": "user",
-            }
-        )
+        point: dict[str, Any] = {
+            "text": text,
+            "vector": vec,
+            "user_id": user_id,
+            "metadata": meta,
+            "role": "user",
+        }
+        if idx < len(all_sparse) and all_sparse[idx] is not None:
+            point["sparse_vector"] = all_sparse[idx]
+        points.append(point)
 
     # Batch insert into Qdrant
     memories_created = 0
