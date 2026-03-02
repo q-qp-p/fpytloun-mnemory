@@ -95,13 +95,20 @@ def create_api_app() -> FastAPI:
     """
     global _session_store
 
-    # Reconfigure session store from config
+    # Reconfigure session store from config with persistent backend
     from mnemory.server import _get_config
+    from mnemory.storage.session import create_session_backend
 
     cfg = _get_config()
+    backend = create_session_backend(
+        backend_type=cfg.memory.session_backend,
+        session_path=cfg.memory.session_path,
+        redis_url=cfg.memory.redis_url,
+    )
     _session_store = SessionStore(
         default_ttl=cfg.memory.memory_session_ttl,
         sweep_interval=cfg.memory.memory_session_sweep_interval,
+        backend=backend,
     )
 
     app = FastAPI(

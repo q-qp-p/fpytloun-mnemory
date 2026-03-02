@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Session Persistence
+
+- **Persistent session storage**: Sessions now survive server restarts via pluggable backends — SQLite (default for local/single-node), Redis (for clustered deployments), or in-memory (tests). Uses a write-through cache pattern: in-memory dict for fast reads, backend for durability, lazy loading on cache miss
+- **24-hour session TTL**: Default `MEMORY_SESSION_TTL` increased from 1 hour to 24 hours. Both recall and remember calls reset the idle timer (auto-prolong), so active conversations never expire
+- **Remember auto-prolong**: The remember endpoint now touches the session to reset its idle timeout, preventing session expiry during active conversations that only use remember (not recall)
+- **Redis optional dependency**: Added `redis>=5.0.0` as optional dependency, installable via `pip install mnemory[redis]`
+- **New env vars**: `SESSION_BACKEND` (sqlite/redis/memory), `SESSION_PATH` (SQLite DB path), `REDIS_URL` (Redis connection). Auto-detects Redis when `REDIS_URL` is set
+
+### Remember Pipeline
+
+- **Two-stage extract+dedup pipeline**: Remember pipeline rewritten to separate fact extraction from deduplication, with session context tracking for conversation continuity across multiple remember calls
+
 ## [1.5.0] — 2026-02-28
 
 ### Batch Operations

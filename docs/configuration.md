@@ -80,8 +80,11 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `DEFAULT_TIMEZONE` | | Default IANA timezone for naive `event_date` values (e.g., `Europe/Prague`). Empty = server local timezone. Can be overridden per session via `X-Timezone` header |
 | `FIND_MEMORIES_QUERIES` | `5` | Maximum number of search queries the LLM generates for `find_memories` (may return fewer or zero) |
 | `MAX_INPUT_LENGTH` | `400000` | Max chars for input to `add_memory(infer=True)` and `remember()`. ~100k tokens |
-| `MEMORY_SESSION_TTL` | `3600` | Default session idle TTL in seconds (1 hour) |
+| `MEMORY_SESSION_TTL` | `86400` | Default session idle TTL in seconds (24 hours). Each access (recall/remember) resets the timer |
 | `MEMORY_SESSION_SWEEP_INTERVAL` | `300` | Interval in seconds between session cleanup sweeps (5 minutes) |
+| `SESSION_BACKEND` | `sqlite` | Session persistence backend: `memory` (no persistence), `sqlite` (local file), `redis` (clustered). Auto-detects `redis` if `REDIS_URL` is set |
+| `SESSION_PATH` | `{DATA_DIR}/sessions.db` | SQLite database path for session persistence (only used when `SESSION_BACKEND=sqlite`) |
+| `REDIS_URL` | | Redis connection URL for session persistence (e.g., `redis://host:6379/0`). Required when `SESSION_BACKEND=redis`. When set without explicit `SESSION_BACKEND`, auto-selects `redis` |
 | `RECALL_MAX_RESULTS` | `10` | Max search results returned by recall endpoint |
 | `REMEMBER_RATE_LIMIT` | `10` | Max remember requests per minute per user. 0 = no limit |
 | `FSCK_CACHE_TTL` | `86400` | How long memory check results are cached in seconds (24 hours) |

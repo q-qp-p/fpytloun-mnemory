@@ -119,6 +119,7 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 | **Artifact Storage** | `storage/artifact.py` | S3/MinIO and filesystem backends for binary artifacts |
 | **Management UI** | `ui/`, `api/ui.py` | Built-in web UI — dashboard, search, browse/CRUD, graph |
 | **Instructions** | `instructions.py` | Configurable MCP server instructions (passive/proactive/personality modes) |
-| **Sessions** | `session.py` | Server-side memory session tracking for recall/remember |
+| **Sessions** | `session.py` | Server-side memory session tracking with write-through cache |
+| **Session Storage** | `storage/session.py` | Session persistence backends (SQLite, Redis, in-memory) |
 | **Metrics** | `metrics.py` | Prometheus metrics collection, operation counters, Qdrant gauge aggregation |
 | **Configuration** | `config.py` | Environment variable parsing into dataclass configs |

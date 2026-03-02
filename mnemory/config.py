@@ -335,11 +335,30 @@ class MemoryConfig:
 
     # Session settings
     memory_session_ttl: int = field(
-        default_factory=lambda: _env_int("MEMORY_SESSION_TTL", 3600)
+        default_factory=lambda: _env_int("MEMORY_SESSION_TTL", 86400)
     )
     memory_session_sweep_interval: int = field(
         default_factory=lambda: _env_int("MEMORY_SESSION_SWEEP_INTERVAL", 300)
     )
+
+    # Session persistence backend: "sqlite" (default), "memory", "redis".
+    # Auto-detection: if REDIS_URL is set and SESSION_BACKEND is not
+    # explicitly set, defaults to "redis".
+    session_backend: str = field(
+        default_factory=lambda: (
+            _env("SESSION_BACKEND") or ("redis" if _env("REDIS_URL") else "sqlite")
+        )
+    )
+
+    # SQLite session DB path (only for sqlite backend)
+    session_path: str = field(
+        default_factory=lambda: (
+            _env("SESSION_PATH") or os.path.join(_data_dir(), "sessions.db")
+        )
+    )
+
+    # Redis URL for session backend (e.g., redis://localhost:6379/0)
+    redis_url: str = field(default_factory=lambda: _env("REDIS_URL", ""))
 
     # Recall settings
     recall_max_results: int = field(
@@ -436,6 +455,13 @@ class Config:
                     "S3_ACCESS_KEY and S3_SECRET_KEY are required "
                     "when ARTIFACT_BACKEND=s3"
                 )
+        if self.memory.session_backend not in ("memory", "sqlite", "redis"):
+            raise ValueError(
+                f"Unsupported SESSION_BACKEND: {self.memory.session_backend}. "
+                "Must be one of: memory, sqlite, redis"
+            )
+        if self.memory.session_backend == "redis" and not self.memory.redis_url:
+            raise ValueError("REDIS_URL is required when SESSION_BACKEND=redis")
 
 
 def load_config() -> Config:

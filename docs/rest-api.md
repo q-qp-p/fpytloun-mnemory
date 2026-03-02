@@ -91,9 +91,23 @@ Fire-and-forget memory storage. Call after each exchange.
 
 The recall/remember endpoints use server-side sessions (`MemorySession`) to track which memories the client already has. This prevents context bloat by only returning new memories on subsequent calls.
 
-- Sessions are created on first recall and expire after idle timeout (default 1 hour)
+- Sessions are created on first recall and expire after idle timeout (default 24 hours, configurable via `MEMORY_SESSION_TTL`)
+- Both recall and remember calls reset the idle timer (auto-prolong), so active conversations never expire
+- Sessions are persisted to a pluggable backend (SQLite by default, Redis for clustered deployments) and survive server restarts
 - Losing a session is harmless — next recall creates a new one
-- Periodic background sweep cleans up expired sessions
+- Periodic background sweep cleans up expired sessions from both the in-memory cache and the backend
+
+### Session Persistence
+
+Sessions use a write-through cache: an in-memory dict for fast reads, with all mutations written to the backend for durability. On cache miss (e.g., after restart), sessions are loaded lazily from the backend.
+
+| Backend | Use case | Config |
+|---|---|---|
+| `sqlite` (default) | Single-node, local development, `uvx mnemory` | `SESSION_PATH` (default `~/.mnemory/sessions.db`) |
+| `redis` | Clustered deployments, multiple replicas | `REDIS_URL` (e.g., `redis://host:6379/0`) |
+| `memory` | Tests, no persistence needed | No additional config |
+
+Auto-detection: if `REDIS_URL` is set and `SESSION_BACKEND` is not explicitly set, defaults to `redis`. See [Configuration](configuration.md) for all session env vars.
 
 ## Periodic Maintenance
 

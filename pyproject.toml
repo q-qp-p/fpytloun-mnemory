@@ -38,8 +38,12 @@ dependencies = [
 s3 = [
     "boto3>=1.34.0",
 ]
+redis = [
+    "redis>=5.0.0",
+]
 all = [
     "mnemory[s3]",
+    "mnemory[redis]",
 ]
 dev = [
     "pytest>=8.0",

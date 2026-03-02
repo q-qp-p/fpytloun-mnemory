@@ -92,6 +92,19 @@ MGMT_HOST=127.0.0.1     # Optional: bind management to localhost only
 
 This is the recommended setup for Kubernetes liveness/readiness probes and Prometheus scraping. See [Configuration](configuration.md#management-port) for details.
 
+### Session Persistence
+
+By default, mnemory persists sessions to a local SQLite database (`~/.mnemory/sessions.db`). For clustered deployments with multiple replicas, use Redis:
+
+```bash
+SESSION_BACKEND=redis
+REDIS_URL=redis://redis.example.com:6379/0
+```
+
+Redis is an optional dependency — install with `pip install mnemory[redis]`. If `REDIS_URL` is set and `SESSION_BACKEND` is not explicitly set, Redis is auto-selected.
+
+Sessions use a write-through cache (in-memory + backend) with lazy loading on cache miss. Losing a session is harmless — the client gets a fresh one on next recall.
+
 ### Stateless HTTP
 
 mnemory runs in stateless HTTP mode (`stateless_http=True`) for Kubernetes compatibility. No sticky sessions or WebSocket connections required.

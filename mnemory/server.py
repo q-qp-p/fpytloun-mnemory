@@ -1707,6 +1707,7 @@ async def lifespan(app):
     await maintenance.stop()
     _maintenance_service = None
     await _session_store.stop_cleanup_task()
+    _session_store.close()
     if _fsck_service is not None:
         await _fsck_service._store.stop_cleanup_task()
     logger.info("mnemory shutting down")

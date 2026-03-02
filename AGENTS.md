@@ -40,7 +40,8 @@ mnemory/
 │   └── static/            # Pre-built UI assets (HTML, JS modules: api/app/metrics/search/memories/graph, CSS, vendored libs)
 └── storage/
     ├── vector.py          # Direct Qdrant vector store (insert, search, update, delete)
-    └── artifact.py        # Artifact store abstraction (S3 and filesystem backends)
+    ├── artifact.py        # Artifact store abstraction (S3 and filesystem backends)
+    └── session.py         # Session persistence backends (SQLite, Redis, in-memory) + serialization
 ```
 
 ### Layer responsibilities
@@ -56,7 +57,8 @@ mnemory/
 | **Artifact Storage** | `storage/artifact.py` | S3/MinIO and filesystem backends for binary artifacts |
 | **Management UI** | `ui/`, `api/ui.py` | Built-in web UI — dashboard, search, browse/CRUD, graph (Alpine.js + Tailwind + Chart.js + D3.js) |
 | **Instructions** | `instructions.py` | Configurable MCP server instructions (passive/proactive/personality modes) |
-| **Sessions** | `session.py` | Server-side memory session tracking for recall/remember |
+| **Sessions** | `session.py` | Server-side memory session tracking with write-through cache |
+| **Session Storage** | `storage/session.py` | Session persistence backends (SQLite, Redis, in-memory) |
 | **Metrics** | `metrics.py` | Prometheus metrics collection, operation counters, Qdrant gauge aggregation |
 | **Configuration** | `config.py` | Environment variable parsing into dataclass configs |
 
@@ -66,7 +68,7 @@ mnemory/
 
 2. **Two-tier memory**: Fast memory (vector store, max 1000 chars, searchable) + slow memory (artifact store, up to 100KB, retrieved on demand). Artifacts are always attached to a parent fast memory.
 
-3. **Configurable backends**: Vector store uses Qdrant (local embedded mode for dev, remote for production). Artifact store supports S3/MinIO (production) or local filesystem (dev). Selected via `QDRANT_HOST` and `ARTIFACT_BACKEND` env vars.
+3. **Configurable backends**: Vector store uses Qdrant (local embedded mode for dev, remote for production). Artifact store supports S3/MinIO (production) or local filesystem (dev). Session store supports SQLite (default), Redis (clustered), or in-memory (tests). Selected via `QDRANT_HOST`, `ARTIFACT_BACKEND`, and `SESSION_BACKEND` env vars.
 
 4. **Official MCP SDK**: Uses `from mcp.server.fastmcp import FastMCP` (the official `mcp` package), NOT the standalone `fastmcp` package. Starlette is used directly for custom routes and middleware.
 

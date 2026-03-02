@@ -130,18 +130,22 @@ def _process_remember(
             context=context,
         )
 
-        # Update session with stored memory IDs (prevents echo on next recall)
-        if session_id and result.get("results"):
-            stored_ids = {r["id"] for r in result["results"] if r.get("id")}
-            if stored_ids:
-                try:
-                    session_store = _get_session_store()
-                    session_store.add_known_ids(session_id, stored_ids)
-                except Exception:
-                    logger.warning(
-                        "Failed to update session %s with stored IDs",
-                        session_id,
-                    )
+        # Update session: prolong TTL and track stored memory IDs
+        if session_id:
+            try:
+                session_store = _get_session_store()
+                # Touch session to reset idle timeout (auto-prolong)
+                session_store.touch(session_id)
+                # Track stored IDs to prevent echo on next recall
+                if result.get("results"):
+                    stored_ids = {r["id"] for r in result["results"] if r.get("id")}
+                    if stored_ids:
+                        session_store.add_known_ids(session_id, stored_ids)
+            except Exception:
+                logger.warning(
+                    "Failed to update session %s after remember",
+                    session_id,
+                )
 
         stored_count = len(result.get("results", []))
         if stored_count > 0:

@@ -78,3 +78,71 @@ class TestConfigValidation:
         monkeypatch.setenv("INSTRUCTION_MODE", "invalid")
         with pytest.raises(ValueError, match="Unsupported INSTRUCTION_MODE"):
             load_config()
+
+    # ── Session backend config tests ─────────────────────────────────
+
+    def test_session_backend_defaults_to_sqlite(self, monkeypatch):
+        """Without SESSION_BACKEND or REDIS_URL, should default to sqlite."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.delenv("SESSION_BACKEND", raising=False)
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        config = load_config()
+        assert config.memory.session_backend == "sqlite"
+
+    def test_session_backend_auto_detects_redis(self, monkeypatch):
+        """With REDIS_URL set and no SESSION_BACKEND, should default to redis."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.delenv("SESSION_BACKEND", raising=False)
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+        config = load_config()
+        assert config.memory.session_backend == "redis"
+
+    def test_session_backend_explicit_memory(self, monkeypatch):
+        """Explicit SESSION_BACKEND=memory should be accepted."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("SESSION_BACKEND", "memory")
+        config = load_config()
+        assert config.memory.session_backend == "memory"
+
+    def test_session_backend_invalid_raises(self, monkeypatch):
+        """Invalid SESSION_BACKEND should raise ValueError."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("SESSION_BACKEND", "invalid")
+        with pytest.raises(ValueError, match="Unsupported SESSION_BACKEND"):
+            load_config()
+
+    def test_session_backend_redis_without_url_raises(self, monkeypatch):
+        """SESSION_BACKEND=redis without REDIS_URL should raise ValueError."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("SESSION_BACKEND", "redis")
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        with pytest.raises(ValueError, match="REDIS_URL is required"):
+            load_config()
+
+    def test_session_ttl_default_24h(self, monkeypatch):
+        """Default session TTL should be 86400 (24 hours)."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.delenv("MEMORY_SESSION_TTL", raising=False)
+        config = load_config()
+        assert config.memory.memory_session_ttl == 86400
+
+    def test_session_ttl_custom(self, monkeypatch):
+        """Custom MEMORY_SESSION_TTL should be respected."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("MEMORY_SESSION_TTL", "7200")
+        config = load_config()
+        assert config.memory.memory_session_ttl == 7200
+
+    def test_session_path_default(self, monkeypatch):
+        """Default session path should be in data dir."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.delenv("SESSION_PATH", raising=False)
+        config = load_config()
+        assert config.memory.session_path.endswith("sessions.db")
+
+    def test_session_path_custom(self, monkeypatch):
+        """Custom SESSION_PATH should be respected."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("SESSION_PATH", "/tmp/custom_sessions.db")
+        config = load_config()
+        assert config.memory.session_path == "/tmp/custom_sessions.db"
