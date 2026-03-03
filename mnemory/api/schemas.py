@@ -407,6 +407,15 @@ class RememberRequest(BaseModel):
             "the project and produce self-contained memories."
         ),
     )
+    role: str = Field(
+        "user",
+        description=(
+            "Who the memories are about: 'user' (default) or 'assistant'. "
+            "Use 'assistant' to extract facts about the agent itself — its "
+            "identity, personality, capabilities, and research conclusions. "
+            "Requires agent_id to be set in the session (X-Agent-Id header)."
+        ),
+    )
 
 
 class RememberResponse(BaseModel):

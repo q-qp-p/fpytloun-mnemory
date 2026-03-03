@@ -538,9 +538,18 @@ You are a memory manager for an AI assistant. Your job is to:
   the user perceives the assistant (e.g., "User thinks the
   assistant is great at explaining complex topics").
 - Do not extract general user facts — those belong in user memories.
+  Do NOT extract facts from user turns (lines prefixed "User:") as
+  assistant facts — only extract from assistant turns or first-person
+  content without a speaker prefix.
 - Write facts in third person, always including the subject
   explicitly (e.g., "Assistant prefers concise responses",
   "Assistant is expert in Python").
+- When the content is first-person with no named speaker (e.g.,
+  "I prefer concise answers", "I am a helpful assistant"), treat it
+  as the assistant speaking and use "Assistant" as the subject.
+- When the content is a conversation, extract only from the
+  assistant's turns (lines prefixed "assistant:" or "Assistant:").
+  Do not extract user-turn content as assistant facts.
 - Preserve all important information — do not over-compress
   at the cost of losing detail.
 - Preserve specific details exactly: proper nouns, names, titles,
@@ -573,6 +582,15 @@ You are a memory manager for an AI assistant. Your job is to:
 
 ### Examples
 
+Input: "I am a helpful coding assistant. I specialize in Python and Rust."
+Output: {{"memories": [
+  {{"text": "Assistant is a helpful coding assistant specializing in Python and Rust",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "fact",
+    "categories": ["technical"],
+    "importance": "critical", "pinned": true, "event_date": null}}
+], "store_artifact": false}}
+
 Input: "assistant: I prefer to give concise, direct answers."
 Output: {{"memories": [
   {{"text": "Assistant prefers concise, direct answers",
@@ -593,6 +611,15 @@ concluded Cilium is the best CNI",
     "importance": "high", "pinned": false,
     "event_date": "2025-03-15"}}
 ], "store_artifact": false}}
+
+Input: "User: What's your name?\nassistant: I am Aria, a research assistant."
+Output: {{"memories": [
+  {{"text": "Assistant's name is Aria, a research assistant",
+    "action": "ADD", "target_id": null, "old_memory": null,
+    "memory_type": "fact", "categories": ["personal"],
+    "importance": "critical", "pinned": true, "event_date": null}}
+], "store_artifact": false}}
+(Only the assistant turn is extracted. The user question is not a fact about the assistant.)
 
 ## Classification Rules
 
@@ -844,6 +871,18 @@ def build_extraction_prompt(
             "conversation is about. Include the project/application name "
             "in extracted facts to make them self-contained."
         )
+
+    # Normalize content for agent role: when content is plain first-person
+    # text without a speaker prefix, prepend "assistant: " so the extraction
+    # LLM unambiguously recognises it as assistant speech. This is defence-in-
+    # depth alongside the prompt rule that handles first-person content.
+    # Only applied when there is no existing "assistant:" or "user:" label.
+    if role == "assistant":
+        stripped = content.lstrip()
+        first_line = stripped.split("\n", 1)[0].lower()
+        has_speaker_prefix = first_line.startswith(("assistant:", "user:"))
+        if not has_speaker_prefix:
+            content = f"assistant: {content}"
 
     # Build user message — wrap content in boundary tags to prevent
     # prompt injection. The LLM is instructed to treat content within
@@ -1788,6 +1827,193 @@ memory_type, categories, importance, pinned, event_date.
 Return ONLY the JSON object. No explanation, no markdown."""
 
 
+_AGENT_REMEMBER_EXTRACTION_SYSTEM_PROMPT = """\
+You are a memory extraction system for an AI assistant. Your job is to:
+1. Extract distinct facts about the assistant from the current conversation exchange
+2. Classify each fact
+3. Generate a brief summary of this exchange
+
+## Security
+
+{anti_injection}
+
+## Fact Extraction Rules
+
+- Extract distinct facts about the assistant — its identity, personality
+  traits, preferences, capabilities, knowledge areas, communication style,
+  research conclusions, and decisions made by the assistant.
+- Focus exclusively on the assistant's turns (lines prefixed "Assistant:").
+  Do NOT extract facts from user turns — user facts belong in user memories.
+- Write facts in third person, always using "Assistant" as the subject
+  (e.g., "Assistant prefers concise responses", "Assistant is expert in Python").
+- When the content is first-person with no named speaker, treat it as the
+  assistant speaking and use "Assistant" as the subject.
+- You may also extract facts from user messages that reveal how the user
+  perceives the assistant (e.g., "User thinks the assistant is great at
+  explaining complex topics").
+- Do not extract general user facts — those belong in user memories.
+- Do not extract generic responses, pleasantries, or procedural statements
+  (e.g., "Sure, I can help with that" is not a fact about the assistant).
+- Preserve all important information — do not over-compress at the cost of
+  losing detail.
+- Preserve specific details exactly: proper nouns, names, titles, numbers,
+  quantities, and places.
+- When a message contains multiple distinct facts, extract each as a separate
+  memory.
+- Each fact must be under {max_length} characters. If content is too detailed
+  for a single fact, split into multiple facts.
+- Always write extracted facts in English, regardless of the input language.
+  Preserve proper nouns, names, titles, and specific terms in their original form.
+- If no relevant facts about the assistant can be extracted, return an empty list.
+- Today's date is {today}.
+- Each fact has an event_date field (YYYY-MM-DD or null). Use it to record
+  WHEN something happened or was mentioned:
+  - Set event_date when the fact has a temporal anchor — an event,
+    observation, or statement tied to a specific date.
+  - Convert relative references (yesterday, last week, etc.) to absolute
+    dates using Today's date.
+  - Set event_date to null when the fact is timeless (e.g., a name,
+    a preference, a permanent trait).
+- Do NOT embed dates in the fact text unless the date IS the core fact.
+- Do NOT append storage dates, creation timestamps, or "(stored ...)"
+  annotations to extracted facts.
+- Do not extract the same fact twice. Each extracted fact must be unique —
+  if two pieces of information overlap, merge them into a single fact.
+
+## Classification Rules
+
+For each extracted fact, classify:
+
+- **memory_type**: {memory_types}
+  - preference = assistant's likes, dislikes, style choices
+  - fact = stable assistant identity (name, personality, capabilities,
+    long-term traits). NOT for transient observations or current state.
+  - episodic = research conclusions, interaction outcomes, decisions made
+    by the assistant, things the assistant learned or did
+  - procedural = assistant's workflows, approaches, how it does things
+  - context = session/short-term notes, current state, analysis findings,
+    anything that may change soon
+
+- **categories**: Pick from the available list below. Use [] if none fit.
+  "project" is for general project content. When the conversation clearly
+  involves a specific named project, create a subcategory by appending the
+  project name (e.g., project:mnemory, project:argocd-apps). Only do this
+  when the project name is clearly identifiable — do not guess.
+
+- **importance**: {importance_levels}
+  - low = minor details
+  - normal = standard memories (default for most)
+  - high = important knowledge, key conclusions
+  - critical = core identity, always-relevant
+
+- **pinned**: true for core identity facts (name, personality traits), key
+  capabilities, and critical knowledge. false for most memories.
+
+{categories_section}
+
+{session_context_section}
+
+## Exchange Summary
+
+Generate a brief 1-3 sentence summary of this conversation exchange.
+The summary should capture:
+- The main topic or intent of the exchange
+- Any key decisions or outcomes made by the assistant
+- Enough context to understand pronoun references in future exchanges
+
+This summary will be used as context for processing future exchanges
+in the same conversation.
+
+## Artifact Decision
+
+Decide whether the original input content should be preserved as an
+artifact (a detailed document attached to the extracted memories for
+later retrieval).
+
+Set `store_artifact` to **true** when:
+- The content is a structured document (design doc, spec, report, analysis)
+- The content contains code, configuration, or technical reference material
+- The content has detailed information that would lose significant value
+  if only the extracted key facts are kept
+- The content is something the user might want to retrieve in full later
+
+Set `store_artifact` to **false** when:
+- The extracted memories fully capture the content's value
+- The content is casual conversation or simple statements
+- The content is a greeting, question, or short exchange
+- The content is ephemeral or not worth preserving in detail
+
+When in doubt, prefer **false** — artifacts should be reserved for content
+with genuine reference value beyond the extracted facts.
+
+**Important**: When you set `store_artifact` to true, extract only a brief
+high-level summary as the memory — do NOT also extract individual details,
+findings, or recommendations as separate memories. The artifact preserves
+the full content; the memory serves as a searchable summary pointing to it.
+Make the summary descriptive enough to be found via search — include key
+topics, names, and terms from the content.
+
+## Examples
+
+### Example 1: Assistant identity introduction
+
+Input:
+User: What's your name?
+Assistant: I am Aria, a research assistant. I specialize in scientific
+literature review and data analysis.
+
+Output:
+{{"memories": [
+  {{"text": "Assistant's name is Aria, a research assistant", "memory_type": "fact", "categories": ["personal"], "importance": "critical", "pinned": true, "event_date": null}},
+  {{"text": "Assistant specializes in scientific literature review and data analysis", "memory_type": "fact", "categories": ["technical"], "importance": "high", "pinned": true, "event_date": null}}
+], "summary": "User asked the assistant's name. Assistant identified itself as Aria, a research assistant specializing in literature review and data analysis.", "store_artifact": false}}
+
+### Example 2: Assistant research conclusion (episodic)
+
+Input:
+User: Research bug immortality for me.
+Assistant: I reviewed 23 scientific papers on bug immortality and found
+that certain species of tardigrades exhibit near-indefinite dormancy
+under extreme conditions.
+
+Output:
+{{"memories": [
+  {{"text": "Assistant researched 23 scientific papers on bug immortality, finding tardigrades exhibit near-indefinite dormancy under extreme conditions", "memory_type": "episodic", "categories": ["technical"], "importance": "high", "pinned": false, "event_date": null}}
+], "summary": "User asked assistant to research bug immortality. Assistant reviewed 23 papers and found tardigrades as a key example.", "store_artifact": false}}
+
+### Example 3: Assistant style preference
+
+Input:
+User: Can you be more concise?
+Assistant: Of course. I'll keep my responses brief and to the point.
+
+Output:
+{{"memories": [
+  {{"text": "Assistant prefers to give concise, brief responses", "memory_type": "preference", "categories": ["preferences"], "importance": "normal", "pinned": true, "event_date": null}}
+], "summary": "User asked assistant to be more concise. Assistant agreed to keep responses brief.", "store_artifact": false}}
+
+### Example 4: User fact in conversation (not extracted)
+
+Input:
+User: I love hiking. What do you enjoy?
+Assistant: I enjoy helping users solve complex problems and explaining
+technical concepts clearly.
+
+Output:
+{{"memories": [
+  {{"text": "Assistant enjoys helping users solve complex problems and explaining technical concepts", "memory_type": "preference", "categories": ["preferences"], "importance": "normal", "pinned": true, "event_date": null}}
+], "summary": "User asked about assistant's interests. Assistant described enjoying problem-solving and technical explanations.", "store_artifact": false}}
+(The user's hiking preference is NOT extracted — user facts belong in user memories.)
+
+## Output Format
+
+Return a JSON object with a "memories" array, a "summary" string, and a
+"store_artifact" boolean. Each memory entry must have ALL fields: text,
+memory_type, categories, importance, pinned, event_date.
+
+Return ONLY the JSON object. No explanation, no markdown."""
+
+
 REMEMBER_EXTRACTION_SCHEMA: dict[str, Any] = {
     "name": "remember_extraction",
     "strict": True,
@@ -1858,6 +2084,7 @@ REMEMBER_EXTRACTION_SCHEMA: dict[str, Any] = {
 def build_remember_extraction_prompt(
     content: str,
     *,
+    role: str = "user",
     session_context: dict[str, Any] | None = None,
     available_categories: list[str] | None = None,
     max_memory_length: int = 1000,
@@ -1871,6 +2098,9 @@ def build_remember_extraction_prompt(
 
     Args:
         content: Formatted conversation text (e.g., "User: ...\nAssistant: ...").
+        role: "user" (default) or "assistant". Selects which extraction prompt
+            template to use. "assistant" extracts facts about the agent itself
+            (identity, personality, capabilities, research conclusions).
         session_context: Dict with 'extracted_memories' (list[str]) and
             'conversation_summary' (str) from the session.
         available_categories: Valid category names.
@@ -1903,7 +2133,14 @@ def build_remember_extraction_prompt(
     # Build session context section
     session_context_section = _build_session_context_section(session_context)
 
-    system_prompt = _REMEMBER_EXTRACTION_SYSTEM_PROMPT.format(
+    # Select template based on role
+    template = (
+        _AGENT_REMEMBER_EXTRACTION_SYSTEM_PROMPT
+        if role == "assistant"
+        else _REMEMBER_EXTRACTION_SYSTEM_PROMPT
+    )
+
+    system_prompt = template.format(
         today=today,
         max_length=max_memory_length,
         memory_types=memory_types,

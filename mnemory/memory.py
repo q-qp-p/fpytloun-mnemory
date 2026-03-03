@@ -465,6 +465,7 @@ class MemoryService:
 
         facts, summary, store_artifact = self._remember_extract(
             content,
+            role=role,
             session_context=session_context,
             available_categories=available_cats,
             max_memory_length=max_len,
@@ -523,6 +524,7 @@ class MemoryService:
         self,
         content: str,
         *,
+        role: str = "user",
         session_context: dict[str, Any] | None,
         available_categories: list[str],
         max_memory_length: int,
@@ -534,6 +536,12 @@ class MemoryService:
         Retries once if the LLM returns a non-empty response that fails
         to parse (non-deterministic JSON formatting issues).
 
+        Args:
+            role: "user" (default) or "assistant". Selects which extraction
+                prompt template to use. "assistant" extracts facts about the
+                agent itself (identity, personality, capabilities, research
+                conclusions).
+
         Returns:
             Tuple of (facts, summary, store_artifact).
             facts: list of dicts with text, memory_type, categories,
@@ -543,6 +551,7 @@ class MemoryService:
         """
         messages, json_schema = build_remember_extraction_prompt(
             content,
+            role=role,
             session_context=session_context,
             available_categories=available_categories,
             max_memory_length=max_memory_length,

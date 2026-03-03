@@ -111,6 +111,7 @@ def _process_remember(
     content: str,
     user_id: str,
     agent_id: str | None,
+    role: str,
     session_id: str | None,
     timezone: str | None,
     context: str | None = None,
@@ -125,6 +126,7 @@ def _process_remember(
             content=content,
             user_id=user_id,
             agent_id=agent_id,
+            role=role,
             session_id=session_id,
             session_timezone=timezone,
             context=context,
@@ -187,6 +189,18 @@ def remember(
             detail="Rate limit exceeded. Try again later.",
         )
 
+    # Validate role — mirror add_memory validation
+    if req.role not in ("user", "assistant"):
+        raise HTTPException(
+            status_code=422,
+            detail="role must be 'user' or 'assistant'",
+        )
+    if req.role == "assistant" and not ctx.agent_id:
+        raise HTTPException(
+            status_code=422,
+            detail="role='assistant' requires agent_id (set X-Agent-Id header)",
+        )
+
     # Format messages to text
     content = _format_messages(req.messages)
     if not content.strip():
@@ -198,6 +212,7 @@ def remember(
         content=content,
         user_id=ctx.user_id,
         agent_id=ctx.agent_id,
+        role=req.role,
         session_id=req.session_id,
         timezone=ctx.timezone,
         context=req.context,

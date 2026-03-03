@@ -1078,6 +1078,75 @@ class TestBuildRememberExtractionPrompt:
         system = messages[0]["content"]
         assert "boundary tags" in system.lower() or "DATA" in system
 
+    def test_user_role_uses_user_prompt(self):
+        """role='user' (default) should use the user extraction prompt."""
+        messages, _ = build_remember_extraction_prompt(
+            "User: I like Python", role="user"
+        )
+        system = messages[0]["content"]
+        # User prompt focuses on user facts
+        assert "user" in system.lower()
+        # Should NOT contain agent-specific language
+        assert "about the assistant" not in system.lower()
+
+    def test_assistant_role_uses_agent_prompt(self):
+        """role='assistant' should use the agent extraction prompt."""
+        messages, _ = build_remember_extraction_prompt(
+            "User: What's your name?\nAssistant: I am Aria.",
+            role="assistant",
+        )
+        system = messages[0]["content"]
+        # Agent prompt focuses on assistant facts
+        assert "about the assistant" in system.lower()
+
+    def test_default_role_is_user(self):
+        """Omitting role should default to user extraction prompt."""
+        messages_default, _ = build_remember_extraction_prompt("test content")
+        messages_user, _ = build_remember_extraction_prompt("test content", role="user")
+        assert messages_default[0]["content"] == messages_user[0]["content"]
+
+
+# ── build_extraction_prompt content normalisation ─────────────────────
+
+
+class TestAgentContentNormalization:
+    """Test that build_extraction_prompt normalises plain first-person content
+    for role='assistant' by prepending 'assistant: '."""
+
+    def test_plain_firstperson_gets_prefix(self):
+        """Plain first-person content should be prefixed with 'assistant: '."""
+        messages, _, _ = build_extraction_prompt(
+            "I prefer concise answers.", role="assistant"
+        )
+        user_msg = messages[1]["content"]
+        assert "assistant: I prefer concise answers." in user_msg
+
+    def test_already_prefixed_not_double_prefixed(self):
+        """Content already starting with 'assistant:' should not get a second prefix."""
+        messages, _, _ = build_extraction_prompt(
+            "assistant: I prefer concise answers.", role="assistant"
+        )
+        user_msg = messages[1]["content"]
+        # Should appear exactly once, not twice
+        assert user_msg.count("assistant: I prefer") == 1
+
+    def test_conversation_content_not_prefixed(self):
+        """Conversation content with 'User:' prefix should not be modified."""
+        messages, _, _ = build_extraction_prompt(
+            "User: Hello\nassistant: Hi there!", role="assistant"
+        )
+        user_msg = messages[1]["content"]
+        # Should not prepend another 'assistant: ' since it starts with 'User:'
+        assert "assistant: User: Hello" not in user_msg
+
+    def test_user_role_not_normalised(self):
+        """role='user' content should never be prefixed."""
+        messages, _, _ = build_extraction_prompt(
+            "I prefer concise answers.", role="user"
+        )
+        user_msg = messages[1]["content"]
+        assert "assistant: I prefer" not in user_msg
+
 
 # ── build_summary_compaction_prompt ──────────────────────────────────
 

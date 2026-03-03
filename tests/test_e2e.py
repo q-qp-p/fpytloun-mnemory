@@ -1550,3 +1550,274 @@ class TestMemoryTypeClassification:
             f"Expected at least one episodic/context (migration goal), "
             f"got types: {types}\n{pairs}"
         )
+
+
+# ── Agent role extraction ─────────────────────────────────────────────
+
+
+class TestAgentRoleExtraction:
+    """Verify that add_memory with role='assistant' and infer=True correctly
+    extracts agent facts — including plain first-person content without an
+    'assistant:' prefix."""
+
+    USER = "e2e_agent_role"
+    AGENT = "e2e-agent-role-test"
+
+    def test_plain_firstperson_extracted_as_assistant(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Plain first-person content (no 'assistant:' prefix) should be
+        extracted as assistant facts, not user facts."""
+        memory_service.add_memory(
+            "I am a helpful coding assistant named CodeBot. "
+            "I specialize in Python and Rust.",
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+            infer=True,
+        )
+        time.sleep(0.5)
+
+        agent_mems = memory_service.list_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        assert len(agent_mems) >= 1, (
+            f"Expected at least 1 assistant memory, got: {_texts(agent_mems)}"
+        )
+        combined = _all_text(agent_mems)
+        assert "codebot" in combined or "python" in combined or "rust" in combined, (
+            f"Expected agent identity facts in assistant memories: {_texts(agent_mems)}"
+        )
+
+        # Must NOT appear as a user fact
+        user_mems = memory_service.list_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="user",
+        )
+        user_text = _all_text(user_mems)
+        assert "codebot" not in user_text, (
+            f"Agent identity should NOT appear in user memories: {_texts(user_mems)}"
+        )
+
+    def test_prefixed_content_extracted_as_assistant(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Content with 'assistant:' prefix should still be extracted correctly
+        (regression guard for the existing behaviour)."""
+        memory_service.add_memory(
+            "assistant: I prefer to give concise, direct answers.",
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+            infer=True,
+        )
+        time.sleep(0.5)
+
+        agent_mems = memory_service.list_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        assert len(agent_mems) >= 1, (
+            f"Expected at least 1 assistant memory, got: {_texts(agent_mems)}"
+        )
+        assert any(
+            "concise" in _mem_text(m).lower() or "direct" in _mem_text(m).lower()
+            for m in agent_mems
+        ), f"Expected 'concise'/'direct' in assistant memories: {_texts(agent_mems)}"
+
+    def test_agent_memory_in_core_memories_identity_section(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Agent identity memories should appear in the Agent Identity section
+        of get_core_memories, even when stored as plain first-person content."""
+        memory_service.add_memory(
+            "I am Aria, a research assistant. "
+            "I specialize in scientific literature review.",
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+            infer=True,
+        )
+        time.sleep(0.5)
+
+        output = memory_service.get_core_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+        ).text
+        assert "agent identity" in output.lower(), (
+            f"Expected 'Agent Identity' section in core memories: {output[:600]}"
+        )
+        assert "aria" in output.lower() or "research" in output.lower(), (
+            f"Expected agent identity facts in core memories: {output[:600]}"
+        )
+
+    def test_user_facts_not_extracted_by_agent_prompt(
+        self, memory_service: MemoryService
+    ) -> None:
+        """When role='assistant', user facts mentioned in the content should
+        NOT be extracted — only assistant facts."""
+        memory_service.add_memory(
+            "I am an assistant. The user lives in Prague and loves hiking.",
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+            infer=True,
+        )
+        time.sleep(0.5)
+
+        # User facts should not appear in assistant memories
+        agent_mems = memory_service.list_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        agent_text = _all_text(agent_mems)
+        assert "prague" not in agent_text, (
+            f"User fact 'Prague' should NOT be in assistant memories: "
+            f"{_texts(agent_mems)}"
+        )
+        assert "hiking" not in agent_text, (
+            f"User fact 'hiking' should NOT be in assistant memories: "
+            f"{_texts(agent_mems)}"
+        )
+
+
+# ── Remember role routing ─────────────────────────────────────────────
+
+
+class TestRememberRoleRouting:
+    """Verify that remember() with role='assistant' extracts agent facts
+    (identity, conclusions) while role='user' extracts user facts."""
+
+    USER = "e2e_remember_role"
+    AGENT = "e2e-remember-role-agent"
+
+    def test_remember_default_role_is_user(self, memory_service: MemoryService) -> None:
+        """remember() with no explicit role should default to 'user' and
+        extract user facts."""
+        user = f"{self.USER}_default"
+        memory_service.remember(
+            content="User: My name is Elena.\nAssistant: Nice to meet you, Elena!",
+            user_id=user,
+        )
+        time.sleep(0.5)
+
+        mems = memory_service.list_memories(user_id=user)
+        assert len(mems) >= 1, f"Expected at least 1 memory, got: {_texts(mems)}"
+        combined = _all_text(mems)
+        assert "elena" in combined, f"Expected 'Elena' in memories: {_texts(mems)}"
+        # All stored memories should have role='user'
+        for m in mems:
+            stored_role = (m.get("metadata") or {}).get("role", "user")
+            assert stored_role == "user", (
+                f"Expected role='user', got '{stored_role}' for: {_mem_text(m)}"
+            )
+
+    def test_remember_user_role_extracts_user_facts(
+        self, memory_service: MemoryService
+    ) -> None:
+        """remember() with role='user' should extract user facts and store
+        them with role='user' metadata."""
+        user = f"{self.USER}_user"
+        memory_service.remember(
+            content=(
+                "User: I love hiking in the mountains.\n"
+                "Assistant: That sounds great! Any favourite trails?"
+            ),
+            user_id=user,
+            role="user",
+        )
+        time.sleep(0.5)
+
+        user_mems = memory_service.list_memories(user_id=user, role="user")
+        assert len(user_mems) >= 1, (
+            f"Expected at least 1 user memory, got: {_texts(user_mems)}"
+        )
+        assert any("hiking" in _mem_text(m).lower() for m in user_mems), (
+            f"Expected 'hiking' in user memories: {_texts(user_mems)}"
+        )
+
+        # Should NOT appear as assistant memories
+        agent_mems = memory_service.list_memories(user_id=user, role="assistant")
+        assert not any("hiking" in _mem_text(m).lower() for m in agent_mems), (
+            f"'hiking' should NOT be in assistant memories: {_texts(agent_mems)}"
+        )
+
+    def test_remember_assistant_role_extracts_agent_facts(
+        self, memory_service: MemoryService
+    ) -> None:
+        """remember() with role='assistant' should extract facts about the
+        assistant from the assistant's turns and store them with role='assistant'."""
+        memory_service.remember(
+            content=(
+                "User: What's your name?\n"
+                "Assistant: I am Aria, a research assistant. "
+                "I have reviewed 23 papers on bug immortality."
+            ),
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        time.sleep(0.5)
+
+        agent_mems = memory_service.list_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        assert len(agent_mems) >= 1, (
+            f"Expected at least 1 assistant memory, got: {_texts(agent_mems)}"
+        )
+        combined = _all_text(agent_mems)
+        assert (
+            "aria" in combined
+            or "research" in combined
+            or "papers" in combined
+            or "bug" in combined
+        ), (
+            f"Expected agent facts (aria/research/papers) in assistant memories: "
+            f"{_texts(agent_mems)}"
+        )
+        # All stored memories should have role='assistant'
+        for m in agent_mems:
+            stored_role = (m.get("metadata") or {}).get("role", "user")
+            assert stored_role == "assistant", (
+                f"Expected role='assistant', got '{stored_role}' for: {_mem_text(m)}"
+            )
+
+    def test_remember_assistant_role_does_not_store_user_facts(
+        self, memory_service: MemoryService
+    ) -> None:
+        """When role='assistant', user-turn content should NOT be extracted
+        as memories — only assistant-turn facts."""
+        user = f"{self.USER}_no_user_facts"
+        memory_service.remember(
+            content=(
+                "User: I live in Berlin and I love jazz music.\n"
+                "Assistant: I am a music-aware assistant specialising in jazz history."
+            ),
+            user_id=user,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        time.sleep(0.5)
+
+        # User facts must not appear in assistant memories
+        agent_mems = memory_service.list_memories(
+            user_id=user,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        agent_text = _all_text(agent_mems)
+        assert "berlin" not in agent_text, (
+            f"User fact 'Berlin' should NOT be in assistant memories: "
+            f"{_texts(agent_mems)}"
+        )
+        # The assistant fact should be present
+        assert (
+            "jazz" in agent_text or "music" in agent_text or "assistant" in agent_text
+        ), f"Expected assistant fact about jazz/music in memories: {_texts(agent_mems)}"
