@@ -447,10 +447,7 @@ Compare each extracted fact against the existing memories below.
 - **DELETE**: Contradicts an existing memory that should be removed. Set target_id to the existing memory's ID. The text field should contain the memory being deleted.
 - **NONE**: Already captured in existing memories. Skip it (do not include in output).
 
-**CRITICAL**: When an existing memory already captures the same
-information as the extracted fact (same meaning, same subject), you
-MUST use action NONE. Do NOT add duplicates. An empty memories array
-is a perfectly valid response when everything is already known.
+When an existing memory already captures the same information as the extracted fact (same meaning, same subject), use action NONE to avoid duplicates.
 
 ### Subject preservation
 
@@ -461,8 +458,8 @@ is a perfectly valid response when everything is already known.
 - "User moved to Berlin" CAN update "User lives in Prague"
   — same subject (user's location).
 - When in doubt between ADD and UPDATE, prefer ADD.
-- When in doubt between ADD and NONE, prefer NONE if ANY existing
-  memory covers the same information.
+- When in doubt between ADD and NONE, prefer ADD if the new fact
+  adds any specific detail not present in the existing memory.
 
 When updating, keep the same meaning but incorporate new
 information. When facts overlap, merge them into a single
@@ -474,13 +471,13 @@ Existing: [{{"id": "0", "text": "User's email is john@example.com"}}]
 Extracted fact: "User's email is john@example.com"
 → action: NONE (already captured exactly)
 
-Existing: [{{"id": "0", "text": "User is a senior developer at Acme Corp"}}]
-Extracted fact: "User works at Acme Corp"
-→ action: NONE (existing memory already captures this with more detail)
-
 Existing: [{{"id": "0", "text": "User lives in Prague"}}]
 Extracted fact: "User moved to Berlin"
 → action: UPDATE, target_id="0" (same subject, new information)
+
+Existing: [{{"id": "0", "text": "User works at Acme Corp"}}]
+Extracted fact: "User is a senior developer at Acme Corp"
+→ action: UPDATE, target_id="0" (adds specific detail: role level)
 
 {existing_section}
 
@@ -637,10 +634,7 @@ Compare each extracted fact against the existing memories below.
 - **DELETE**: Contradicts an existing memory that should be removed. Set target_id to the existing memory's ID. The text field should contain the memory being deleted.
 - **NONE**: Already captured in existing memories. Skip it (do not include in output).
 
-**CRITICAL**: When an existing memory already captures the same
-information as the extracted fact (same meaning, same subject), you
-MUST use action NONE. Do NOT add duplicates. An empty memories array
-is a perfectly valid response when everything is already known.
+When an existing memory already captures the same information as the extracted fact (same meaning, same subject), use action NONE to avoid duplicates.
 
 ### Subject preservation
 
@@ -651,8 +645,8 @@ is a perfectly valid response when everything is already known.
 - "Assistant now prefers brief responses" CAN update
   "Assistant prefers verbose responses" — same subject.
 - When in doubt between ADD and UPDATE, prefer ADD.
-- When in doubt between ADD and NONE, prefer NONE if ANY existing
-  memory covers the same information.
+- When in doubt between ADD and NONE, prefer ADD if the new fact
+  adds any specific detail not present in the existing memory.
 
 When updating, keep the same meaning but incorporate new
 information. When facts overlap, merge them into a single
@@ -662,7 +656,7 @@ updated memory.
 
 Existing: [{{"id": "0", "text": "Assistant's name is Bob"}}]
 Extracted fact: "Assistant is called Bob"
-→ action: NONE (already captured)
+→ action: NONE (already captured exactly)
 
 Existing: [{{"id": "0", "text": "Assistant prefers verbose responses"}}]
 Extracted fact: "Assistant now prefers brief responses"
