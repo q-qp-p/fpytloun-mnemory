@@ -1628,6 +1628,97 @@ class TestApplyCheck:
         assert "importance" not in written_meta
         assert written_meta.get("memory_type") == "fact"
 
+    def test_apply_role_reclassify_to_assistant(self):
+        """Reclassifying role to 'assistant' should work for agent-scoped memories."""
+        svc = _make_fsck_service()
+        # Memory has agent_id — role=assistant is valid
+        svc._vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "user_id": "filip",
+            "agent_id": "openwebui",
+        }
+        issue = _make_issue(
+            issue_type="reclassify",
+            action="update",
+            memory_id="mem-1",
+            new_content=None,
+            new_metadata={"role": "assistant"},
+        )
+        check = self._make_completed_check(svc, [issue])
+
+        result = svc.apply_check(check.check_id)
+        assert result["applied"] == 1
+        call_args = svc._vector.update_metadata.call_args
+        written_meta = call_args[0][1]
+        assert written_meta.get("role") == "assistant"
+
+    def test_apply_role_assistant_requires_agent_id(self):
+        """Reclassifying to role='assistant' on a shared memory (no agent_id)
+        should be stripped — the invariant requires agent_id."""
+        svc = _make_fsck_service()
+        # Memory has NO agent_id — role=assistant is invalid
+        svc._vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "user_id": "filip",
+        }
+        issue = _make_issue(
+            issue_type="reclassify",
+            action="update",
+            memory_id="mem-1",
+            new_content=None,
+            new_metadata={"role": "assistant", "importance": "high"},
+        )
+        check = self._make_completed_check(svc, [issue])
+
+        result = svc.apply_check(check.check_id)
+        assert result["applied"] == 1
+        call_args = svc._vector.update_metadata.call_args
+        written_meta = call_args[0][1]
+        # role should be stripped, importance should remain
+        assert "role" not in written_meta
+        assert written_meta.get("importance") == "high"
+
+    def test_apply_invalid_role_stripped(self):
+        """Invalid role values should be stripped, not written."""
+        svc = _make_fsck_service()
+        svc._vector.get_by_id.return_value = {
+            "id": "mem-1",
+            "user_id": "filip",
+        }
+        issue = _make_issue(
+            issue_type="reclassify",
+            action="update",
+            memory_id="mem-1",
+            new_content=None,
+            new_metadata={"role": "system", "memory_type": "fact"},
+        )
+        check = self._make_completed_check(svc, [issue])
+
+        result = svc.apply_check(check.check_id)
+        assert result["applied"] == 1
+        call_args = svc._vector.update_metadata.call_args
+        written_meta = call_args[0][1]
+        assert "role" not in written_meta
+        assert written_meta.get("memory_type") == "fact"
+
+    def test_apply_role_reclassify_to_user(self):
+        """Reclassifying role to 'user' should always work (no agent_id required)."""
+        svc = _make_fsck_service()
+        issue = _make_issue(
+            issue_type="reclassify",
+            action="update",
+            memory_id="mem-1",
+            new_content=None,
+            new_metadata={"role": "user"},
+        )
+        check = self._make_completed_check(svc, [issue])
+
+        result = svc.apply_check(check.check_id)
+        assert result["applied"] == 1
+        call_args = svc._vector.update_metadata.call_args
+        written_meta = call_args[0][1]
+        assert written_meta.get("role") == "user"
+
     def test_apply_delete_skips_wrong_owner(self):
         """Delete action for a memory owned by a different user should be skipped."""
         svc = _make_fsck_service()
@@ -1889,7 +1980,7 @@ class TestFsckPromptBuilders:
         assert "role: assistant" in user_msg
 
     def test_quality_prompt_omits_user_role(self):
-        """Default 'user' role should not appear in tags."""
+        """Default 'user' role should not appear in tags for shared memories."""
         batch = [
             {
                 "id": "m1",
@@ -1900,6 +1991,21 @@ class TestFsckPromptBuilders:
         messages, _ = build_fsck_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "role:" not in user_msg
+
+    def test_quality_prompt_shows_role_for_agent_scoped(self):
+        """Agent-scoped memories should always show role tag (even 'user')
+        so the LLM can detect role mismatches."""
+        batch = [
+            {
+                "id": "m1",
+                "memory": "Assistant recommended using PostgreSQL",
+                "metadata": {"role": "user", "memory_type": "episodic"},
+                "agent_id": "openwebui",
+            }
+        ]
+        messages, _ = build_fsck_quality_prompt(batch)
+        user_msg = messages[1]["content"]
+        assert "role: user" in user_msg
 
     def test_quality_prompt_boundary_tags(self):
         batch = [{"id": "m1", "memory": "Test", "metadata": {}}]
@@ -2901,7 +3007,7 @@ class TestFsckQualitySchemaNewMetadata:
         assert new_meta.get("additionalProperties") is False
 
     def test_new_metadata_fields(self):
-        """new_metadata should define memory_type, categories, importance, pinned."""
+        """new_metadata should define memory_type, categories, importance, pinned, role."""
         schema = FSCK_QUALITY_SCHEMA
         action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
             "actions"
@@ -2911,6 +3017,7 @@ class TestFsckQualitySchemaNewMetadata:
         assert "categories" in meta_props
         assert "importance" in meta_props
         assert "pinned" in meta_props
+        assert "role" in meta_props
 
     def test_new_metadata_fields_are_nullable(self):
         """All new_metadata fields should be nullable (unchanged = null)."""
@@ -2950,3 +3057,21 @@ class TestFsckQualitySchemaNewMetadata:
         ]["items"]["properties"]
         imp = action_props["new_metadata"]["properties"]["importance"]
         assert set(imp["enum"]) == {"low", "normal", "high", "critical", None}
+
+    def test_role_enum_values(self):
+        """role should have correct enum values."""
+        schema = FSCK_QUALITY_SCHEMA
+        action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
+            "actions"
+        ]["items"]["properties"]
+        role = action_props["new_metadata"]["properties"]["role"]
+        assert set(role["enum"]) == {"user", "assistant", None}
+
+    def test_role_in_required_fields(self):
+        """role should be in the required fields of new_metadata."""
+        schema = FSCK_QUALITY_SCHEMA
+        action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
+            "actions"
+        ]["items"]["properties"]
+        required = action_props["new_metadata"]["required"]
+        assert "role" in required

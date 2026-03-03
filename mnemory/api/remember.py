@@ -189,12 +189,8 @@ def remember(
             detail="Rate limit exceeded. Try again later.",
         )
 
-    # Validate role — mirror add_memory validation
-    if req.role not in ("user", "assistant"):
-        raise HTTPException(
-            status_code=422,
-            detail="role must be 'user' or 'assistant'",
-        )
+    # Validate role context — Pydantic enforces "user"|"assistant" values,
+    # but agent_id presence for role="assistant" requires runtime context.
     if req.role == "assistant" and not ctx.agent_id:
         raise HTTPException(
             status_code=422,

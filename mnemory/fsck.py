@@ -1267,6 +1267,7 @@ class FsckService:
                         "categories",
                         "importance",
                         "pinned",
+                        "role",
                     }
                     clean_meta = {
                         k: v
@@ -1325,6 +1326,28 @@ class FsckService:
                                 clean_meta["categories"] = valid_cats
                             else:
                                 del clean_meta["categories"]
+                        # Validate role — must be "user" or "assistant",
+                        # and "assistant" requires the memory to have an
+                        # agent_id (invariant from add_memory validation).
+                        if "role" in clean_meta:
+                            if clean_meta["role"] not in ("user", "assistant"):
+                                logger.warning(
+                                    "Fsck apply: stripping invalid role '%s' "
+                                    "from reclassify action for memory %s",
+                                    clean_meta["role"],
+                                    action.memory_id,
+                                )
+                                del clean_meta["role"]
+                            elif clean_meta["role"] == "assistant" and not existing.get(
+                                "agent_id"
+                            ):
+                                logger.warning(
+                                    "Fsck apply: cannot set role='assistant' "
+                                    "on shared memory %s (no agent_id), "
+                                    "stripping role change",
+                                    action.memory_id,
+                                )
+                                del clean_meta["role"]
                         if clean_meta:
                             self._vector.update_metadata(action.memory_id, clean_meta)
                             executed += 1

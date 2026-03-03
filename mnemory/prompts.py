@@ -2160,6 +2160,19 @@ def build_remember_extraction_prompt(
             "in extracted facts to make them self-contained."
         )
 
+    # Normalize content for agent role: when content is plain first-person
+    # text without a speaker prefix, prepend "assistant: " so the extraction
+    # LLM unambiguously recognises it as assistant speech. Defence-in-depth
+    # alongside the prompt rule. Note: _format_messages() in the REST endpoint
+    # always adds "User:"/"Assistant:" labels, but direct callers of
+    # memory.remember() may pass unlabeled content.
+    if role == "assistant":
+        stripped = content.lstrip()
+        first_line = stripped.split("\n", 1)[0].lower()
+        has_speaker_prefix = first_line.startswith(("assistant:", "user:"))
+        if not has_speaker_prefix:
+            content = f"assistant: {content}"
+
     user_content = wrap_with_boundary(content, "user_input")
 
     messages = [
@@ -2974,6 +2987,17 @@ These are typically fact or preference type with high/critical importance.
 episodic events (meetings, conversations), procedural memories, context \
 memories, or anything that is not a defining characteristic of the user \
 or agent.
+   - Wrong role: Agent-scoped memories always show a "role:" tag in their \
+metadata (even when role="user"). If a memory shows a role tag and its \
+content describes the assistant's actions, findings, identity, or \
+capabilities (subject is "Assistant", "The assistant", or describes what \
+the assistant did/found/recommended) but has role="user", reclassify it \
+to role="assistant". Conversely, if a memory has role="assistant" but \
+describes user facts, preferences, or actions (subject is "User"), \
+reclassify it to role="user". \
+NOTE: Only suggest role="assistant" for memories that already show a \
+role tag — these are agent-scoped. Do NOT suggest role="assistant" for \
+memories without a role tag (shared memories).
    Only flag CLEAR misclassifications, not borderline cases.
    Hint: if a memory has an event_date, it is almost certainly "episodic".
 
@@ -3012,7 +3036,8 @@ Do NOT split memories marked with has_artifacts — these serve as \
 searchable summaries for their attached artifact content. Splitting \
 would destroy the artifact association.
 - For reclassify: suggest UPDATE with null new_content but with \
-new_metadata containing the corrected fields.
+new_metadata containing the corrected fields (memory_type, categories, \
+importance, pinned, role). Set unchanged fields to null.
 - For security: suggest DELETE.
 - If a memory has no issues, do NOT include it in the output.
 - Be conservative: only flag clear issues. When in doubt, skip it.
@@ -3115,7 +3140,7 @@ FSCK_QUALITY_SCHEMA: dict[str, Any] = {
                                         "description": (
                                             "Metadata corrections "
                                             "(memory_type, categories, "
-                                            "importance, pinned), "
+                                            "importance, pinned, role), "
                                             "null if no metadata changes"
                                         ),
                                         "properties": {
@@ -3151,12 +3176,22 @@ FSCK_QUALITY_SCHEMA: dict[str, Any] = {
                                                 "type": ["boolean", "null"],
                                                 "description": "Corrected pinned status, null if unchanged",
                                             },
+                                            "role": {
+                                                "type": ["string", "null"],
+                                                "enum": [
+                                                    "user",
+                                                    "assistant",
+                                                    None,
+                                                ],
+                                                "description": "Corrected role, null if unchanged",
+                                            },
                                         },
                                         "required": [
                                             "memory_type",
                                             "categories",
                                             "importance",
                                             "pinned",
+                                            "role",
                                         ],
                                         "additionalProperties": False,
                                     },
@@ -3215,8 +3250,12 @@ def build_fsck_quality_prompt(
             tags.append(f"importance: {metadata['importance']}")
         if metadata.get("pinned"):
             tags.append("pinned")
-        if metadata.get("role") and metadata["role"] != "user":
-            tags.append(f"role: {metadata['role']}")
+        # For agent-scoped memories, always show role (even "user") so the LLM
+        # can detect role mismatches (e.g. assistant content stored as user).
+        # For non-agent memories, only show role when it's non-default.
+        role = metadata.get("role")
+        if role and (mem.get("agent_id") or role != "user"):
+            tags.append(f"role: {role}")
         if metadata.get("event_date"):
             tags.append(f"event_date: {metadata['event_date']}")
         if metadata.get("created_at_utc"):

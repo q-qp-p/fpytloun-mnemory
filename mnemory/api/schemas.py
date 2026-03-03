@@ -6,6 +6,8 @@ Cursor, etc.) consume as native tools.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 from mnemory.sanitize import escape_memory_headers
@@ -37,7 +39,7 @@ class AddMemoryRequest(BaseModel):
         True,
         description="Use LLM for fact extraction and dedup (True) or store as-is (False)",
     )
-    role: str = Field(
+    role: Literal["user", "assistant"] = Field(
         "user", description="Who this memory is about: 'user' or 'assistant'"
     )
     ttl_days: int | None = Field(
@@ -57,7 +59,7 @@ class BatchMemoryItem(BaseModel):
     importance: str | None = None
     pinned: bool | None = None
     infer: bool = True
-    role: str = "user"
+    role: Literal["user", "assistant"] = "user"
     ttl_days: int | None = None
     event_date: str | None = None
 
@@ -407,7 +409,7 @@ class RememberRequest(BaseModel):
             "the project and produce self-contained memories."
         ),
     )
-    role: str = Field(
+    role: Literal["user", "assistant"] = Field(
         "user",
         description=(
             "Who the memories are about: 'user' (default) or 'assistant'. "
