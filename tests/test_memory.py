@@ -827,6 +827,157 @@ class TestRoleParameter:
         _, kwargs = service.vector.search.call_args
         assert "role" not in (kwargs.get("filters") or {})
 
+    def test_role_written_on_update_action(self):
+        """UPDATE action must write role into metadata_update so that a
+        pre-existing memory with the wrong role gets corrected.
+
+        Regression test for: remember(role='assistant') triggering an UPDATE
+        on a role='user' memory left the role unchanged because role was not
+        included in metadata_update passed to update_metadata().
+
+        Uses the remember() pipeline (Stage 1 extraction + Stage 2 dedup)
+        because that is the path exercised by the opencode plugin.
+        """
+        import json
+
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        # Existing memory stored as role='user'
+        existing_mem = {
+            "id": "mem-existing",
+            "user_id": "filip",
+            "agent_id": "opencode",
+            "score": 0.95,
+            "memory": "Assistant will find the right Python environment",
+            "metadata": {
+                "role": "user",
+                "memory_type": "episodic",
+                "categories": ["technical"],
+                "importance": "normal",
+                "pinned": False,
+            },
+        }
+        service.vector.get_by_id.return_value = existing_mem
+
+        # search_similar returns the existing memory as a dedup candidate
+        service.vector.search_similar.return_value = [existing_mem]
+
+        # LLM is called twice:
+        # Call 1 — Stage 1 extraction: returns one fact
+        # Call 2 — Stage 2 dedup: returns UPDATE with integer key "0" -> mem-existing
+        extraction_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Assistant found the right Python environment",
+                        "memory_type": "episodic",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": None,
+                    }
+                ],
+                "summary": "Assistant found the Python environment.",
+                "store_artifact": False,
+            }
+        )
+        dedup_response = json.dumps(
+            {
+                "decisions": [
+                    {
+                        "fact_index": 0,
+                        "action": "UPDATE",
+                        "target_id": "0",  # integer key maps to "mem-existing"
+                        "text": "Assistant found the right Python environment",
+                    }
+                ]
+            }
+        )
+        service._llm.generate.side_effect = [extraction_response, dedup_response]
+
+        service.remember(
+            content=(
+                "User: What Python are you using?\n"
+                "Assistant: I found the right Python environment at .venv/bin/python."
+            ),
+            user_id="filip",
+            agent_id="opencode",
+            role="assistant",
+        )
+
+        # update_metadata must have been called with role='assistant'
+        service.vector.update_metadata.assert_called_once()
+        written_meta = service.vector.update_metadata.call_args[0][1]
+        assert written_meta.get("role") == "assistant", (
+            f"Expected role='assistant' in update_metadata call, got: {written_meta}"
+        )
+
+    def test_role_user_written_on_update_action(self):
+        """UPDATE with role='user' must also write role into metadata_update.
+
+        Uses the remember() pipeline to match the real execution path.
+        """
+        import json
+
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        existing_mem = {
+            "id": "mem-existing",
+            "user_id": "filip",
+            "score": 0.95,
+            "memory": "User is from Prague",
+            "metadata": {
+                "role": "user",
+                "memory_type": "fact",
+                "categories": ["personal"],
+                "importance": "normal",
+                "pinned": False,
+            },
+        }
+        service.vector.get_by_id.return_value = existing_mem
+        service.vector.search_similar.return_value = [existing_mem]
+
+        extraction_response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User lives in Prague",
+                        "memory_type": "fact",
+                        "categories": ["personal"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": None,
+                    }
+                ],
+                "summary": "User mentioned living in Prague.",
+                "store_artifact": False,
+            }
+        )
+        dedup_response = json.dumps(
+            {
+                "decisions": [
+                    {
+                        "fact_index": 0,
+                        "action": "UPDATE",
+                        "target_id": "0",
+                        "text": "User lives in Prague",
+                    }
+                ]
+            }
+        )
+        service._llm.generate.side_effect = [extraction_response, dedup_response]
+
+        service.remember(
+            content="User: I live in Prague.\nAssistant: Got it!",
+            user_id="filip",
+        )
+
+        service.vector.update_metadata.assert_called_once()
+        written_meta = service.vector.update_metadata.call_args[0][1]
+        assert written_meta.get("role") == "user"
+
 
 # ── infer=False security restrictions ─────────────────────────────────
 

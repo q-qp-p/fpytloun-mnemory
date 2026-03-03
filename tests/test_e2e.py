@@ -1821,3 +1821,115 @@ class TestRememberRoleRouting:
         assert (
             "jazz" in agent_text or "music" in agent_text or "assistant" in agent_text
         ), f"Expected assistant fact about jazz/music in memories: {_texts(agent_mems)}"
+
+
+# ── Role correction on UPDATE ─────────────────────────────────────────
+
+
+class TestRoleUpdateCorrection:
+    """Regression tests for the bug where UPDATE actions in _execute_action()
+    did not write role into metadata_update, causing a pre-existing role='user'
+    memory to keep its wrong role even after being updated via role='assistant'."""
+
+    USER = "e2e_role_update"
+    AGENT = "e2e-role-update-agent"
+
+    def test_remember_assistant_role_corrects_existing_user_memory(
+        self, memory_service: MemoryService
+    ) -> None:
+        """When remember(role='assistant') updates a pre-existing role='user'
+        memory, the stored memory must end up with role='assistant'."""
+        # Step 1: store a memory as role='user' (infer=False for determinism)
+        memory_service.add_memory(
+            "Assistant will find the right Python environment to continue work",
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="user",
+            infer=False,
+        )
+        time.sleep(0.5)
+
+        # Confirm it is stored as role='user'
+        user_mems = memory_service.list_memories(
+            user_id=self.USER, agent_id=self.AGENT, role="user"
+        )
+        assert any(
+            "python" in _mem_text(m).lower() or "environment" in _mem_text(m).lower()
+            for m in user_mems
+        ), f"Setup failed — expected user memory about Python env: {_texts(user_mems)}"
+
+        # Step 2: remember the same fact as role='assistant' — the pipeline
+        # should UPDATE the existing memory and correct its role.
+        memory_service.remember(
+            content=(
+                "User: What Python are you using?\n"
+                "Assistant: I found the right Python environment at .venv/bin/python "
+                "and will use it to continue work."
+            ),
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        time.sleep(0.5)
+
+        # The memory must now appear under role='assistant'
+        agent_mems = memory_service.list_memories(
+            user_id=self.USER, agent_id=self.AGENT, role="assistant"
+        )
+        combined = _all_text(agent_mems)
+        assert (
+            "python" in combined or "environment" in combined or "venv" in combined
+        ), (
+            f"Expected Python/environment fact in assistant memories after UPDATE: "
+            f"{_texts(agent_mems)}"
+        )
+        for m in agent_mems:
+            stored_role = (m.get("metadata") or {}).get("role", "user")
+            assert stored_role == "assistant", (
+                f"Expected role='assistant' after UPDATE, got '{stored_role}': "
+                f"{_mem_text(m)}"
+            )
+
+    def test_add_memory_assistant_role_corrects_existing_user_memory(
+        self, memory_service: MemoryService
+    ) -> None:
+        """add_memory(role='assistant', infer=True) that triggers an UPDATE on
+        a pre-existing role='user' memory must correct the role to 'assistant'."""
+        user = f"{self.USER}_add"
+
+        # Step 1: store as role='user'
+        memory_service.add_memory(
+            "Assistant prefers concise answers",
+            user_id=user,
+            agent_id=self.AGENT,
+            role="user",
+            infer=False,
+        )
+        time.sleep(0.5)
+
+        # Step 2: add overlapping content as role='assistant' with infer=True
+        memory_service.add_memory(
+            "assistant: I prefer to give concise, direct answers.",
+            user_id=user,
+            agent_id=self.AGENT,
+            role="assistant",
+            infer=True,
+        )
+        time.sleep(0.5)
+
+        # Must appear under role='assistant'
+        agent_mems = memory_service.list_memories(
+            user_id=user, agent_id=self.AGENT, role="assistant"
+        )
+        assert len(agent_mems) >= 1, (
+            f"Expected at least 1 assistant memory, got: {_texts(agent_mems)}"
+        )
+        combined = _all_text(agent_mems)
+        assert "concise" in combined or "direct" in combined, (
+            f"Expected 'concise'/'direct' in assistant memories: {_texts(agent_mems)}"
+        )
+        for m in agent_mems:
+            stored_role = (m.get("metadata") or {}).get("role", "user")
+            assert stored_role == "assistant", (
+                f"Expected role='assistant', got '{stored_role}': {_mem_text(m)}"
+            )

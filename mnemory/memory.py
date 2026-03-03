@@ -1330,6 +1330,11 @@ class MemoryService:
                 "categories": cats or [],
                 "importance": imp,
                 "pinned": pin,
+                # Always write role explicitly so that updating a memory
+                # with a different role (e.g. user→assistant) takes effect.
+                # update_metadata() uses Qdrant set_payload (patch semantics)
+                # and would silently preserve the old role if omitted.
+                "role": role,
             }
             # Preserve or update event_date
             # Priority: caller-provided > LLM-extracted > existing
