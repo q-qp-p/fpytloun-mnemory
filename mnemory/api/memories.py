@@ -15,6 +15,8 @@ from mnemory.api.schemas import (
     AddMemoriesBatchRequest,
     AddMemoryRequest,
     AddMemoryResponse,
+    AskMemoriesRequest,
+    AskMemoriesResponse,
     CoreMemoriesResponse,
     DeleteMemoriesBatchRequest,
     FindMemoriesRequest,
@@ -223,6 +225,46 @@ def find_memories(
 
     items = [format_memory_item(r) for r in result.get("results", [])]
     return SearchMemoriesResponse(results=items)
+
+
+@router.post("/ask", response_model=AskMemoriesResponse)
+def ask_memories(
+    req: AskMemoriesRequest,
+    ctx: SessionContext = Depends(get_session_context),
+):
+    """Ask a question and get a human-readable answer based on memories."""
+    _record("ask_memories", ctx)
+    service = _get_service()
+    try:
+        result = service.answer_question(
+            question=req.question,
+            user_id=ctx.user_id,
+            session_agent_id=ctx.agent_id,
+            agent_id=ctx.agent_id,
+            memory_type=req.memory_type,
+            categories=req.categories,
+            role=req.role,
+            limit=req.limit,
+            include_decayed=req.include_decayed,
+            session_timezone=ctx.timezone,
+            context=req.context,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    memories = result.get("results", [])
+    if req.include_memories:
+        items = [format_memory_item(r) for r in memories]
+    else:
+        items = []
+
+    return AskMemoriesResponse(
+        answer=result.get("answer", ""),
+        results=items,
+        count=len(memories),
+        queries=result.get("queries", []),
+        stats=result.get("stats", {}),
+    )
 
 
 @router.get("/core", response_model=CoreMemoriesResponse)

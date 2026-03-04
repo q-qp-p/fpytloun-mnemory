@@ -242,7 +242,7 @@ Examples:
   "Your name is Bob"                        → role="assistant", agent_id="self"
   "You speak casually and use humor"        → role="assistant", agent_id="self"
 
-### Searching memories (search_memories / find_memories)
+### Searching memories (search_memories / find_memories / ask_memories)
 Use category and type filters to narrow results. Results are ranked by
 relevance and importance.
 
@@ -250,7 +250,7 @@ Search and list automatically return BOTH your agent-specific memories
 AND shared user memories, merged and deduplicated. You do not need to
 pass agent_id — the server knows your identity from the session.
 
-Two search tools are available:
+Three search tools are available:
 - **search_memories**: Fast single-query vector search. Use for simple
   lookups and routine memory recall. Preferred for most cases.
 - **find_memories**: AI-powered multi-query search. Takes a natural
@@ -260,6 +260,13 @@ Two search tools are available:
   questions where a single search query wouldn't capture all relevant
   context. Slower (2 extra LLM calls) but higher quality for complex
   queries.
+- **ask_memories**: Ask a question and get a human-readable answer based
+  on stored memories. Uses find_memories internally to locate relevant
+  memories, then generates a natural language answer using an LLM. The
+  most expensive operation (3 LLM calls: query generation + reranking +
+  answer generation). Use when you need a synthesized, human-readable
+  answer rather than raw memory results. Set include_memories=true to
+  also receive the supporting memories used to generate the answer.
 
 ### Artifacts (save_artifact, get_artifact, list_artifacts, delete_artifact)
 For detailed content too long for fast memory (research reports, analysis,
@@ -378,8 +385,8 @@ AUTOMATIC (do not duplicate):
   are already injected on each message
 
 ALLOWED (explicit user requests only):
-- search_memories / find_memories — when the user asks to look up
-  something specific not already in context
+- search_memories / find_memories / ask_memories — when the user asks to
+  look up something specific not already in context
 - add_memory — when the user explicitly asks to remember something
 - update_memory / delete_memory — when the user asks to change or
   forget something

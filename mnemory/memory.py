@@ -32,6 +32,7 @@ from mnemory.categories import (
 from mnemory.config import Config
 from mnemory.llm import LLMClient, parse_json_response
 from mnemory.prompts import (
+    build_answer_prompt,
     build_classification_prompt,
     build_dedup_prompt,
     build_extraction_prompt,
@@ -88,6 +89,31 @@ def _validate_id(value: str, name: str) -> str:
     if len(value) > _MAX_ID_LENGTH:
         raise ValueError(f"{name} too long (max {_MAX_ID_LENGTH} chars)")
     return value
+
+
+def _resolve_today(session_timezone: str | None) -> str:
+    """Compute today's date as YYYY-MM-DD in the session timezone.
+
+    Falls back to server local timezone if the session timezone is
+    invalid or not provided.
+
+    Args:
+        session_timezone: IANA timezone name (e.g., "Europe/Prague") or None.
+
+    Returns:
+        Today's date as a YYYY-MM-DD string.
+    """
+    if session_timezone:
+        try:
+            from zoneinfo import ZoneInfo
+
+            return datetime.now(ZoneInfo(session_timezone)).strftime("%Y-%m-%d")
+        except (KeyError, Exception):
+            logger.warning(
+                "Invalid session timezone '%s', falling back to server local",
+                session_timezone,
+            )
+    return datetime.now().astimezone().strftime("%Y-%m-%d")
 
 
 def _sort_to_order_by(sort: str | None):
@@ -2022,21 +2048,7 @@ class MemoryService:
         # Fetch project categories for context-aware query generation
         project_cats = self._get_project_categories(user_id)
 
-        # Compute today's date in the session timezone (for temporal queries)
-        today: str | None = None
-        if session_timezone:
-            try:
-                from zoneinfo import ZoneInfo
-
-                today = datetime.now(ZoneInfo(session_timezone)).strftime("%Y-%m-%d")
-            except (KeyError, Exception):
-                logger.warning(
-                    "Invalid session timezone '%s', falling back to server local",
-                    session_timezone,
-                )
-                today = datetime.now().astimezone().strftime("%Y-%m-%d")
-        else:
-            today = datetime.now().astimezone().strftime("%Y-%m-%d")
+        today = _resolve_today(session_timezone)
 
         # Statistics tracking
         total_searched = 0
@@ -2252,6 +2264,103 @@ class MemoryService:
                 "dropped": dropped + pre_filtered,
                 "returned": len(reranked),
             },
+        }
+
+    # ── Ask Memories (Answer Generation) ──────────────────────────────
+
+    def answer_question(
+        self,
+        question: str,
+        *,
+        user_id: str,
+        session_agent_id: str | None = None,
+        agent_id: str | None = None,
+        memory_type: str | None = None,
+        categories: list[str] | None = None,
+        limit: int = 10,
+        role: str | None = None,
+        include_decayed: bool = False,
+        session_timezone: str | None = None,
+        context: str | None = None,
+    ) -> dict:
+        """Ask a question and generate a human-readable answer from memories.
+
+        Uses find_memories internally to locate relevant memories, then
+        passes them to an LLM to generate a natural language answer.
+
+        This is the most expensive operation — 3 LLM calls:
+        1. Query generation (from find_memories)
+        2. Reranking (from find_memories)
+        3. Answer generation
+
+        Args:
+            question: The user's natural language question.
+            user_id: Required user scope.
+            session_agent_id: Session agent for dual-scope search.
+            agent_id: Fallback agent_id when no session agent.
+            memory_type: Optional memory type filter.
+            categories: Optional category filter.
+            limit: Maximum supporting memories to use.
+            role: Optional role filter ("user" or "assistant").
+            include_decayed: If True, include expired/decayed memories.
+            session_timezone: IANA timezone from X-Timezone header.
+            context: Optional context hint for query generation.
+
+        Returns:
+            Dict with "answer" (str), "results" (list of memory dicts),
+            "queries" (list of generated search queries), and "stats"
+            (search and answer statistics).
+
+        Raises:
+            ValueError: If find_memories or answer generation fails.
+        """
+        # Step 1: Find relevant memories using the full pipeline
+        find_result = self.find_memories(
+            question,
+            user_id=user_id,
+            session_agent_id=session_agent_id,
+            agent_id=agent_id,
+            memory_type=memory_type,
+            categories=categories,
+            limit=limit,
+            role=role,
+            include_decayed=include_decayed,
+            session_timezone=session_timezone,
+            context=context,
+        )
+
+        results = find_result.get("results", [])
+        queries = find_result.get("queries", [])
+        stats = find_result.get("stats", {})
+
+        # Step 2: If no results, return a canned answer
+        if not results:
+            return {
+                "answer": (
+                    "I don't have any relevant memories to answer this question."
+                ),
+                "results": [],
+                "queries": queries,
+                "stats": stats,
+            }
+
+        # Step 3: Generate a human-readable answer from the memories
+        today = _resolve_today(session_timezone)
+        messages = build_answer_prompt(question, results, today=today)
+
+        logger.info(
+            "ask_memories: generating answer from %d memories for: %s",
+            len(results),
+            question[:100],
+        )
+
+        answer = self._llm.generate(messages, max_tokens=4000)
+
+        return {
+            "answer": answer,
+            "results": results,
+            "queries": queries,
+            "stats": stats,
         }
 
     # ── Get Core Memories ─────────────────────────────────────────────

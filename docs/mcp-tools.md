@@ -1,6 +1,6 @@
 # MCP Tools
 
-mnemory exposes 16 tools via the [Model Context Protocol](https://modelcontextprotocol.io/). These are available to any MCP-compatible client.
+mnemory exposes 17 tools via the [Model Context Protocol](https://modelcontextprotocol.io/). These are available to any MCP-compatible client.
 
 ## Session Initialization
 
@@ -16,6 +16,7 @@ mnemory exposes 16 tools via the [Model Context Protocol](https://modelcontextpr
 | `add_memories` | Batch-add multiple memories in a single call |
 | `search_memories` | Semantic search with type/category/role/date filters, importance reranking |
 | `find_memories` | AI-powered search: generates multiple queries, searches, and reranks by relevance to your question. Temporal-aware — resolves "last week", "in 2023", etc. |
+| `ask_memories` | Ask a question and get a human-readable answer synthesized from relevant memories. Uses `find_memories` internally, then generates a natural language answer. Most expensive (3 LLM calls). |
 | `get_core_memories` | Load pinned + recent context at conversation start. Use for clients that inject MCP server instructions (e.g., Claude Code). |
 | `get_recent_memories` | Get recent activity from the last N days with scope filter (user/agent/all) |
 | `list_memories` | List all/filtered memories |
@@ -43,10 +44,11 @@ mnemory exposes 16 tools via the [Model Context Protocol](https://modelcontextpr
 
 ### Searching
 
-Two search tools are available:
+Three search tools are available:
 
 - **`search_memories`**: Fast single-query vector search. Use for simple lookups and routine memory recall. Preferred for most cases.
 - **`find_memories`**: AI-powered multi-query search. Takes a natural language question, generates multiple targeted searches following associations (e.g., "dogs" -> pets, partner, house, lifestyle), and uses AI to rerank results by relevance. Use for complex, multi-faceted questions where a single search query wouldn't capture all relevant context. Slower (2 extra LLM calls) but higher quality for complex queries.
+- **`ask_memories`**: Ask a question and get a human-readable answer. Uses `find_memories` internally to locate relevant memories, then passes them to an LLM to generate a natural language prose answer. Most expensive operation (3 LLM calls: query generation + reranking + answer generation). Use when you need a synthesized answer rather than raw memory results. Set `include_memories=true` to also receive the supporting memories used to generate the answer.
 
 ### Artifacts
 

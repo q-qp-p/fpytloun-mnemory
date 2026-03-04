@@ -1,8 +1,9 @@
 /**
  * mnemory UI — Search tab Alpine.js component.
  *
- * Provides semantic search (single-query) and AI-powered find (multi-query)
- * with filtering, result expansion, inline delete, and clipboard copy.
+ * Provides semantic search (single-query), AI-powered find (multi-query),
+ * and ask (human-readable answer from memories) with filtering, result
+ * expansion, inline delete, and clipboard copy.
  *
  * Usage:
  *   <div x-data="searchTab()" x-init="init()">
@@ -15,11 +16,14 @@ function searchTab() {
     /** Current search query text */
     query: '',
 
-    /** Search mode: 'search' (fast vector) or 'find' (AI multi-query) */
+    /** Search mode: 'search' (fast vector), 'find' (AI multi-query), or 'ask' (answer) */
     mode: 'search',
 
     /** Array of result objects from the last search */
     results: [],
+
+    /** Human-readable answer text (only set in 'ask' mode) */
+    answer: null,
 
     /** Whether a search request is in-flight */
     loading: false,
@@ -84,6 +88,7 @@ function searchTab() {
       // Clear results when the active user changes
       window.addEventListener('mnemory:user-changed', () => {
         this.results = [];
+        this.answer = null;
         this.searched = false;
         this.expandedId = null;
         this.deleteConfirm = null;
@@ -104,7 +109,7 @@ function searchTab() {
     // ── Search ───────────────────────────────────────────────────
 
     /**
-     * Execute a search or find based on the current mode and filters.
+     * Execute a search, find, or ask based on the current mode and filters.
      */
     async search() {
       const q = this.query.trim();
@@ -114,6 +119,7 @@ function searchTab() {
       this.searched = true;
       this.expandedId = null;
       this.deleteConfirm = null;
+      this.answer = null;
 
       try {
         // Build filter payload — only include non-empty values
@@ -135,7 +141,11 @@ function searchTab() {
         }
 
         let response;
-        if (this.mode === 'find') {
+        if (this.mode === 'ask') {
+          // Ask: human-readable answer from memories
+          response = await MnemoryAPI.askMemories(q, { ...filters, include_memories: true });
+          this.answer = response.answer || null;
+        } else if (this.mode === 'find') {
           // AI-powered multi-query search
           response = await MnemoryAPI.findMemories(q, filters);
         } else {
@@ -147,6 +157,7 @@ function searchTab() {
       } catch (e) {
         Alpine.store('notify').error(`Search failed: ${e.message}`);
         this.results = [];
+        this.answer = null;
       } finally {
         this.loading = false;
       }

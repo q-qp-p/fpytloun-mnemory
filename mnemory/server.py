@@ -854,6 +854,113 @@ def find_memories(
         )
 
 
+# ── Tool 2b: ask_memories ────────────────────────────────────────────
+
+
+@mcp.tool()
+def ask_memories(
+    question: str,
+    user_id: str | None = None,
+    memory_type: str | None = None,
+    categories: list[str] | None = None,
+    role: str | None = None,
+    limit: int = 10,
+    agent_id: str | None = None,
+    include_decayed: bool = False,
+    context: str | None = None,
+    include_memories: bool = False,
+) -> str:
+    """Ask a question and get a human-readable answer based on stored memories.
+
+    Uses find_memories internally to locate relevant memories, then
+    generates a natural language answer using an LLM. Returns a prose
+    answer synthesized from the user's stored memories.
+
+    This is the most expensive operation — 3 LLM calls (query generation
+    + reranking + answer generation) plus multiple vector searches. Use
+    when you need a synthesized, human-readable answer rather than raw
+    memory results.
+
+    Args:
+        question: The user's question in natural language.
+        user_id: User identifier. Optional if pre-configured via API key.
+        memory_type: Filter by type (preference/fact/episodic/procedural/context).
+        categories: Filter by categories. "project" matches all project:* entries.
+        role: Filter by role — "user" or "assistant". Omit for all.
+        limit: Max supporting memories to use (default 10).
+        agent_id: Ignored when session agent is set (automatic dual-scope).
+                  Only used as fallback for direct API callers without
+                  X-Agent-Id header.
+        include_decayed: If true, include expired/decayed memories in search.
+                        Default false.
+        context: Optional context hint for query generation (e.g., current
+                 working directory, active project).
+        include_memories: If true, include the supporting memories used to
+                         generate the answer in the response. Default false —
+                         returns only the answer text, queries, and stats.
+    """
+    try:
+        uid = _resolve_user_id(user_id)
+        session_aid = _get_session_agent_id()
+        collector = get_collector()
+        if collector:
+            collector.record_operation("ask_memories", uid, session_aid)
+
+        session_tz = _get_session_timezone()
+
+        if session_aid:
+            result = _get_service().answer_question(
+                question,
+                user_id=uid,
+                session_agent_id=session_aid,
+                memory_type=memory_type,
+                categories=categories,
+                role=role,
+                limit=limit,
+                include_decayed=include_decayed,
+                session_timezone=session_tz,
+                context=context,
+            )
+        else:
+            aid = _resolve_agent_id(agent_id)
+            result = _get_service().answer_question(
+                question,
+                user_id=uid,
+                agent_id=aid,
+                memory_type=memory_type,
+                categories=categories,
+                role=role,
+                limit=limit,
+                include_decayed=include_decayed,
+                session_timezone=session_tz,
+                context=context,
+            )
+
+        answer = result.get("answer", "")
+        queries = result.get("queries", [])
+        stats = result.get("stats", {})
+
+        if include_memories:
+            memories = result.get("results", [])
+            formatted = _format_memories(memories)
+            response = json.loads(formatted)
+            response["count"] = len(memories)
+        else:
+            response = {"results": [], "count": 0}
+
+        response["answer"] = answer
+        response["queries"] = queries
+        response["stats"] = stats
+        return json.dumps(response, default=str)
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
+    except Exception:
+        logger.exception("Error in ask_memories")
+        return json.dumps(
+            {"error": True, "message": "Internal error processing ask_memories"}
+        )
+
+
 # ── Tool 3: get_core_memories ────────────────────────────────────────
 
 

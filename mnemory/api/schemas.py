@@ -153,6 +153,31 @@ class FindMemoriesRequest(BaseModel):
     )
 
 
+class AskMemoriesRequest(BaseModel):
+    """Request to ask a question and get a human-readable answer."""
+
+    question: str = Field(
+        ..., max_length=10_000, description="Natural language question"
+    )
+    memory_type: str | None = Field(None, description="Filter by memory type")
+    categories: list[str] | None = Field(None, description="Filter by categories")
+    role: str | None = Field(None, description="Filter by role")
+    limit: int = Field(10, ge=1, le=100, description="Max supporting memories to use")
+    include_decayed: bool = Field(False, description="Include expired/decayed memories")
+    context: str | None = Field(
+        None,
+        max_length=10_000,
+        description="Optional context hint for query generation",
+    )
+    include_memories: bool = Field(
+        False,
+        description=(
+            "Include supporting memories in the response. Default false — "
+            "returns only the answer text, queries, and stats."
+        ),
+    )
+
+
 class MemoryItem(BaseModel):
     """A memory item in search/list results."""
 
@@ -161,6 +186,21 @@ class MemoryItem(BaseModel):
     score: float | None = None
     metadata: dict | None = None
     has_artifacts: bool = False
+
+
+class AskMemoriesResponse(BaseModel):
+    """Response with a human-readable answer and supporting memories."""
+
+    answer: str = Field(..., description="Human-readable answer based on memories")
+    results: list["MemoryItem"] = Field(
+        default_factory=list,
+        description="Supporting memories (when include_memories=true)",
+    )
+    count: int = Field(0, description="Number of memories used to generate the answer")
+    queries: list[str] = Field(
+        default_factory=list, description="Generated search queries"
+    )
+    stats: dict = Field(default_factory=dict, description="Search statistics")
 
 
 class SearchMemoriesResponse(BaseModel):

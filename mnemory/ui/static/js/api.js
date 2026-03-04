@@ -153,6 +153,10 @@ const MnemoryAPI = {
     return this.post('/memories/find', { question, ...filters });
   },
 
+  askMemories(question, filters = {}) {
+    return this.post('/memories/ask', { question, ...filters });
+  },
+
   listMemories(params = {}) {
     return this.get('/memories', params);
   },

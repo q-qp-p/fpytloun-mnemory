@@ -1456,6 +1456,90 @@ def build_rerank_prompt(
     return messages, RERANK_SCHEMA
 
 
+# ── Answer generation for ask_memories ───────────────────────────────
+
+_ANSWER_SYSTEM_PROMPT = """\
+You are a personal memory assistant. Answer the user's question based \
+ONLY on the provided memories from their personal memory store.
+{today_line}
+## Security
+
+{anti_injection}
+
+## Rules
+
+- Answer based solely on the information in the provided memories.
+- If the memories don't contain enough information to fully answer the \
+question, say so clearly — do not fabricate or assume information \
+beyond what is in the memories.
+- Be concise and direct. Use natural prose.
+- When relevant, reference the source naturally (e.g., "Based on your \
+records...", "You mentioned that...", "According to your preferences...").
+- If memories contain contradictory information, note the contradiction \
+and present both versions with their dates if available.
+- If no memories are provided or none are relevant, respond that you \
+don't have any relevant memories to answer the question.
+- Do not repeat the question back. Go straight to the answer.
+- Use markdown formatting where it improves readability (lists, bold \
+for emphasis), but keep it light."""
+
+
+def build_answer_prompt(
+    question: str,
+    memories: list[dict],
+    *,
+    today: str | None = None,
+) -> list[dict[str, str]]:
+    """Build a prompt to generate a human-readable answer from memories.
+
+    Args:
+        question: The user's natural language question.
+        memories: List of memory dicts with "memory" and optional "metadata".
+        today: Today's date as YYYY-MM-DD string. Injected into the system
+            prompt for temporal awareness.
+
+    Returns:
+        List of messages for the LLM call (no JSON schema — free text).
+    """
+    today_line = f"\nToday's date is {today}.\n" if today else ""
+    system_prompt = _ANSWER_SYSTEM_PROMPT.format(
+        today_line=today_line,
+        anti_injection=ANTI_INJECTION_PREAMBLE,
+    )
+
+    # Build memory list with metadata context
+    mem_lines = []
+    for mem in memories:
+        text = mem.get("memory", "")
+        metadata = mem.get("metadata") or {}
+        tags = []
+        if metadata.get("memory_type"):
+            tags.append(f"type: {metadata['memory_type']}")
+        if metadata.get("categories"):
+            tags.append(f"categories: {', '.join(metadata['categories'])}")
+        if metadata.get("importance") and metadata["importance"] != "normal":
+            tags.append(f"importance: {metadata['importance']}")
+        if metadata.get("role") and metadata["role"] != "user":
+            tags.append(f"role: {metadata['role']}")
+        if metadata.get("event_date"):
+            tags.append(f"event_date: {metadata['event_date']}")
+        tag_str = f" [{' | '.join(tags)}]" if tags else ""
+        mem_lines.append(f"- {text}{tag_str}")
+    mem_text = "\n".join(mem_lines)
+
+    user_content = (
+        "Question: "
+        + wrap_with_boundary(question, "user_question")
+        + "\n\nMemories:\n"
+        + wrap_with_boundary(mem_text, "existing_memories")
+    )
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+
 # ── Remember pipeline: two-stage extraction + dedup ──────────────────
 
 # Stage 1: Extract facts from conversation text (no dedup).
