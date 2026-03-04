@@ -279,8 +279,12 @@ class ListMemoriesRequest(BaseModel):
 class SaveArtifactRequest(BaseModel):
     """Request to save an artifact attached to a memory."""
 
+    # 10MB binary → ~13.3MB base64; 14M chars gives headroom.
+    # Actual byte limit is enforced by ArtifactStore after decoding.
     content: str = Field(
-        ..., max_length=200_000, description="Text or base64-encoded binary content"
+        ...,
+        max_length=14_000_000,
+        description="Text or base64-encoded binary content (up to ~10MB)",
     )
     filename: str = Field("note.md", description="Artifact filename")
     content_type: str = Field("text/markdown", description="MIME type")

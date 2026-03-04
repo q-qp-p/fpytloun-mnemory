@@ -1419,8 +1419,8 @@ def save_artifact(
     """Attach an artifact to a memory (slow memory tier).
 
     Use for detailed content too long for fast memory — research reports,
-    analysis, logs, notes, code, data. The fast memory holds the searchable
-    summary; the artifact holds the full details.
+    analysis, logs, notes, code, data, images, PDFs. The fast memory holds
+    the searchable summary; the artifact holds the full details.
 
     Note: When using add_memory with long content, artifacts may be created
     automatically. Use this tool for explicit artifact attachment to an
@@ -1429,7 +1429,7 @@ def save_artifact(
     For text content, pass the content directly. For binary content (images,
     PDFs), pass base64-encoded content and set the appropriate content_type.
 
-    Max size: 100KB per artifact.
+    Max size: 10MB per artifact (configurable via MAX_ARTIFACT_SIZE).
 
     Args:
         memory_id: ID of the parent fast memory.
@@ -1472,10 +1472,14 @@ def get_artifact(
     offset: int = 0,
     limit: int = 5000,
 ) -> str:
-    """Retrieve artifact content with pagination.
+    """Retrieve artifact content.
 
-    For large artifacts, use offset to read in chunks. Response includes
-    total_size and has_more to indicate if there's more content.
+    Text artifacts support pagination via offset/limit parameters.
+    Binary artifacts (images, PDFs, etc.) always return the full content
+    as a single base64-encoded string — offset and limit are ignored.
+
+    Response includes total_size (characters for text, bytes for binary),
+    is_text (true/false), and has_more (always false for binary).
 
     Args:
         memory_id: ID of any memory that references this artifact.
@@ -1483,8 +1487,8 @@ def get_artifact(
                    any of them can be used here.
         artifact_id: ID of the artifact to retrieve.
         user_id: User identifier. Optional if pre-configured via API key mapping.
-        offset: Character offset for text, byte offset for binary (default 0).
-        limit: Max characters/bytes to return (default 5000).
+        offset: Character offset for text content (default 0, ignored for binary).
+        limit: Max characters to return for text (default 5000, ignored for binary).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1693,11 +1697,16 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 _session_user_bound.set(True)
             else:
                 # Fall back to identity headers (X-User-Id, then
-                # X-OpenWebUI-User-Email for Open WebUI integration)
+                # X-OpenWebUI-User-Email for Open WebUI integration).
+                # For artifact /raw endpoints only, also accept user_id
+                # as a query parameter (browser-embedded <img src> can't
+                # set custom headers).
                 header_uid = (
                     request.headers.get("x-user-id", "").strip()
                     or request.headers.get("x-openwebui-user-email", "").strip()
                 )
+                if not header_uid and request.url.path.endswith("/raw"):
+                    header_uid = request.query_params.get("user_id", "").strip()
                 if header_uid:
                     _session_user_id.set(header_uid)
 
@@ -1722,11 +1731,20 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             _session_user_bound.set(False)
 
     def _extract_token(self, request: Request) -> str:
-        """Extract API token from request headers."""
+        """Extract API token from request headers or query parameter.
+
+        Checks in order: Authorization: Bearer header, X-API-Key header,
+        ``key`` query parameter. The query parameter fallback supports
+        browser-embedded requests (e.g., ``<img src="...?key=...">``).
+        """
         auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("bearer "):
             return auth_header[7:]
-        return request.headers.get("x-api-key", "")
+        header_key = request.headers.get("x-api-key", "")
+        if header_key:
+            return header_key
+        # Fallback: query parameter (for <img src="...">, download links)
+        return request.query_params.get("key", "")
 
     def _set_identity_from_headers(self, request: Request) -> None:
         """Set session identity from HTTP headers (no-auth mode).

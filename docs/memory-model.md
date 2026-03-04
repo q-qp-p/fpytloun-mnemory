@@ -4,7 +4,7 @@
 
 **Fast Memory** (vector store): Concise facts and summaries, max 1000 characters. Semantically searchable via embeddings. Stored in Qdrant (local embedded or remote).
 
-**Slow Memory** (artifact store): Detailed content — research reports, analysis, logs, code, images. Stored in S3/MinIO or local filesystem. Attached to fast memories, retrieved on demand with pagination.
+**Slow Memory** (artifact store): Detailed content — research reports, analysis, logs, code, images, PDFs. Up to 10MB per artifact (configurable via `MAX_ARTIFACT_SIZE`). Stored in S3/MinIO or local filesystem. Attached to fast memories, retrieved on demand. Text artifacts support pagination; binary artifacts are returned in full.
 
 ## Memory Types
 

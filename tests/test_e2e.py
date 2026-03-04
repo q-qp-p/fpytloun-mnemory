@@ -2445,17 +2445,20 @@ class TestCoreMemoriesNoTruncation:
                 f"Pinned fact {i} should appear in core memories"
             )
 
+    @pytest.mark.timeout(180)
     def test_all_sections_present_with_agent(
         self, memory_service: MemoryService
     ) -> None:
         """With agent memories, all relevant sections should appear."""
         # Agent identity (role=assistant)
+        # Note: role="assistant" requires infer=True (security: prevents
+        # direct injection of arbitrary instructions as agent personality).
         memory_service.add_memory(
             "I am TestBot, a helpful research assistant.",
             user_id=self.USER,
             agent_id=self.AGENT,
             role="assistant",
-            infer=False,
+            infer=True,
             memory_type="fact",
             categories=["personal"],
             importance="critical",
@@ -2467,7 +2470,7 @@ class TestCoreMemoriesNoTruncation:
             user_id=self.USER,
             agent_id=self.AGENT,
             role="assistant",
-            infer=False,
+            infer=True,
             memory_type="episodic",
             categories=["technical"],
             importance="high",

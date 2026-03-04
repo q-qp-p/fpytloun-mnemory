@@ -643,7 +643,6 @@ class MemoryService:
                 response_text = self._llm.generate(
                     messages,
                     json_schema=json_schema,
-                    max_tokens=2000,
                 )
             except Exception:
                 logger.exception("Remember extraction LLM call failed")
@@ -873,7 +872,6 @@ class MemoryService:
             response_text = self._llm.generate(
                 messages,
                 json_schema=json_schema,
-                max_tokens=2000,
             )
         except Exception:
             logger.exception("Remember dedup LLM call failed, falling back to ADD-all")
@@ -984,7 +982,6 @@ class MemoryService:
             response_text = self._llm.generate(
                 messages,
                 json_schema=json_schema,
-                max_tokens=2000,
             )
             data = parse_json_response(response_text)
             compacted = str(data.get("summary", "")).strip()
@@ -1116,7 +1113,6 @@ class MemoryService:
             response_text = self._llm.generate(
                 messages,
                 json_schema=json_schema,
-                max_tokens=2000,
             )
         except Exception:
             logger.exception("LLM extraction call failed")
@@ -1224,7 +1220,8 @@ class MemoryService:
                     action, max_memory_length=max_len
                 )
                 response_text = self._llm.generate(
-                    messages, json_schema=schema, max_tokens=2000
+                    messages,
+                    json_schema=schema,
                 )
                 shortened, _ = parse_extraction_response(response_text, {})
             except Exception:
@@ -2453,7 +2450,7 @@ class MemoryService:
             question[:100],
         )
 
-        answer = self._find_llm.generate(messages, max_tokens=4000)
+        answer = self._find_llm.generate(messages)
 
         return {
             "answer": answer,
@@ -3442,7 +3439,11 @@ class MemoryService:
         offset: int = 0,
         limit: int = 5000,
     ) -> dict:
-        """Retrieve artifact content with pagination."""
+        """Retrieve artifact content.
+
+        Text artifacts support pagination via offset/limit.
+        Binary artifacts return full content as base64 (offset/limit ignored).
+        """
         user_id = _validate_id(user_id, "user_id")
         # Get artifact metadata from the memory
         artifacts_meta = self._get_artifacts_meta(user_id, memory_id)
@@ -3452,6 +3453,25 @@ class MemoryService:
             artifacts_meta=artifacts_meta,
             offset=offset,
             limit=limit,
+        )
+
+    def get_artifact_raw(
+        self,
+        memory_id: str,
+        artifact_id: str,
+        *,
+        user_id: str,
+    ) -> tuple[bytes, str, str]:
+        """Retrieve raw artifact bytes without encoding.
+
+        Returns (raw_bytes, content_type, filename) for direct HTTP streaming.
+        """
+        user_id = _validate_id(user_id, "user_id")
+        artifacts_meta = self._get_artifacts_meta(user_id, memory_id)
+        return self.artifact.load_raw(
+            user_id=user_id,
+            artifact_id=artifact_id,
+            artifacts_meta=artifacts_meta,
         )
 
     def list_artifacts(self, memory_id: str, *, user_id: str) -> list[dict]:

@@ -222,7 +222,7 @@ class MemoryConfig:
         default_factory=lambda: _env_int("MAX_MEMORY_LENGTH", 1000)
     )
     max_artifact_size: int = field(
-        default_factory=lambda: _env_int("MAX_ARTIFACT_SIZE", 102400)
+        default_factory=lambda: _env_int("MAX_ARTIFACT_SIZE", 10_485_760)
     )
     max_core_context_length: int = field(
         default_factory=lambda: _env_int("MAX_CORE_CONTEXT_LENGTH", 4000)

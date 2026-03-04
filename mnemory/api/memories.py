@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 
 from mnemory.api.deps import SessionContext, get_session_context
 from mnemory.api.schemas import (
@@ -503,12 +504,64 @@ def get_artifact(
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Artifact not found")
 
     if result.get("error"):
         raise HTTPException(
             status_code=400, detail=result.get("message", "Unknown error")
         )
     return result
+
+
+@router.get("/{memory_id}/artifacts/{artifact_id}/raw")
+def get_artifact_raw(
+    memory_id: str,
+    artifact_id: str,
+    ctx: SessionContext = Depends(get_session_context),
+):
+    """Download raw artifact content with proper Content-Type header.
+
+    Returns the raw bytes directly — suitable for rendering images in
+    browsers, downloading files, or embedding via ``<img src="...">``.
+
+    Note: For browser-embedded use (``<img src="...">``), the API key
+    can be passed as a ``key`` query parameter since custom headers
+    cannot be set on HTML element requests.
+    """
+    _record("get_artifact", ctx)
+    service = _get_service()
+    try:
+        raw_bytes, content_type, filename = service.get_artifact_raw(
+            memory_id=memory_id,
+            artifact_id=artifact_id,
+            user_id=ctx.user_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    # Sanitize filename for Content-Disposition header to prevent
+    # header injection via quotes, newlines, or control characters.
+    safe_name = (
+        filename.replace('"', "").replace("\r", "").replace("\n", "").replace("\\", "")
+    )
+    if not safe_name:
+        safe_name = "artifact"
+
+    return Response(
+        content=raw_bytes,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "Content-Length": str(len(raw_bytes)),
+            # Prevent caching of authenticated content and limit
+            # API key leakage via Referer headers.
+            "Cache-Control": "private, no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 @router.delete("/{memory_id}/artifacts/{artifact_id}")

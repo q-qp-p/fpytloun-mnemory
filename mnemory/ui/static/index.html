@@ -1837,12 +1837,38 @@
               <div x-show="$store.artifactMgr.view.open && $store.artifactMgr.view.artifact?.id === artifact.id"
                    x-transition class="mt-3 pt-3 border-t border-brand-border">
                 <div x-show="$store.artifactMgr.view.loading" class="text-xs text-muted py-2">Loading content...</div>
-                <pre x-show="!$store.artifactMgr.view.loading"
-                     class="text-xs text-[#E6EDF3] bg-brand-bg rounded p-3 overflow-auto max-h-64 whitespace-pre-wrap break-words"
-                     x-text="$store.artifactMgr.view.content"></pre>
-                <div x-show="$store.artifactMgr.view.hasMore && !$store.artifactMgr.view.loading" class="mt-2">
-                  <button @click="$store.artifactMgr.loadMoreContent()" class="btn-ghost text-xs">Load more…</button>
-                </div>
+
+                <!-- Text content -->
+                <template x-if="$store.artifactMgr.view.isText && !$store.artifactMgr.view.loading">
+                  <div>
+                    <pre class="text-xs text-[#E6EDF3] bg-brand-bg rounded p-3 overflow-auto max-h-64 whitespace-pre-wrap break-words"
+                         x-text="$store.artifactMgr.view.content"></pre>
+                    <div x-show="$store.artifactMgr.view.hasMore" class="mt-2">
+                      <button @click="$store.artifactMgr.loadMoreContent()" class="btn-ghost text-xs">Load more…</button>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Binary: image preview -->
+                <template x-if="!$store.artifactMgr.view.isText && $store.artifactMgr.isImage(artifact.content_type) && !$store.artifactMgr.view.loading">
+                  <div>
+                    <img :src="$store.artifactMgr.view.rawUrl"
+                         :alt="artifact.filename"
+                         class="max-w-full max-h-80 rounded border border-brand-border" />
+                    <a :href="$store.artifactMgr.view.rawUrl" :download="artifact.filename"
+                       class="btn-ghost text-xs mt-2 inline-block">Download</a>
+                  </div>
+                </template>
+
+                <!-- Binary: non-image (download link) -->
+                <template x-if="!$store.artifactMgr.view.isText && !$store.artifactMgr.isImage(artifact.content_type) && !$store.artifactMgr.view.loading">
+                  <div class="text-sm text-secondary py-4">
+                    <p>Binary file (<span x-text="artifact.content_type"></span>, <span x-text="$store.artifactMgr.formatSize(artifact.size)"></span>)</p>
+                    <a :href="$store.artifactMgr.view.rawUrl" :download="artifact.filename"
+                       class="btn-secondary text-xs mt-2 inline-block">Download <span x-text="artifact.filename"></span></a>
+                  </div>
+                </template>
+
                 <button @click="$store.artifactMgr.view.open = false" class="btn-ghost text-xs mt-2">Hide content</button>
               </div>
             </div>

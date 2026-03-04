@@ -181,6 +181,22 @@ const MnemoryAPI = {
     return this.get(`/memories/${memoryId}/artifacts/${artifactId}`, { offset, limit });
   },
 
+  /**
+   * Build the URL for raw artifact download (returns actual bytes with
+   * correct Content-Type). Use for <img src="...">, download links, etc.
+   * Includes the API key as a query parameter for browser-embedded use.
+   */
+  getArtifactRawUrl(memoryId, artifactId) {
+    const base = `${this.baseUrl}/memories/${memoryId}/artifacts/${artifactId}/raw`;
+    const params = new URLSearchParams();
+    const key = this.getKey();
+    if (key) params.set('key', key);
+    const selectedUser = this.getSelectedUser();
+    if (selectedUser) params.set('user_id', selectedUser);
+    const qs = params.toString();
+    return qs ? `${base}?${qs}` : base;
+  },
+
   saveArtifact(memoryId, data) {
     return this.post(`/memories/${memoryId}/artifacts`, data);
   },

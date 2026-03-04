@@ -45,7 +45,7 @@ class LLMClient:
         *,
         json_schema: dict[str, Any] | None = None,
         temperature: float | None = None,
-        max_tokens: int = 2000,
+        max_tokens: int = 16384,
         reasoning_effort: str | None = None,
     ) -> str:
         """Generate a chat completion, returning the content string.

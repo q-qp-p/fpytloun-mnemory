@@ -57,7 +57,7 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | Variable | Default | Description |
 |---|---|---|
 | `MAX_MEMORY_LENGTH` | `1000` | Max characters for fast memory content |
-| `MAX_ARTIFACT_SIZE` | `102400` | Max bytes per artifact (100KB) |
+| `MAX_ARTIFACT_SIZE` | `10485760` | Max bytes per artifact (10MB) |
 | `MAX_CORE_CONTEXT_LENGTH` | `4000` | Max characters for recent context section in get_core_memories. Only affects graceful per-entry trimming of recent context — main sections are never truncated. |
 | `DEFAULT_RECENT_DAYS` | `7` | Default days for recent context in core memories |
 | `RECENT_LIMIT_USER` | `25` | Max recent user memories to include |

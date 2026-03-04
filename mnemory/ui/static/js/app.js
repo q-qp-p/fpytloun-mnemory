@@ -268,7 +268,18 @@ document.addEventListener('alpine:init', () => {
     },
 
     async viewArtifact(artifact) {
-      this.view = { open: true, artifact, content: '', hasMore: false, offset: 0, loading: true };
+      const isText = (artifact.content_type || '').startsWith('text/');
+      this.view = {
+        open: true, artifact, content: '', hasMore: false, offset: 0,
+        loading: true, isText, rawUrl: null,
+      };
+      if (!isText) {
+        // Binary artifact — use the raw download URL directly.
+        // For images, the UI renders an <img>; for others, a download link.
+        this.view.rawUrl = MnemoryAPI.getArtifactRawUrl(this.memoryId, artifact.id);
+        this.view.loading = false;
+        return;
+      }
       try {
         const result = await MnemoryAPI.getArtifact(this.memoryId, artifact.id, 0, 5000);
         this.view.content = result.content || '';
@@ -295,6 +306,11 @@ document.addEventListener('alpine:init', () => {
       } finally {
         this.view.loading = false;
       }
+    },
+
+    /** Check if a content_type is an image type */
+    isImage(contentType) {
+      return (contentType || '').startsWith('image/');
     },
 
     async saveArtifact() {

@@ -1,5 +1,7 @@
 """Tests for artifact storage — path validation, filesystem backend, and store."""
 
+import base64
+
 import pytest
 
 from mnemory.config import ArtifactConfig
@@ -368,3 +370,231 @@ class TestArtifactStore:
             artifacts_meta=[meta2.to_dict()],
         )
         assert result["content"] == "user2 data"
+
+
+# ── Binary artifact tests ────────────────────────────────────────────
+
+
+# Minimal valid 1x1 red PNG (67 bytes)
+_TINY_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+    b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00"
+    b"\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00"
+    b"\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+class TestBinaryArtifacts:
+    """Tests for binary (non-text) artifact save, load, and round-trip."""
+
+    def _make_store(self, tmp_path, max_size=10_485_760):
+        config = ArtifactConfig()
+        config.filesystem_path = str(tmp_path)
+        config.backend = "filesystem"
+        return ArtifactStore(config, max_artifact_size=max_size)
+
+    def test_save_and_load_binary_via_base64(self, tmp_path):
+        """Binary content passed as base64 string should round-trip correctly."""
+        store = self._make_store(tmp_path)
+        b64_content = base64.b64encode(_TINY_PNG).decode("ascii")
+
+        meta = store.save(
+            user_id="user1",
+            content=b64_content,
+            filename="image.png",
+            content_type="image/png",
+        )
+
+        assert meta.filename == "image.png"
+        assert meta.content_type == "image/png"
+        assert meta.size == len(_TINY_PNG)
+
+        result = store.load(
+            user_id="user1",
+            artifact_id=meta.artifact_id,
+            artifacts_meta=[meta.to_dict()],
+        )
+
+        assert result["is_text"] is False
+        assert result["has_more"] is False
+        assert result["offset"] == 0
+        assert result["total_size"] == len(_TINY_PNG)
+        assert result["content_type"] == "image/png"
+        assert result["filename"] == "image.png"
+
+        # Decode the returned base64 and verify it matches the original
+        decoded = base64.b64decode(result["content"])
+        assert decoded == _TINY_PNG
+
+    def test_save_binary_as_raw_bytes(self, tmp_path):
+        """Binary content passed as raw bytes should be stored directly."""
+        store = self._make_store(tmp_path)
+
+        meta = store.save(
+            user_id="user1",
+            content=_TINY_PNG,
+            filename="photo.png",
+            content_type="image/png",
+        )
+
+        assert meta.size == len(_TINY_PNG)
+
+        result = store.load(
+            user_id="user1",
+            artifact_id=meta.artifact_id,
+            artifacts_meta=[meta.to_dict()],
+        )
+
+        decoded = base64.b64decode(result["content"])
+        assert decoded == _TINY_PNG
+
+    def test_binary_load_returns_full_content_ignoring_limit(self, tmp_path):
+        """Binary load should return full content regardless of limit parameter."""
+        store = self._make_store(tmp_path)
+        # Create a larger binary blob (10KB)
+        large_binary = bytes(range(256)) * 40  # 10240 bytes
+
+        meta = store.save(
+            user_id="user1",
+            content=large_binary,
+            filename="data.bin",
+            content_type="application/octet-stream",
+        )
+
+        # Load with a very small limit — should still get full content
+        result = store.load(
+            user_id="user1",
+            artifact_id=meta.artifact_id,
+            artifacts_meta=[meta.to_dict()],
+            offset=50,
+            limit=10,
+        )
+
+        assert result["is_text"] is False
+        assert result["has_more"] is False
+        assert result["offset"] == 0  # offset ignored for binary
+        assert result["total_size"] == len(large_binary)
+
+        decoded = base64.b64decode(result["content"])
+        assert decoded == large_binary
+        assert len(decoded) == 10240
+
+    def test_text_pagination_still_works(self, tmp_path):
+        """Text artifacts should still support pagination (not affected by binary fix)."""
+        store = self._make_store(tmp_path)
+        content = "A" * 200
+
+        meta = store.save(
+            user_id="user1",
+            content=content,
+            filename="notes.txt",
+            content_type="text/plain",
+        )
+
+        # First page
+        result1 = store.load(
+            user_id="user1",
+            artifact_id=meta.artifact_id,
+            artifacts_meta=[meta.to_dict()],
+            offset=0,
+            limit=50,
+        )
+        assert result1["is_text"] is True
+        assert result1["has_more"] is True
+        assert len(result1["content"]) == 50
+        assert result1["offset"] == 0
+
+        # Second page
+        result2 = store.load(
+            user_id="user1",
+            artifact_id=meta.artifact_id,
+            artifacts_meta=[meta.to_dict()],
+            offset=50,
+            limit=50,
+        )
+        assert result2["is_text"] is True
+        assert result2["has_more"] is True
+        assert len(result2["content"]) == 50
+        assert result2["offset"] == 50
+
+    def test_load_raw_binary(self, tmp_path):
+        """load_raw should return raw bytes, content_type, and filename."""
+        store = self._make_store(tmp_path)
+        b64_content = base64.b64encode(_TINY_PNG).decode("ascii")
+
+        meta = store.save(
+            user_id="user1",
+            content=b64_content,
+            filename="photo.png",
+            content_type="image/png",
+        )
+
+        raw_bytes, content_type, filename = store.load_raw(
+            user_id="user1",
+            artifact_id=meta.artifact_id,
+            artifacts_meta=[meta.to_dict()],
+        )
+
+        assert raw_bytes == _TINY_PNG
+        assert content_type == "image/png"
+        assert filename == "photo.png"
+
+    def test_load_raw_text(self, tmp_path):
+        """load_raw should also work for text artifacts (returns UTF-8 bytes)."""
+        store = self._make_store(tmp_path)
+
+        meta = store.save(
+            user_id="user1",
+            content="Hello, world!",
+            filename="note.txt",
+            content_type="text/plain",
+        )
+
+        raw_bytes, content_type, filename = store.load_raw(
+            user_id="user1",
+            artifact_id=meta.artifact_id,
+            artifacts_meta=[meta.to_dict()],
+        )
+
+        assert raw_bytes == b"Hello, world!"
+        assert content_type == "text/plain"
+        assert filename == "note.txt"
+
+    def test_binary_pdf_round_trip(self, tmp_path):
+        """PDF-like binary content should round-trip correctly."""
+        store = self._make_store(tmp_path)
+        # Fake PDF header + random bytes
+        pdf_bytes = b"%PDF-1.4\n" + bytes(range(256)) * 10
+
+        b64_content = base64.b64encode(pdf_bytes).decode("ascii")
+        meta = store.save(
+            user_id="user1",
+            content=b64_content,
+            filename="report.pdf",
+            content_type="application/pdf",
+        )
+
+        result = store.load(
+            user_id="user1",
+            artifact_id=meta.artifact_id,
+            artifacts_meta=[meta.to_dict()],
+        )
+
+        assert result["is_text"] is False
+        assert result["content_type"] == "application/pdf"
+        decoded = base64.b64decode(result["content"])
+        assert decoded == pdf_bytes
+
+    def test_max_size_enforced_for_binary(self, tmp_path):
+        """Binary artifacts exceeding max size should be rejected."""
+        store = self._make_store(tmp_path, max_size=100)
+        large_binary = b"\x00" * 200
+        b64_content = base64.b64encode(large_binary).decode("ascii")
+
+        with pytest.raises(ValueError, match="Artifact too large"):
+            store.save(
+                user_id="user1",
+                content=b64_content,
+                filename="big.bin",
+                content_type="application/octet-stream",
+            )

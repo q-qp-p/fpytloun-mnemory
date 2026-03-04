@@ -368,7 +368,7 @@ class ArtifactStore:
     vector store. The actual content is stored in S3 or the filesystem.
     """
 
-    def __init__(self, config: ArtifactConfig, max_artifact_size: int = 102400):
+    def __init__(self, config: ArtifactConfig, max_artifact_size: int = 10_485_760):
         if config.backend == "s3":
             self._backend: ArtifactBackend = S3Backend(config)
         elif config.backend == "filesystem":
@@ -438,6 +438,21 @@ class ArtifactStore:
             created_at=now,
         )
 
+    @staticmethod
+    def _resolve_meta(artifacts_meta: list[dict], artifact_id: str) -> tuple[str, str]:
+        """Look up filename and content_type from artifact metadata list.
+
+        Returns:
+            Tuple of (filename, content_type).
+
+        Raises:
+            ValueError: If artifact_id is not found in the metadata list.
+        """
+        for a in artifacts_meta:
+            if a.get("id") == artifact_id:
+                return a["filename"], a.get("content_type", "text/plain")
+        raise ValueError(f"Artifact {artifact_id} not found in metadata")
+
     def load(
         self,
         user_id: str,
@@ -446,31 +461,24 @@ class ArtifactStore:
         offset: int = 0,
         limit: int = 5000,
     ) -> dict:
-        """Load artifact content with pagination.
+        """Load artifact content with pagination (text) or full content (binary).
+
+        Text artifacts support pagination via offset/limit (character-based).
+        Binary artifacts always return the full content as a single base64
+        blob — offset and limit are ignored for binary content.
 
         Args:
             user_id: Owner of the artifact.
             artifact_id: ID of the artifact to load.
             artifacts_meta: List of artifact metadata dicts from a referencing
                 memory. Used to look up filename and content_type.
-            offset: Character offset for text content, byte offset for binary.
-            limit: Max characters/bytes to return.
+            offset: Character offset for text content (ignored for binary).
+            limit: Max characters to return for text (ignored for binary).
 
         Returns:
             Dict with content, total_size, offset, is_text, and has_more.
         """
-        # Find the artifact metadata to get the filename
-        meta = None
-        for a in artifacts_meta:
-            if a.get("id") == artifact_id:
-                meta = a
-                break
-        if meta is None:
-            raise ValueError(f"Artifact {artifact_id} not found in metadata")
-
-        filename = meta["filename"]
-        content_type = meta.get("content_type", "text/plain")
-
+        filename, content_type = self._resolve_meta(artifacts_meta, artifact_id)
         raw = self._backend.load(
             user_id=user_id,
             artifact_id=artifact_id,
@@ -493,16 +501,45 @@ class ArtifactStore:
                 "filename": filename,
             }
         else:
-            chunk = raw[offset : offset + limit]
+            # Binary: return full content as a single base64 blob.
+            # No pagination — offset/limit are ignored for binary content.
             return {
-                "content": base64.b64encode(chunk).decode("ascii"),
+                "content": base64.b64encode(raw).decode("ascii"),
                 "total_size": total_size,
-                "offset": offset,
+                "offset": 0,
                 "is_text": False,
-                "has_more": offset + limit < total_size,
+                "has_more": False,
                 "content_type": content_type,
                 "filename": filename,
             }
+
+    def load_raw(
+        self,
+        user_id: str,
+        artifact_id: str,
+        artifacts_meta: list[dict],
+    ) -> tuple[bytes, str, str]:
+        """Load raw artifact bytes without encoding.
+
+        Returns the raw bytes, content_type, and filename — suitable for
+        streaming directly to HTTP responses with the correct Content-Type.
+
+        Args:
+            user_id: Owner of the artifact.
+            artifact_id: ID of the artifact to load.
+            artifacts_meta: List of artifact metadata dicts from a referencing
+                memory. Used to look up filename and content_type.
+
+        Returns:
+            Tuple of (raw_bytes, content_type, filename).
+        """
+        filename, content_type = self._resolve_meta(artifacts_meta, artifact_id)
+        raw = self._backend.load(
+            user_id=user_id,
+            artifact_id=artifact_id,
+            filename=filename,
+        )
+        return raw, content_type, filename
 
     def delete(
         self,

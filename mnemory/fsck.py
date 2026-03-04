@@ -708,7 +708,6 @@ class FsckService:
             messages,
             json_schema=schema,
             temperature=0.1,
-            max_tokens=500,
             reasoning_effort=self._reasoning_effort,
         )
 
@@ -917,7 +916,6 @@ class FsckService:
             messages,
             json_schema=schema,
             temperature=0.1,
-            max_tokens=4000,
             reasoning_effort=self._reasoning_effort,
         )
 
@@ -1091,7 +1089,6 @@ class FsckService:
             messages,
             json_schema=schema,
             temperature=0.1,
-            max_tokens=4000,
             reasoning_effort=self._reasoning_effort,
         )
 

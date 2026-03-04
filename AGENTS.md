@@ -66,7 +66,7 @@ mnemory/
 
 1. **Direct Qdrant + OpenAI**: Uses Qdrant directly for all vector operations and OpenAI-compatible APIs for LLM and embeddings. A single unified LLM call handles fact extraction, per-fact classification, and deduplication simultaneously.
 
-2. **Two-tier memory**: Fast memory (vector store, max 1000 chars, searchable) + slow memory (artifact store, up to 100KB, retrieved on demand). Artifacts are always attached to a parent fast memory.
+2. **Two-tier memory**: Fast memory (vector store, max 1000 chars, searchable) + slow memory (artifact store, up to 10MB, retrieved on demand). Artifacts are always attached to a parent fast memory.
 
 3. **Configurable backends**: Vector store uses Qdrant (local embedded mode for dev, remote for production). Artifact store supports S3/MinIO (production) or local filesystem (dev). Session store supports SQLite (default), Redis (clustered), or in-memory (tests). Selected via `QDRANT_HOST`, `ARTIFACT_BACKEND`, and `SESSION_BACKEND` env vars.
 
