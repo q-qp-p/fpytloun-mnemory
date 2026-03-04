@@ -200,14 +200,19 @@ You are a memory manager for an AI assistant. Your job is to:
   - Do NOT extract the assistant's own reasoning, analysis,
     recommendations, or observations as separate memories. The
     assistant's responses are context, not facts to remember.
-  - Do NOT extract the assistant's observations about file contents,
-    configurations, build setups, infrastructure details, or
-    implementation specifics — these are transient working context.
-    Only extract if the observation leads to a concrete decision
-    or conclusion.
-  - You may extract from assistant messages only when they paraphrase
-    or confirm a user fact (e.g., assistant says "you mentioned you
-    live in Prague" → extract "User lives in Prague").
+- Do NOT extract the assistant's observations about file contents,
+  configurations, build setups, infrastructure details, or
+  implementation specifics — these are transient working context.
+  Only extract if the observation leads to a concrete decision
+  or conclusion.
+- Do NOT extract trivial statistics, metrics, or tool output
+  details from assistant messages: file counts, line counts, diff
+  stats, git status summaries, build output, test counts, commit
+  metadata (files changed, insertions, deletions). These are
+  ephemeral tool output, not facts worth remembering.
+- You may extract from assistant messages only when they paraphrase
+  or confirm a user fact (e.g., assistant says "you mentioned you
+  live in Prague" → extract "User lives in Prague").
 - If the content is a multi-person conversation or transcript (not a
   user/assistant exchange), extract facts about all participants.
 - Do not extract generic responses, pleasantries, or procedural
@@ -403,11 +408,12 @@ For each extracted fact, classify:
     true until explicitly changed (names, roles, locations,
     relationships, long-term traits, enduring preferences). NOT for
     goals, plans, intents, current knowledge gaps, feature requests,
-    transient technical observations, or project-specific
-    implementation details.
+    transient technical observations, code analysis, or
+    project-specific implementation details.
     Heuristic: "Will this still be true in 3 months if nothing
-    changes?" If yes → fact. If it depends on completing a task or
-    learning something → episodic or context.
+    changes?" If yes → fact. If it depends on completing a task,
+    learning something, or on current code/configuration → episodic
+    or context.
   - episodic = events, interactions, decisions, conclusions, goals,
     plans, intents, feature requests, current knowledge state.
     Anything that HAPPENED, was DECIDED, or is WANTED/PLANNED.
@@ -417,10 +423,12 @@ For each extracted fact, classify:
   - procedural = workflows, habits, how the user does things
   - context = session/short-term notes, current project/system state,
     technical observations, implementation details, bug reports,
-    analysis findings, what a project currently lacks or has.
+    analysis findings, code behavior observations, configuration
+    defaults, what a project currently lacks or has.
     "Project X does not have feature Y" is context, not a fact.
-    Anything that may change soon or is only relevant to the
-    current task.
+    Anything that describes how code currently works is context —
+    it may change with the next commit. Anything that may change
+    soon or is only relevant to the current task.
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
@@ -644,11 +652,22 @@ For each extracted fact, classify:
 - **memory_type**: {memory_types}
   - preference = assistant's likes, dislikes, style choices
   - fact = stable assistant identity (name, personality, capabilities,
-    long-term traits). NOT for transient observations or current state.
+    long-term traits). NOT for transient observations, current state,
+    code analysis, or implementation details.
+    Heuristic: "Will this still be true in 3 months if the code
+    changes?" If it depends on current code or configuration → context
+    or episodic, not fact.
   - episodic = research conclusions, interaction outcomes, decisions
+    made by the assistant, things the assistant learned or did.
+    "Assistant concluded X", "Assistant determined Y" about code
+    behavior or system state are episodic conclusions, not permanent
+    facts.
   - procedural = assistant's workflows, approaches
   - context = session/short-term notes, current state, analysis
-    findings, anything that may change soon
+    findings, code behavior observations, implementation details,
+    configuration defaults, what a system currently does or lacks.
+    Anything that describes how code currently works is context —
+    it may change with the next commit.
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
@@ -1076,14 +1095,15 @@ def build_classification_prompt(
             "fact=stable biographical/personal info that remains true until "
             "explicitly changed (names, roles, locations, long-term traits "
             "— NOT goals, plans, intents, knowledge gaps, feature requests, "
-            "or transient observations), "
+            "transient observations, code analysis, or implementation details), "
             "episodic=events/interactions/decisions/conclusions/goals/plans/"
             "intents/feature requests/current knowledge state "
             "(anything that happened, was decided, or is wanted/planned), "
             "procedural=workflows/habits/how-to, "
             "context=session/short-term notes, current project/system state, "
-            "technical observations, implementation details, what a project "
-            "currently lacks or has"
+            "technical observations, implementation details, code behavior "
+            "observations, configuration defaults, what a project currently "
+            "does or lacks — anything that may change with the next code update"
         )
         schema_props["memory_type"] = {
             "type": "string",
@@ -1595,6 +1615,11 @@ You are a memory extraction system. Your job is to:
   implementation specifics — these are transient working context.
   Only extract if the observation leads to a concrete decision
   or conclusion.
+- Do NOT extract trivial statistics, metrics, or tool output
+  details from assistant messages: file counts, line counts, diff
+  stats, git status summaries, build output, test counts, commit
+  metadata (files changed, insertions, deletions). These are
+  ephemeral tool output, not facts worth remembering.
 - You may extract from assistant messages only when they paraphrase
   or confirm a user fact (e.g., assistant says "you mentioned you
   live in Prague" → extract "User lives in Prague").
@@ -1671,11 +1696,12 @@ For each extracted fact, classify:
     true until explicitly changed (names, roles, locations,
     relationships, long-term traits, enduring preferences). NOT for
     goals, plans, intents, current knowledge gaps, feature requests,
-    transient technical observations, or project-specific
-    implementation details.
+    transient technical observations, code analysis, or
+    project-specific implementation details.
     Heuristic: "Will this still be true in 3 months if nothing
-    changes?" If yes → fact. If it depends on completing a task or
-    learning something → episodic or context.
+    changes?" If yes → fact. If it depends on completing a task,
+    learning something, or on current code/configuration → episodic
+    or context.
   - episodic = events, interactions, decisions, conclusions, goals,
     plans, intents, feature requests, current knowledge state.
     Anything that HAPPENED, was DECIDED, or is WANTED/PLANNED.
@@ -1685,10 +1711,12 @@ For each extracted fact, classify:
   - procedural = workflows, habits, how the user does things
   - context = session/short-term notes, current project/system state,
     technical observations, implementation details, bug reports,
-    analysis findings, what a project currently lacks or has.
+    analysis findings, code behavior observations, configuration
+    defaults, what a project currently lacks or has.
     "Project X does not have feature Y" is context, not a fact.
-    Anything that may change soon or is only relevant to the
-    current task.
+    Anything that describes how code currently works is context —
+    it may change with the next commit. Anything that may change
+    soon or is only relevant to the current task.
 
   **Common classification mistakes to avoid**:
   - "User wants to add distributed tracing" → **episodic** (goal/intent),
@@ -1701,6 +1729,8 @@ For each extracted fact, classify:
     request/goal), NOT fact
   - "The project doesn't have rollback mechanism" → **context** (current
     project state), NOT fact
+  - "The model defaults to gpt-5-mini" → **context** (current
+    configuration/code behavior), NOT fact
   - "User's name is Elena" → **fact** (stable biographical info)
   - "User lives in Prague" → **fact** (stable biographical info)
 
@@ -1977,6 +2007,10 @@ You are a memory extraction system for an AI assistant. Your job is to:
     the conclusion or decision that resulted from it
   - Transient task execution ("I'll update the file", "Let me check")
   - Intermediate observations that didn't lead to a conclusion
+  - Trivial statistics, metrics, and tool output details: file counts,
+    line counts, diff stats, git status summaries, build output, test
+    counts, commit metadata (files changed, insertions, deletions).
+    These are ephemeral tool output, not memories.
 - Only extract facts that would be valuable in a FUTURE conversation —
   identity, personality, capabilities, substantive conclusions,
   research findings, and actions with lasting impact.
@@ -2016,12 +2050,22 @@ For each extracted fact, classify:
 - **memory_type**: {memory_types}
   - preference = assistant's likes, dislikes, style choices
   - fact = stable assistant identity (name, personality, capabilities,
-    long-term traits). NOT for transient observations or current state.
+    long-term traits). NOT for transient observations, current state,
+    code analysis, or implementation details.
+    Heuristic: "Will this still be true in 3 months if the code
+    changes?" If it depends on current code or configuration → context
+    or episodic, not fact.
   - episodic = research conclusions, interaction outcomes, decisions made
-    by the assistant, things the assistant learned or did
+    by the assistant, things the assistant learned or did.
+    "Assistant concluded X", "Assistant determined Y" about code
+    behavior or system state are episodic conclusions, not permanent
+    facts.
   - procedural = assistant's workflows, approaches, how it does things
   - context = session/short-term notes, current state, analysis findings,
-    anything that may change soon
+    code behavior observations, implementation details, configuration
+    defaults, what a system currently does or lacks. Anything that
+    describes how code currently works is context — it may change
+    with the next commit.
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation clearly
@@ -2148,6 +2192,37 @@ Output:
 (The assistant's clarifying question and offer are session-specific — \
 not lasting facts about the assistant.)
 
+### Example 6: Code analysis (context, NOT fact)
+
+Input:
+User: How does the LLM config work in mnemory?
+Assistant: I examined the LLMConfig dataclass. The model defaults to \
+gpt-5-mini and reasoning_effort defaults to the LLM_REASONING_EFFORT \
+env var or None. The _build_params method only includes reasoning_effort \
+in API calls when it's set.
+(Today's date: 2025-03-15)
+
+Output:
+{{"memories": [
+  {{"text": "Assistant analyzed mnemory LLMConfig: model defaults to gpt-5-mini, reasoning_effort defaults to env var or None, _build_params only includes reasoning_effort when set", "memory_type": "context", "categories": ["technical", "project:mnemory"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
+], "summary": "User asked about LLM config. Assistant analyzed the LLMConfig dataclass defaults and _build_params behavior.", "store_artifact": false}}
+(Code analysis and implementation details are context — they describe \
+current behavior that may change with code updates, not permanent \
+assistant traits.)
+
+### Example 7: Trivial tool output (not extracted)
+
+Input:
+User: Create a commit with these changes.
+Assistant: I created commit abc1234. The commit changed 5 files with \
+42 insertions and 57 deletions. The working tree is clean.
+(Today's date: 2025-03-15)
+
+Output:
+{{"memories": [], "summary": "User asked to create a commit. Assistant committed changes to 5 files.", "store_artifact": false}}
+(File counts, diff stats, and working tree status are trivial tool \
+output — ephemeral details with no value in future conversations.)
+
 ## Output Format
 
 Return a JSON object with a "memories" array, a "summary" string, and a
@@ -2222,6 +2297,10 @@ is about:
   actually performed and has lasting impact
 - Intermediate observations or analysis that didn't lead to a
   stored conclusion or decision
+- Trivial statistics, metrics, and tool output details: file counts,
+  line counts, diff stats, git status summaries, build output, test
+  counts, commit metadata (files changed, insertions, deletions).
+  These are ephemeral tool output, not memories.
 - Greetings, small talk with no substantive information
 - The same fact twice — merge overlapping information
 
@@ -2283,16 +2362,22 @@ For each extracted fact, classify:
   - preference = likes, dislikes, style choices, tool preferences
   - fact = stable biographical or personal information that remains
     true until explicitly changed. NOT for goals, plans, intents,
-    or transient observations.
+    transient observations, code analysis, or implementation details.
     Heuristic: "Will this still be true in 3 months if nothing
-    changes?" If yes → fact. If it depends on completing a task →
-    episodic or context.
+    changes?" If yes → fact. If it depends on completing a task
+    or on current code/configuration → episodic or context.
   - episodic = events, interactions, decisions, conclusions, goals,
     plans, intents, recommendations given, questions asked.
     Anything that HAPPENED, was DECIDED, or is WANTED/PLANNED.
+    "Assistant concluded X", "Assistant determined Y" about code
+    behavior or system state are episodic conclusions, not permanent
+    facts.
   - procedural = workflows, habits, how the user/assistant does things
   - context = session/short-term notes, current project state,
-    technical observations, implementation details.
+    technical observations, implementation details, code behavior
+    observations, configuration defaults, what a system currently
+    does or lacks. Anything that describes how code currently works
+    is context — it may change with the next commit.
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
@@ -2437,6 +2522,37 @@ Output:
   {{"text": "User is from Ostrava", "role": "user", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": null}},
   {{"text": "User enjoys cooking and collecting stamps", "role": "user", "memory_type": "preference", "categories": ["personal", "entertainment"], "importance": "normal", "pinned": false, "event_date": null}}
 ], "summary": "User introduced themselves as Petr from Ostrava who enjoys cooking and stamp collecting.", "store_artifact": false}}
+
+### Example 8: Code analysis (context, NOT fact)
+
+Input:
+User: How does the LLM config work in mnemory?
+Assistant: I examined the LLMConfig dataclass. The model defaults to \
+gpt-5-mini and reasoning_effort defaults to the LLM_REASONING_EFFORT \
+env var or None. The _build_params method only includes reasoning_effort \
+in API calls when it's set.
+(Today's date: 2025-03-15)
+
+Output:
+{{"memories": [
+  {{"text": "Assistant analyzed mnemory LLMConfig: model defaults to gpt-5-mini, reasoning_effort defaults to env var or None, _build_params only includes reasoning_effort when set", "role": "assistant", "memory_type": "context", "categories": ["technical", "project:mnemory"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
+], "summary": "User asked about LLM config. Assistant analyzed the LLMConfig dataclass defaults and _build_params behavior.", "store_artifact": false}}
+(Code analysis and implementation details are context — they describe \
+current behavior that may change with code updates, not permanent facts \
+about the user or assistant.)
+
+### Example 9: Trivial tool output (not extracted)
+
+Input:
+User: Create a commit with these changes.
+Assistant: I created commit abc1234. The commit changed 5 files with \
+42 insertions and 57 deletions. The working tree is clean.
+(Today's date: 2025-03-15)
+
+Output:
+{{"memories": [], "summary": "User asked to create a commit. Assistant committed changes to 5 files.", "store_artifact": false}}
+(File counts, diff stats, and working tree status are trivial tool \
+output — ephemeral details with no value in future conversations.)
 
 ## Output Format
 
