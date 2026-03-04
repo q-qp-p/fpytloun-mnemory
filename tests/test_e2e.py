@@ -2402,3 +2402,181 @@ class TestAssistantMemoryFiltering:
         assert has_setup, (
             f"Expected assistant's CI setup action to be stored: {_texts(agent_mems)}"
         )
+
+
+# ── Core memories: no hard truncation, per-section limits ────────────
+
+
+class TestCoreMemoriesNoTruncation:
+    """Verify core memories are never hard-truncated and per-section limits work."""
+
+    USER = "e2e_core_notrunc"
+    AGENT = "e2e-notrunc-agent"
+
+    def test_many_pinned_memories_not_truncated(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Many pinned memories should all appear — no hard character truncation."""
+        # Store 15 pinned facts — enough to exceed the old 4000 char limit
+        for i in range(15):
+            memory_service.add_memory(
+                f"User has important fact number {i}: "
+                f"this is a detailed piece of information about topic {i} "
+                f"that should never be cut off mid-sentence.",
+                user_id=self.USER,
+                infer=False,
+                memory_type="fact",
+                categories=["personal"],
+                importance="high",
+                pinned=True,
+            )
+        time.sleep(0.5)
+
+        output = memory_service.get_core_memories(user_id=self.USER).text
+
+        # Should NOT contain truncation marker
+        assert "[...truncated]" not in output, (
+            "Core memories should never be hard-truncated"
+        )
+
+        # All 15 facts should be present
+        for i in range(15):
+            assert f"fact number {i}" in output.lower(), (
+                f"Pinned fact {i} should appear in core memories"
+            )
+
+    def test_all_sections_present_with_agent(
+        self, memory_service: MemoryService
+    ) -> None:
+        """With agent memories, all relevant sections should appear."""
+        # Agent identity (role=assistant)
+        memory_service.add_memory(
+            "I am TestBot, a helpful research assistant.",
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+            infer=False,
+            memory_type="fact",
+            categories=["personal"],
+            importance="critical",
+            pinned=True,
+        )
+        # Agent knowledge (role=assistant, episodic)
+        memory_service.add_memory(
+            "Assistant concluded that PostgreSQL is best for this workload.",
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+            infer=False,
+            memory_type="episodic",
+            categories=["technical"],
+            importance="high",
+            pinned=True,
+        )
+        # Agent instruction (role=user, agent-scoped)
+        memory_service.add_memory(
+            "User wants this agent to always respond in bullet points.",
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="user",
+            infer=False,
+            memory_type="preference",
+            categories=["preferences"],
+            importance="high",
+            pinned=True,
+        )
+        # User fact (shared, no agent_id)
+        memory_service.add_memory(
+            "User is a software engineer based in Berlin.",
+            user_id=self.USER,
+            infer=False,
+            memory_type="fact",
+            categories=["personal"],
+            importance="high",
+            pinned=True,
+        )
+        # User preference (shared, no agent_id)
+        memory_service.add_memory(
+            "User prefers dark mode in all applications.",
+            user_id=self.USER,
+            infer=False,
+            memory_type="preference",
+            categories=["preferences"],
+            importance="high",
+            pinned=True,
+        )
+        time.sleep(0.5)
+
+        output = memory_service.get_core_memories(
+            user_id=self.USER, agent_id=self.AGENT
+        ).text
+
+        # All sections should be present
+        assert "## Agent Identity" in output, (
+            f"Agent Identity section missing:\n{output[:1000]}"
+        )
+        assert "## Agent Knowledge" in output, (
+            f"Agent Knowledge section missing:\n{output[:1000]}"
+        )
+        # Agent instruction is role=user + agent-scoped → Agent Instructions
+        assert "## Agent Instructions" in output, (
+            f"Agent Instructions section missing:\n{output[:1000]}"
+        )
+        assert "## User Facts" in output, (
+            f"User Facts section missing:\n{output[:1000]}"
+        )
+        assert "## User Preferences" in output, (
+            f"User Preferences section missing:\n{output[:1000]}"
+        )
+
+        # Content should be present
+        assert "testbot" in output.lower() or "research assistant" in output.lower()
+        assert "postgresql" in output.lower()
+        assert "bullet point" in output.lower()
+        assert "berlin" in output.lower()
+        assert "dark mode" in output.lower()
+
+        # No truncation
+        assert "[...truncated]" not in output
+
+    def test_per_section_limit_caps_memories(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Per-section limit should cap the number of memories per section."""
+        user = f"{self.USER}_limit"
+
+        # Store 10 pinned facts
+        for i in range(10):
+            memory_service.add_memory(
+                f"Section limit test fact {i} for capping verification.",
+                user_id=user,
+                infer=False,
+                memory_type="fact",
+                categories=["personal"],
+                importance="high",
+                pinned=True,
+            )
+        time.sleep(0.5)
+
+        # Set a low per-section limit
+        original = memory_service._config.memory.core_max_per_section
+        try:
+            memory_service._config.memory.core_max_per_section = 5
+            # Clear cache so the new config takes effect
+            memory_service._core_cache.clear()
+
+            output = memory_service.get_core_memories(user_id=user).text
+
+            # Should have exactly 5 facts (capped), not all 10
+            count = sum(
+                1 for i in range(10) if f"section limit test fact {i}" in output.lower()
+            )
+            assert count == 5, (
+                f"Expected 5 facts (capped), got {count}:\n{output[:2000]}"
+            )
+
+            # No truncation
+            assert "[...truncated]" not in output
+        finally:
+            memory_service._config.memory.core_max_per_section = original
+            memory_service._core_cache.clear()

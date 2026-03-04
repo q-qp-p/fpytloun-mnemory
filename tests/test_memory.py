@@ -48,6 +48,8 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.core_top_memories = 10
     mock_config.memory.core_min_importance = "normal"
     mock_config.memory.core_recent_min_importance = "normal"
+    # Core memories: per-section limit
+    mock_config.memory.core_max_per_section = 25
     # Hybrid search
     mock_config.memory.search_score_threshold_hybrid = 0.0
     # find/ask pipeline LLM config
@@ -1606,8 +1608,8 @@ class TestCoreMemoriesPartialTruncation:
         # But pinned facts should remain
         assert "Important fact" in result
 
-    def test_hard_truncate_as_last_resort(self):
-        """If even without recent it's too long, hard truncate."""
+    def test_no_hard_truncation(self):
+        """Main sections should never be hard-truncated, even if over max_len."""
         service = self._make_service(max_len=100)
         service.vector.get_pinned_memories.return_value = [
             {
@@ -1621,8 +1623,143 @@ class TestCoreMemoriesPartialTruncation:
             },
         ]
         result = service.get_core_memories(user_id="filip").text
-        assert len(result) <= 100
-        assert "[...truncated]" in result
+        # Should NOT be hard-truncated — all sections fully included
+        assert "[...truncated]" not in result
+        assert "A" * 200 in result
+
+
+class TestCoreMemoriesPerSectionLimit:
+    """Test per-section memory count limits."""
+
+    @staticmethod
+    def _make_service(max_per_section=3, top_n=10):
+        service = _make_service()
+        service.vector.get_recent_memories.return_value = []
+        service.vector.get_pinned_memories.return_value = []
+        service.vector.get_all.return_value = {"results": []}
+        service._config.memory.core_max_per_section = max_per_section
+        service._config.memory.core_top_memories = top_n
+        return service
+
+    def test_user_facts_capped(self):
+        """User Facts section should be capped at max_per_section."""
+        service = self._make_service(max_per_section=3)
+        # 5 pinned facts — only 3 should appear
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": f"pin-{i}",
+                "memory": f"User fact number {i}",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                },
+            }
+            for i in range(5)
+        ]
+        result = service.get_core_memories(user_id="filip").text
+        # Should have exactly 3 facts (capped)
+        fact_count = sum(1 for i in range(5) if f"User fact number {i}" in result)
+        assert fact_count == 3
+
+    def test_agent_sections_capped(self):
+        """Agent sections should be capped at max_per_section."""
+        service = self._make_service(max_per_section=2)
+        # 4 pinned agent identity memories — only 2 should appear
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": f"agent-{i}",
+                "memory": f"Agent identity trait {i}",
+                "agent_id": "bob",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                    "role": "assistant",
+                },
+            }
+            for i in range(4)
+        ]
+        result = service.get_core_memories(user_id="filip", agent_id="bob").text
+        assert "## Agent Identity" in result
+        trait_count = sum(1 for i in range(4) if f"Agent identity trait {i}" in result)
+        assert trait_count == 2
+
+    def test_unlimited_when_zero(self):
+        """When max_per_section=0, all memories should appear."""
+        service = self._make_service(max_per_section=0)
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": f"pin-{i}",
+                "memory": f"User fact number {i}",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                },
+            }
+            for i in range(10)
+        ]
+        result = service.get_core_memories(user_id="filip").text
+        fact_count = sum(1 for i in range(10) if f"User fact number {i}" in result)
+        assert fact_count == 10
+
+    def test_pinned_first_then_top_n_capped(self):
+        """Pinned memories come first, then top-N fills up to the limit."""
+        service = self._make_service(max_per_section=3, top_n=10)
+        # 2 pinned + many non-pinned — should get 2 pinned + 1 non-pinned = 3
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": f"pin-{i}",
+                "memory": f"Pinned fact {i}",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "critical",
+                    "pinned": True,
+                },
+            }
+            for i in range(2)
+        ]
+        service.vector.get_all.return_value = {
+            "results": [
+                {
+                    "id": f"top-{i}",
+                    "memory": f"Top fact {i}",
+                    "metadata": {
+                        "memory_type": "fact",
+                        "importance": "high",
+                        "pinned": False,
+                    },
+                }
+                for i in range(5)
+            ]
+        }
+        result = service.get_core_memories(user_id="filip").text
+        pinned_count = sum(1 for i in range(2) if f"Pinned fact {i}" in result)
+        top_count = sum(1 for i in range(5) if f"Top fact {i}" in result)
+        assert pinned_count == 2
+        assert top_count == 1  # Only 1 non-pinned to reach limit of 3
+
+    def test_memory_ids_only_includes_surviving_entries(self):
+        """memory_ids should only contain IDs of memories that survived the limit."""
+        service = self._make_service(max_per_section=2, top_n=0)
+        # 5 pinned facts — only 2 should survive
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": f"pin-{i}",
+                "memory": f"Fact {i}",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                },
+            }
+            for i in range(5)
+        ]
+        result = service.get_core_memories(user_id="filip")
+        # Only 2 IDs should be in memory_ids (the ones that survived the cap)
+        assert len(result.memory_ids) == 2
+        assert result.memory_ids == {"pin-0", "pin-1"}
 
 
 class TestImportanceLevelsAtOrAbove:

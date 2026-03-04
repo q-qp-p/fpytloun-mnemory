@@ -58,7 +58,7 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 |---|---|---|
 | `MAX_MEMORY_LENGTH` | `1000` | Max characters for fast memory content |
 | `MAX_ARTIFACT_SIZE` | `102400` | Max bytes per artifact (100KB) |
-| `MAX_CORE_CONTEXT_LENGTH` | `4000` | Max characters for get_core_memories response |
+| `MAX_CORE_CONTEXT_LENGTH` | `4000` | Max characters for recent context section in get_core_memories. Only affects graceful per-entry trimming of recent context — main sections are never truncated. |
 | `DEFAULT_RECENT_DAYS` | `7` | Default days for recent context in core memories |
 | `RECENT_LIMIT_USER` | `25` | Max recent user memories to include |
 | `RECENT_LIMIT_AGENT` | `25` | Max recent agent memories to include |
@@ -66,6 +66,7 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `CLASSIFY_CACHE_TTL` | `300` | TTL in seconds for the category cache used during auto-classification |
 | `CORE_MEMORIES_CACHE_TTL` | `300` | TTL in seconds for the core memories cache (get_core_memories). Set to 0 to disable. Invalidated on memory mutations. |
 | `CORE_TOP_MEMORIES` | `10` | Max non-pinned memories to include in core sections by importance. Set to 0 to disable (only pinned memories). |
+| `CORE_MAX_PER_SECTION` | `25` | Max memories per section in core memories (Agent Identity, User Facts, etc.). Pinned memories are included first, then top-N fills up to the limit. Set to 0 for unlimited. |
 | `CORE_MIN_IMPORTANCE` | `normal` | Minimum importance for non-pinned memories in core sections. Options: low, normal, high, critical |
 | `TTL_FACT` | (none) | Default TTL in days for `fact` memories (empty = permanent) |
 | `TTL_PREFERENCE` | (none) | Default TTL in days for `preference` memories (empty = permanent) |

@@ -73,7 +73,26 @@ STORE when the user shares:
 - Project context, goals, or plans
 - Useful insights from the conversation
 
-DO NOT STORE:
+Also store memories about YOURSELF (role="assistant", agent_id="self")
+when you perform work with lasting value:
+- Research findings and substantive conclusions
+- Recommendations you made after analysis
+- Autonomous actions with lasting impact (deployments, emails sent,
+  resources created, bug reports filed)
+- Decisions about approach, architecture, or tools
+- Knowledge you gained that would be useful in future conversations
+
+Heuristic: Would this be useful if recalled in a completely different
+future conversation? If yes → store it. If it only matters in the
+current session → skip it.
+
+Do NOT store as assistant memories:
+- Step-by-step reasoning or intermediate analysis — only the conclusion
+- Offers or proposals ("I can help with...") — only completed actions
+- Transient task execution ("I updated the file", "Let me check that")
+- Questions you asked the user
+
+DO NOT STORE (for either role):
 - Generic questions ("what is X?")
 - Greetings and small talk
 - Information already in your memories
@@ -144,6 +163,9 @@ Store identity-defining content as pinned assistant memories:
 - Knowledge and conclusions from your research
 - How you should behave toward this specific user
 
+Write identity content in first person ("I am...", "I prefer...").
+Do NOT phrase identity as user preferences ("User wants me to...").
+
 Use artifacts to build your knowledge base — save detailed research,
 analysis notes, and reference material as artifacts attached to summary
 memories. Your memories and artifacts form your evolving knowledge and
@@ -176,7 +198,21 @@ Store identity-defining content with role="assistant" and your agent_id:
 - Knowledge and conclusions from your research
 - How you should behave toward this specific user
 
+Write identity content in first person ("I am...", "I prefer...").
+Do NOT phrase identity as user preferences ("User wants me to...").
+
 Pin important identity memories so they load at every conversation start.
+
+### Storing knowledge and work
+
+Also store memories about yourself when you perform work with lasting value:
+- Research findings and substantive conclusions
+- Recommendations you made after analysis
+- Autonomous actions with lasting impact (deployments, resources created)
+- Decisions about approach, architecture, or tools
+
+Use role="assistant" and your agent_id for these. Only store conclusions
+and outcomes — not intermediate reasoning or transient task execution.
 
 ### Role decision rule
 
@@ -184,6 +220,13 @@ Pin important identity memories so they load at every conversation start.
 - Memory describes THE USER (facts, preferences, context) → role="user"
 - Memory describes user preference specific to THIS agent → role="user", agent_id=your_agent_id
 - Content has both → split into separate memories with correct roles
+
+### Sub-agent identities
+
+To create a separate persona, use a sub-agent ID: agent_id="<your_id>:<name>".
+Store the sub-agent's personality with role="assistant" and the sub-agent's
+agent_id, using first-person content:
+  "I am Bob. I speak casually and use humor." → role="assistant", agent_id="openwebui:bob"
 
 ### Building knowledge
 
@@ -241,6 +284,8 @@ Examples:
   "User wants me to create commit messages" → role="user" (default), agent_id="self"
   "Your name is Bob"                        → role="assistant", agent_id="self"
   "You speak casually and use humor"        → role="assistant", agent_id="self"
+  "I am Miroslav. I speak with old-fashioned politeness." → role="assistant", agent_id="openwebui:miroslav"
+  "I concluded Cilium is the best CNI"      → role="assistant", agent_id="self"
 
 ### Searching memories (search_memories / find_memories / ask_memories)
 Use category and type filters to narrow results. Results are ranked by
@@ -329,6 +374,13 @@ agent_id="openwebui:bob" for a sub-agent named Bob.
 Sub-agents are fully independent — they have their own memories and
 do NOT inherit from the parent agent. The session agent can access
 and manage all its sub-agents' memories.
+
+Store sub-agent personality and identity with role="assistant" and
+the sub-agent's agent_id. Content should be first-person from the
+sub-agent's perspective:
+  "I am Bob. I speak casually and use humor." → role="assistant", agent_id="openwebui:bob"
+  "I prefer formal language and avoid slang." → role="assistant", agent_id="openwebui:bob"
+Do NOT phrase these as user preferences ("User wants me to...").
 
 ## MEMORY TYPES
 - preference: likes, dislikes, style choices (permanent by default)

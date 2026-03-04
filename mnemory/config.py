@@ -260,6 +260,13 @@ class MemoryConfig:
         default_factory=lambda: _env("CORE_MIN_IMPORTANCE", "normal")
     )
 
+    # Core memories: max memories per section (Agent Identity, User Facts, etc.).
+    # Pinned memories are always included first; the limit caps the total
+    # (pinned + non-pinned) per section. Set to 0 for unlimited.
+    core_max_per_section: int = field(
+        default_factory=lambda: max(0, _env_int("CORE_MAX_PER_SECTION", 25))
+    )
+
     # Core memories: minimum importance for recent context memories.
     # Filters low-importance session noise from the recent context section.
     # Options: low, normal, high, critical

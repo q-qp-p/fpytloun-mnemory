@@ -97,8 +97,9 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 4. Fetches top-N non-pinned memories by importance (`CORE_TOP_MEMORIES`, default 10) at or above `CORE_MIN_IMPORTANCE` (default `normal`). These are added after pinned memories in each section.
 5. All memories within each section are sorted by importance (critical > high > normal > low), then by recency
 6. Fetches recent context memories from last N days (configurable)
-7. If output exceeds `MAX_CORE_CONTEXT_LENGTH`, recent context entries are trimmed one by one (most recent kept). Hard truncation only as last resort.
-8. Returns structured text injected into conversation context
+7. Each section is capped at `CORE_MAX_PER_SECTION` memories (default 25). Pinned memories are included first, then top-N fills up to the limit.
+8. If output exceeds `MAX_CORE_CONTEXT_LENGTH`, recent context entries are trimmed one by one (least important first). Main sections are never truncated.
+9. Returns structured text injected into conversation context
 
 ### Artifacts
 

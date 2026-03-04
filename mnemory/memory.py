@@ -2559,8 +2559,10 @@ class MemoryService:
         4. Recent context memories from the last N days (dual-scope)
 
         Pinned memories always appear first in each section, followed by
-        top-N non-pinned memories sorted by importance. Total output is
-        capped at MAX_CORE_CONTEXT_LENGTH with graceful truncation.
+        top-N non-pinned memories sorted by importance. Each section is
+        capped at CORE_MAX_PER_SECTION memories. Recent context is
+        gracefully trimmed (per-entry) if output exceeds
+        MAX_CORE_CONTEXT_LENGTH. No hard character truncation is applied.
         """
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
@@ -2579,10 +2581,12 @@ class MemoryService:
         max_len = self._config.memory.max_core_context_length
         top_n = self._config.memory.core_top_memories
         min_importance = self._config.memory.core_min_importance
+        max_per_section = self._config.memory.core_max_per_section
 
         sections: list[str] = []
 
-        # Collect IDs of all memories included in main sections (for dedup)
+        # IDs of memories included in main sections — built after per-section
+        # limits are applied so only surviving memories are tracked.
         included_ids: set[str] = set()
 
         # ── 1. Fetch all pinned memories in a single query ────────────
@@ -2594,10 +2598,8 @@ class MemoryService:
         )
         user_pinned = [m for m in all_pinned if not m.get("agent_id")]
 
-        # Track pinned IDs
-        for m in agent_pinned + user_pinned:
-            if m.get("id"):
-                included_ids.add(m["id"])
+        # Collect all pinned IDs for dedup against non-pinned queries
+        all_pinned_ids = {m["id"] for m in agent_pinned + user_pinned if m.get("id")}
 
         # ── 2+3. Fetch top-N non-pinned memories (parallel) ─────────
         # Agent and user top-N queries are independent — run in parallel.
@@ -2627,87 +2629,112 @@ class MemoryService:
                     agent_non_pinned_raw = futures["agent"].result()
                 user_non_pinned_raw = futures["user"].result()
 
+        # Section buckets store (formatted_line, memory_id) tuples so that
+        # per-section limits can be applied before collecting included_ids.
+
         # ── 2. Agent sections (pinned + top-N non-pinned) ────────────
         if agent_id:
-            # Sort pinned agent memories by importance
             agent_pinned_sorted = self._sort_memories_by_importance(agent_pinned)
 
-            # Classify pinned agent memories into buckets
-            agent_sections: dict[str, list[str]] = {
+            agent_sections: dict[str, list[tuple[str, str | None]]] = {
                 "identity": [],
                 "knowledge": [],
                 "instructions": [],
             }
             for m in agent_pinned_sorted:
                 key, line = self._classify_agent_memory(m)
-                agent_sections[key].append(line)
+                agent_sections[key].append((line, m.get("id")))
 
-            # Process top-N non-pinned agent memories
             if top_n > 0:
                 agent_non_pinned = [
                     m
                     for m in agent_non_pinned_raw.get("results", [])
-                    if m.get("id") not in included_ids and not should_exclude(m)
+                    if m.get("id") not in all_pinned_ids and not should_exclude(m)
                 ]
                 agent_non_pinned = self._sort_memories_by_importance(agent_non_pinned)[
                     :top_n
                 ]
-
                 for m in agent_non_pinned:
-                    if m.get("id"):
-                        included_ids.add(m["id"])
                     key, line = self._classify_agent_memory(m)
-                    agent_sections[key].append(line)
+                    agent_sections[key].append((line, m.get("id")))
+
+            # Apply per-section limit (0 = unlimited)
+            if max_per_section > 0:
+                for key in agent_sections:
+                    agent_sections[key] = agent_sections[key][:max_per_section]
+
+            # Collect IDs of surviving entries
+            for entries in agent_sections.values():
+                for _, mid in entries:
+                    if mid:
+                        included_ids.add(mid)
 
             if agent_sections["identity"]:
                 sections.append(
-                    "## Agent Identity\n" + "\n".join(agent_sections["identity"])
+                    "## Agent Identity\n"
+                    + "\n".join(line for line, _ in agent_sections["identity"])
                 )
             if agent_sections["knowledge"]:
                 sections.append(
-                    "## Agent Knowledge\n" + "\n".join(agent_sections["knowledge"])
+                    "## Agent Knowledge\n"
+                    + "\n".join(line for line, _ in agent_sections["knowledge"])
                 )
             if agent_sections["instructions"]:
                 sections.append(
                     "## Agent Instructions\n"
-                    + "\n".join(agent_sections["instructions"])
+                    + "\n".join(line for line, _ in agent_sections["instructions"])
                 )
 
         # ── 3. User sections (pinned + top-N non-pinned) ─────────────
-        # Sort pinned user memories by importance
         user_pinned_sorted = self._sort_memories_by_importance(user_pinned)
 
-        user_sections: dict[str, list[str]] = {
+        user_sections: dict[str, list[tuple[str, str | None]]] = {
             "facts": [],
             "prefs": [],
             "other": [],
         }
         for m in user_pinned_sorted:
             key, line = self._classify_user_memory(m)
-            user_sections[key].append(line)
+            user_sections[key].append((line, m.get("id")))
 
-        # Process top-N non-pinned user memories
         if top_n > 0:
             user_non_pinned = [
                 m
                 for m in user_non_pinned_raw.get("results", [])
-                if m.get("id") not in included_ids and not should_exclude(m)
+                if m.get("id") not in all_pinned_ids
+                and m.get("id") not in included_ids
+                and not should_exclude(m)
             ]
             user_non_pinned = self._sort_memories_by_importance(user_non_pinned)[:top_n]
-
             for m in user_non_pinned:
-                if m.get("id"):
-                    included_ids.add(m["id"])
                 key, line = self._classify_user_memory(m)
-                user_sections[key].append(line)
+                user_sections[key].append((line, m.get("id")))
+
+        # Apply per-section limit (0 = unlimited)
+        if max_per_section > 0:
+            for key in user_sections:
+                user_sections[key] = user_sections[key][:max_per_section]
+
+        # Collect IDs of surviving entries
+        for entries in user_sections.values():
+            for _, mid in entries:
+                if mid:
+                    included_ids.add(mid)
 
         if user_sections["facts"]:
-            sections.append("## User Facts\n" + "\n".join(user_sections["facts"]))
+            sections.append(
+                "## User Facts\n"
+                + "\n".join(line for line, _ in user_sections["facts"])
+            )
         if user_sections["prefs"]:
-            sections.append("## User Preferences\n" + "\n".join(user_sections["prefs"]))
+            sections.append(
+                "## User Preferences\n"
+                + "\n".join(line for line, _ in user_sections["prefs"])
+            )
         if user_sections["other"]:
             sections.append(
-                "## Other User Memories\n" + "\n".join(user_sections["other"])
+                "## Other User Memories\n"
+                + "\n".join(line for line, _ in user_sections["other"])
             )
 
         # ── 4. Recent context memories (parallel, dual-scope) ─────────
@@ -2817,9 +2844,9 @@ class MemoryService:
             if mid:
                 included_ids.add(mid)
 
-        # If still too long after removing all recent context, hard truncate
-        if len(output) > max_len:
-            output = output[: max_len - 20] + "\n\n[...truncated]"
+        # NOTE: No hard character truncation — output size is controlled by
+        # per-section limits (core_max_per_section) and recent context
+        # trimming above. All sections are always fully included.
 
         result = CoreMemoriesResult(text=output, memory_ids=included_ids)
         self._core_cache.set(cache_key, result)
