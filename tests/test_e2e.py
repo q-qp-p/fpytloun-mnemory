@@ -2066,3 +2066,339 @@ class TestRememberAutoMode:
             f"Assistant identity should NOT be extracted with role='user': "
             f"{_texts(agent_mems)}"
         )
+
+
+# ── Episodic event_date ─────────────────────────────────────────────
+
+
+class TestEpisodicEventDate:
+    """Verify that episodic memories always get an event_date set.
+
+    When the user describes an event without an explicit date, the
+    extraction pipeline should default event_date to today's date for
+    episodic memories (decisions, interactions, events).
+    """
+
+    USER = "e2e_episodic_event_date"
+
+    def test_episodic_gets_event_date_via_add_memory(
+        self, memory_service: MemoryService
+    ) -> None:
+        """add_memory with an episodic event (no date mentioned) should
+        produce a memory with event_date set to today."""
+        from datetime import datetime, timezone
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        result = memory_service.add_memory(
+            "I decided to switch from PostgreSQL to CockroachDB for the "
+            "new microservice.",
+            user_id=self.USER,
+            infer=True,
+        )
+        mems = _results(result)
+        _assert_count_between(mems, 1, 3)
+
+        # At least one memory should be episodic (decision)
+        time.sleep(0.5)
+        stored = memory_service.list_memories(user_id=self.USER, limit=50)
+        decision_mems = [
+            m
+            for m in stored
+            if "cockroachdb" in _mem_text(m).lower()
+            or "postgresql" in _mem_text(m).lower()
+            or "switch" in _mem_text(m).lower()
+            or "database" in _mem_text(m).lower()
+        ]
+        assert len(decision_mems) >= 1, (
+            f"Expected at least 1 memory about the DB decision: {_texts(stored)}"
+        )
+
+        # Check that episodic memories have event_date set
+        for m in decision_mems:
+            meta = m.get("metadata") or {}
+            mem_type = meta.get("memory_type", "")
+            event_date = meta.get("event_date")
+            if mem_type == "episodic":
+                assert event_date is not None, (
+                    f"Episodic memory should have event_date set, "
+                    f"got None for: {_mem_text(m)}"
+                )
+                # Should be today (or very close — allow same day)
+                assert event_date[:10] == today, (
+                    f"Expected event_date={today}, got {event_date} for: {_mem_text(m)}"
+                )
+
+    def test_episodic_gets_event_date_via_remember(
+        self, memory_service: MemoryService
+    ) -> None:
+        """remember() with an episodic conversation (no dates mentioned)
+        should produce episodic memories with event_date set."""
+        from datetime import datetime, timezone
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        user = f"{self.USER}_remember"
+
+        memory_service.remember(
+            content=(
+                "User: I just had a meeting with the CTO and we agreed to "
+                "migrate the entire platform to Kubernetes.\n"
+                "Assistant: That's a significant infrastructure decision. "
+                "I can help you plan the migration."
+            ),
+            user_id=user,
+            role="user",
+        )
+        time.sleep(0.5)
+
+        stored = memory_service.list_memories(user_id=user, limit=50)
+        migration_mems = [
+            m
+            for m in stored
+            if "kubernetes" in _mem_text(m).lower()
+            or "migration" in _mem_text(m).lower()
+            or "cto" in _mem_text(m).lower()
+        ]
+        assert len(migration_mems) >= 1, (
+            f"Expected at least 1 memory about K8s migration: {_texts(stored)}"
+        )
+
+        for m in migration_mems:
+            meta = m.get("metadata") or {}
+            mem_type = meta.get("memory_type", "")
+            event_date = meta.get("event_date")
+            if mem_type == "episodic":
+                assert event_date is not None, (
+                    f"Episodic memory should have event_date set, "
+                    f"got None for: {_mem_text(m)}"
+                )
+                assert event_date[:10] == today, (
+                    f"Expected event_date={today}, got {event_date} for: {_mem_text(m)}"
+                )
+
+    def test_fact_memory_no_forced_event_date(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Stable facts (not episodic) should NOT get a forced event_date
+        when no date is mentioned — only episodic memories get the fallback."""
+        user = f"{self.USER}_fact"
+
+        result = memory_service.add_memory(
+            "My favorite programming language is Rust.",
+            user_id=user,
+            infer=True,
+        )
+        mems = _results(result)
+        _assert_count_between(mems, 1, 2)
+
+        time.sleep(0.5)
+        stored = memory_service.list_memories(user_id=user, limit=50)
+        rust_mems = [m for m in stored if "rust" in _mem_text(m).lower()]
+        assert len(rust_mems) >= 1, (
+            f"Expected at least 1 memory about Rust: {_texts(stored)}"
+        )
+
+        for m in rust_mems:
+            meta = m.get("metadata") or {}
+            mem_type = meta.get("memory_type", "")
+            event_date = meta.get("event_date")
+            # Preferences/facts without a date reference should have
+            # event_date=None (the LLM should not invent a date)
+            if mem_type in ("preference", "fact"):
+                assert event_date is None, (
+                    f"{mem_type} memory should NOT have event_date forced, "
+                    f"got {event_date} for: {_mem_text(m)}"
+                )
+
+
+# ── Assistant memory filtering ──────────────────────────────────────
+
+
+class TestAssistantMemoryFiltering:
+    """Verify that transient assistant interactions (questions, offers,
+    intermediate observations) are NOT stored as memories, while
+    substantive assistant facts (research findings, lasting actions,
+    identity) ARE stored.
+
+    Uses role=None (auto mode) with agent_id to exercise the
+    _AUTO_REMEMBER_EXTRACTION_SYSTEM_PROMPT filtering logic.
+    """
+
+    USER = "e2e_assistant_filter"
+    AGENT = "e2e-assistant-filter-agent"
+
+    @pytest.mark.timeout(180)
+    def test_transient_assistant_interactions_not_stored(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Clarifying questions and offers to help should NOT be
+        extracted as assistant memories."""
+        memory_service.remember(
+            content=(
+                "User: I'm building a fence and need to figure out "
+                "how many posts I need.\n"
+                "Assistant: How long is each side? Does the 2.5m "
+                "spacing include end posts?\n"
+                "User: Each side is 10 meters, spacing includes ends.\n"
+                "Assistant: Want me to send you the exact positions?"
+            ),
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            # role=None → auto mode
+        )
+        time.sleep(0.5)
+
+        # Check assistant memories — transient interactions should be filtered
+        agent_mems = memory_service.list_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        agent_text = _all_text(agent_mems)
+
+        # These transient patterns should NOT appear as assistant memories
+        assert "asked" not in agent_text or "asked for" not in agent_text, (
+            f"Clarifying questions should not be stored as assistant memories: "
+            f"{_texts(agent_mems)}"
+        )
+        assert "offered" not in agent_text and "want me to" not in agent_text, (
+            f"Offers to help should not be stored as assistant memories: "
+            f"{_texts(agent_mems)}"
+        )
+
+        # User facts SHOULD still be extracted
+        user_mems = memory_service.list_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="user",
+        )
+        user_text = _all_text(user_mems)
+        assert "fence" in user_text or "garden" in user_text or "post" in user_text, (
+            f"User facts about the fence/garden should be extracted: "
+            f"{_texts(user_mems)}"
+        )
+
+    @pytest.mark.timeout(180)
+    def test_substantive_assistant_facts_are_stored(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Research findings, actions with lasting impact, and identity
+        traits SHOULD be extracted as assistant memories."""
+        user = f"{self.USER}_substantive"
+
+        memory_service.remember(
+            content=(
+                "User: Can you research the best database for our "
+                "time-series IoT data?\n"
+                "Assistant: I've researched this thoroughly. TimescaleDB "
+                "is the best fit for your IoT use case — it handles "
+                "time-series data natively on top of PostgreSQL, supports "
+                "continuous aggregates, and has excellent compression. "
+                "InfluxDB is faster for simple queries but lacks SQL "
+                "compatibility. I've also sent a comparison report to "
+                "your email at team@acme.com.\n"
+                "User: Great, thanks for the research."
+            ),
+            user_id=user,
+            agent_id=self.AGENT,
+            # role=None → auto mode
+        )
+        time.sleep(0.5)
+
+        agent_mems = memory_service.list_memories(
+            user_id=user,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+
+        # Substantive findings should be stored
+        agent_text = _all_text(agent_mems)
+        has_research = (
+            "timescaledb" in agent_text
+            or "influxdb" in agent_text
+            or "time-series" in agent_text
+            or "time series" in agent_text
+            or "iot" in agent_text
+        )
+        has_action = (
+            "sent" in agent_text or "email" in agent_text or "report" in agent_text
+        )
+        assert has_research or has_action, (
+            f"Expected substantive assistant facts (research findings or "
+            f"lasting actions) to be stored: {_texts(agent_mems)}"
+        )
+
+    @pytest.mark.timeout(180)
+    def test_mixed_conversation_filters_correctly(
+        self, memory_service: MemoryService
+    ) -> None:
+        """A conversation with both transient and substantive assistant
+        content should only store the substantive parts."""
+        user = f"{self.USER}_mixed"
+
+        memory_service.remember(
+            content=(
+                "User: I need CI/CD for my Python project.\n"
+                "Assistant: Which CI platform?\n"
+                "User: GitHub Actions.\n"
+                "Assistant: Done. I set up a GitHub Actions workflow "
+                "with pytest and ruff, and configured branch protection."
+            ),
+            user_id=user,
+            agent_id=self.AGENT,
+            # role=None → auto mode
+        )
+        time.sleep(0.5)
+
+        agent_mems = memory_service.list_memories(
+            user_id=user,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        agent_text = _all_text(agent_mems)
+
+        # The clarifying question should NOT be stored
+        assert "which ci platform" not in agent_text, (
+            f"Clarifying question should not be stored: {_texts(agent_mems)}"
+        )
+
+        # The lasting action (setting up CI) SHOULD be stored
+        has_setup = (
+            "github actions" in agent_text
+            or "workflow" in agent_text
+            or "ci/cd" in agent_text
+            or "ci" in agent_text
+            or "branch protection" in agent_text
+            or "configured" in agent_text
+            or "set up" in agent_text
+        )
+        assert has_setup, (
+            f"Expected assistant's CI setup action to be stored: {_texts(agent_mems)}"
+        )
+        time.sleep(0.5)
+
+        agent_mems = memory_service.list_memories(
+            user_id=user,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        agent_text = _all_text(agent_mems)
+
+        # The clarifying question should NOT be stored
+        assert "what ci platform" not in agent_text, (
+            f"Clarifying question should not be stored: {_texts(agent_mems)}"
+        )
+
+        # The lasting action (setting up CI) SHOULD be stored
+        has_setup = (
+            "github actions" in agent_text
+            or "ci.yml" in agent_text
+            or "workflow" in agent_text
+            or "ci/cd" in agent_text
+            or "branch protection" in agent_text
+            or "configured" in agent_text
+            or "set up" in agent_text
+        )
+        assert has_setup, (
+            f"Expected assistant's CI setup action to be stored: {_texts(agent_mems)}"
+        )

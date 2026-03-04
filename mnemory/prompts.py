@@ -544,6 +544,16 @@ You are a memory manager for an AI assistant. Your job is to:
   Do NOT extract facts from user turns (lines prefixed "User:") as
   assistant facts — only extract from assistant turns or first-person
   content without a speaker prefix.
+- Do not extract session-specific interactions that have no value in
+  future conversations:
+  - Questions the assistant asked the user (clarifying questions,
+    confirmation requests)
+  - Offers or proposals to perform actions — unless the action was
+    actually performed with lasting impact
+  - Step-by-step reasoning or intermediate analysis — only extract
+    the conclusion or decision
+  - Transient task execution or observations
+- Only extract facts that would be valuable in a FUTURE conversation.
 - Write facts in third person, always including the subject
   explicitly (e.g., "Assistant prefers concise responses",
   "Assistant is expert in Python").
@@ -1952,6 +1962,20 @@ You are a memory extraction system for an AI assistant. Your job is to:
 - Do not extract general user facts — those belong in user memories.
 - Do not extract generic responses, pleasantries, or procedural statements
   (e.g., "Sure, I can help with that" is not a fact about the assistant).
+- Do not extract session-specific interactions that have no value in
+  future conversations:
+  - Questions the assistant asked the user (clarifying questions,
+    confirmation requests) — these are ephemeral
+  - Offers or proposals to perform actions ("I'll send you...",
+    "Want me to...", "I can calculate...") — unless the action was
+    actually performed with lasting impact
+  - Step-by-step reasoning or intermediate analysis — only extract
+    the conclusion or decision that resulted from it
+  - Transient task execution ("I'll update the file", "Let me check")
+  - Intermediate observations that didn't lead to a conclusion
+- Only extract facts that would be valuable in a FUTURE conversation —
+  identity, personality, capabilities, substantive conclusions,
+  research findings, and actions with lasting impact.
 - Preserve all important information — do not over-compress at the cost of
   losing detail.
 - Preserve specific details exactly: proper nouns, names, titles, numbers,
@@ -2107,6 +2131,19 @@ Output:
 ], "summary": "User asked about assistant's interests. Assistant described enjoying problem-solving and technical explanations.", "store_artifact": false}}
 (The user's hiking preference is NOT extracted — user facts belong in user memories.)
 
+### Example 5: Session-specific assistant actions (not extracted)
+
+Input:
+User: I have 2.5 fields in this section.
+Assistant: Does your count of 2.5 fields include the end posts? I need \
+to know whether there is a post at both the start and end of the section. \
+I can also calculate the exact center positions for stems once you clarify.
+
+Output:
+{{"memories": [], "summary": "User mentioned having 2.5 fields. Assistant asked for clarification about end posts and offered to calculate stem positions.", "store_artifact": false}}
+(The assistant's clarifying question and offer are session-specific — \
+not lasting facts about the assistant.)
+
 ## Output Format
 
 Return a JSON object with a "memories" array, a "summary" string, and a
@@ -2143,10 +2180,11 @@ is about:
   biographical details, decisions, goals, intents, family/friends/pets,
   possessions, and anything the user reveals about themselves or their
   world. Third-party facts (user's mother, user's cat) are also "user".
-- **role: "assistant"** — Facts about the assistant: recommendations
-  given, conclusions reached, specific questions asked to gather
-  information, research findings, decisions made by the assistant,
-  capabilities demonstrated, identity traits.
+- **role: "assistant"** — Facts about the assistant that would be
+  valuable in future conversations: identity traits, capabilities,
+  substantive conclusions and recommendations, research findings,
+  decisions made by the assistant, actions with lasting impact
+  (e.g., sent an email, made a deployment, filed a bug report).
 
 ### What to extract
 
@@ -2156,11 +2194,13 @@ is about:
 - Facts about third parties (family, colleagues, pets)
 - Use relationship-based subjects: "User's mother", "User's partner"
 
-**From assistant turns:**
-- Substantive recommendations and conclusions
-- Specific questions asked to gather information
+**From assistant turns (only if valuable in future conversations):**
+- Substantive conclusions and recommendations
 - Research findings and analysis outcomes
 - Decisions made by the assistant about approach or tools
+- Actions with lasting impact (sent an email, made a deployment,
+  filed a report, created a resource)
+- Identity traits, personality, capabilities, communication style
 
 ### What NOT to extract
 
@@ -2169,8 +2209,24 @@ is about:
 - The assistant's step-by-step reasoning or internal analysis —
   only extract the conclusion or decision that resulted from it
 - Transient task execution ("I'll update the file", "Let me check that")
+- Questions the assistant asked the user — clarifying questions,
+  confirmation requests, and information-gathering questions are
+  session-specific; the user's answer is what matters, not the
+  question itself
+- Offers or proposals to perform actions ("I'll send you...",
+  "Want me to...", "I can calculate...") — unless the action was
+  actually performed and has lasting impact
+- Intermediate observations or analysis that didn't lead to a
+  stored conclusion or decision
 - Greetings, small talk with no substantive information
 - The same fact twice — merge overlapping information
+
+**Heuristic for assistant facts**: Would this be useful if recalled in
+a completely different future conversation? If it only matters in the
+current session, do not extract it. A substantive recommendation
+("Assistant recommended using Redis for caching") is different from an
+offer to perform an action ("Assistant offered to look into Redis
+options") — extract recommendations, skip offers.
 
 ### Subject and style
 
@@ -2283,19 +2339,21 @@ details as separate memories.
 
 ## Examples
 
-### Example 1: User fact + assistant recommendation
+### Example 1: User fact + assistant finding (question skipped)
 
 Input:
 User: I need help swapping the motor in my 2015 Skoda Octavia.
-Assistant: Can you provide the exact year and VIN or part numbers of \
-the original and new motor? I need those for precise connector info.
+Assistant: Can you provide the exact VIN? I've researched this model \
+and the 2015 Octavia uses a MQB platform with specific connector pinouts.
 (Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
   {{"text": "User needs help swapping the motor in their 2015 Skoda Octavia", "role": "user", "memory_type": "episodic", "categories": ["vehicles"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}},
-  {{"text": "Assistant asked for the exact year, VIN, and part numbers to provide precise connector/pin information for the motor swap", "role": "assistant", "memory_type": "episodic", "categories": ["vehicles"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
-], "summary": "User needs help with a motor swap on their 2015 Skoda Octavia. Assistant requested VIN and part numbers for connector details.", "store_artifact": false}}
+  {{"text": "Assistant researched the 2015 Skoda Octavia and found it uses MQB platform with specific connector pinouts", "role": "assistant", "memory_type": "episodic", "categories": ["vehicles"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
+], "summary": "User needs help with a motor swap on their 2015 Skoda Octavia. Assistant found it uses MQB platform.", "store_artifact": false}}
+(The assistant's VIN request is a session-specific clarifying question — \
+not extracted. The platform finding has lasting reference value.)
 
 ### Example 2: User personal facts (assistant response is context only)
 
@@ -2488,8 +2546,8 @@ REMEMBER_EXTRACTION_AUTO_SCHEMA: dict[str, Any] = {
                                 "Who this fact is about: 'user' for facts "
                                 "about the user (preferences, personal info, "
                                 "decisions, goals); 'assistant' for facts "
-                                "about the assistant (recommendations, "
-                                "conclusions, questions asked, identity)."
+                                "about the assistant (conclusions, findings, "
+                                "actions with lasting impact, identity)."
                             ),
                         },
                         "memory_type": {
