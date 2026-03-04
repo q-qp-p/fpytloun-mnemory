@@ -2,28 +2,54 @@
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-03-04
+
 ### Hybrid Search
 
-- **BM25 sparse vectors + RRF fusion**: Search now uses Qdrant's native hybrid search — dense vectors (semantic similarity) and BM25 sparse vectors (keyword matching) fused with Reciprocal Rank Fusion (RRF). Replaces the old Python-side keyword boost post-processing. Results are more accurate for queries containing specific terms, names, or identifiers
-- **fastembed is now a required dependency**: `fastembed>=0.4.0` moved from optional to main dependencies. The BM25 model (~50MB) is pre-downloaded in the Docker image at build time
-- **Importance reranking**: Post-RRF importance boost applied in Python (weighted by `IMPORTANCE_WEIGHTS`), replacing the previous `FormulaQuery` approach which is unreliable inside Qdrant Prefetch ([qdrant/qdrant#6836](https://github.com/qdrant/qdrant/issues/6836))
-- **Automatic migration on startup**: Existing instances get sparse vectors added via an automatic migration (`001_add_sparse_vectors`) that runs on first startup. Migration is idempotent, resumable with checkpointing, and tracks state in a `_mnemory_meta` Qdrant collection. **Note: migration may take several minutes for large instances** (processes all existing memories in batches of 100). Health endpoint returns 503 during migration
-- **New config vars**: `SEARCH_SPARSE_MODEL` (default `Qdrant/bm25`), `SEARCH_SCORE_THRESHOLD_HYBRID` (default `0.0` — RRF scores are ~0.016–0.033, not 0–1 like cosine)
+- **BM25 sparse vectors + RRF fusion**: Search now uses Qdrant's native hybrid search — dense vectors (semantic similarity) and BM25 sparse vectors (keyword matching) fused with Reciprocal Rank Fusion (RRF). Replaces the old Python-side keyword boost post-processing. Results are more accurate for queries containing specific terms, names, or identifiers ([`276521a`](https://github.com/fpytloun/mnemory/commit/276521a))
+- **fastembed is now a required dependency**: `fastembed>=0.4.0` moved from optional to main dependencies. The BM25 model (~50MB) is pre-downloaded in the Docker image at build time ([`276521a`](https://github.com/fpytloun/mnemory/commit/276521a))
+- **Importance reranking**: Post-RRF importance boost applied in Python (weighted by `IMPORTANCE_WEIGHTS`), replacing the previous `FormulaQuery` approach which is unreliable inside Qdrant Prefetch ([qdrant/qdrant#6836](https://github.com/qdrant/qdrant/issues/6836)) ([`276521a`](https://github.com/fpytloun/mnemory/commit/276521a))
+- **New config vars**: `SEARCH_SPARSE_MODEL` (default `Qdrant/bm25`), `SEARCH_SCORE_THRESHOLD_HYBRID` (default `0.0` — RRF scores are ~0.016–0.033, not 0–1 like cosine) ([`276521a`](https://github.com/fpytloun/mnemory/commit/276521a))
 - **Deprecated**: `SEARCH_KEYWORD_WEIGHT` is no longer used (keyword matching is now handled by BM25 sparse vectors natively in Qdrant)
-- **Dense-only fallback**: If hybrid search fails at query time (e.g., Qdrant version mismatch), the system gracefully falls back to dense-only search
-- **Python 3.14 not supported**: fastembed's BM25 model depends on `py_rust_stemmers`, a Rust extension that segfaults on Python 3.14 due to a PyO3/C API incompatibility ([qdrant/fastembed#576](https://github.com/qdrant/fastembed/issues/576)). Use Python 3.11–3.13 (3.13 recommended). The Docker image uses `python:3.13-slim`
+- **Dense-only fallback**: If hybrid search fails at query time (e.g., Qdrant version mismatch), the system gracefully falls back to dense-only search ([`3199a47`](https://github.com/fpytloun/mnemory/commit/3199a47))
+- **Python 3.14 not supported**: fastembed's BM25 model depends on `py_rust_stemmers`, a Rust extension that segfaults on Python 3.14 due to a PyO3/C API incompatibility ([qdrant/fastembed#576](https://github.com/qdrant/fastembed/issues/576)). Use Python 3.11–3.13 (3.13 recommended). The Docker image uses `python:3.13-slim` ([`9f2b920`](https://github.com/fpytloun/mnemory/commit/9f2b920))
+
+### Data Migrations
+
+- **Automatic migration framework**: New `MigrationRunner` in `mnemory/migration.py` — idempotent, resumable with batch checkpointing, state tracked in `_mnemory_meta` Qdrant collection. Health endpoint returns 503 during migration. Existing instances get sparse vectors added via `001_add_sparse_vectors` on first startup. **Note: migration may take several minutes for large instances** (processes all existing memories in batches of 100) ([`276521a`](https://github.com/fpytloun/mnemory/commit/276521a))
+- **Collection recreation fallback**: Migration handles Qdrant rejecting sparse vector addition by recreating the collection with correct config ([`4b4e7a7`](https://github.com/fpytloun/mnemory/commit/4b4e7a7))
 
 ### Session Persistence
 
-- **Persistent session storage**: Sessions now survive server restarts via pluggable backends — SQLite (default for local/single-node), Redis (for clustered deployments), or in-memory (tests). Uses a write-through cache pattern: in-memory dict for fast reads, backend for durability, lazy loading on cache miss
-- **24-hour session TTL**: Default `MEMORY_SESSION_TTL` increased from 1 hour to 24 hours. Both recall and remember calls reset the idle timer (auto-prolong), so active conversations never expire
-- **Remember auto-prolong**: The remember endpoint now touches the session to reset its idle timeout, preventing session expiry during active conversations that only use remember (not recall)
-- **Redis optional dependency**: Added `redis>=5.0.0` as optional dependency, installable via `pip install mnemory[redis]`
-- **New env vars**: `SESSION_BACKEND` (sqlite/redis/memory), `SESSION_PATH` (SQLite DB path), `REDIS_URL` (Redis connection). Auto-detects Redis when `REDIS_URL` is set
+- **Persistent session storage**: Sessions now survive server restarts via pluggable backends — SQLite (default for local/single-node), Redis (for clustered deployments), or in-memory (tests). Uses a write-through cache pattern: in-memory dict for fast reads, backend for durability, lazy loading on cache miss ([`eb3eddf`](https://github.com/fpytloun/mnemory/commit/eb3eddf))
+- **24-hour session TTL**: Default `MEMORY_SESSION_TTL` increased from 1 hour to 24 hours. Both recall and remember calls reset the idle timer (auto-prolong), so active conversations never expire ([`eb3eddf`](https://github.com/fpytloun/mnemory/commit/eb3eddf))
+- **Remember auto-prolong**: The remember endpoint now touches the session to reset its idle timeout, preventing session expiry during active conversations that only use remember (not recall) ([`eb3eddf`](https://github.com/fpytloun/mnemory/commit/eb3eddf))
+- **Redis optional dependency**: Added `redis>=5.0.0` as optional dependency, installable via `pip install mnemory[redis]` ([`eb3eddf`](https://github.com/fpytloun/mnemory/commit/eb3eddf))
+- **New env vars**: `SESSION_BACKEND` (sqlite/redis/memory), `SESSION_PATH` (SQLite DB path), `REDIS_URL` (Redis connection). Auto-detects Redis when `REDIS_URL` is set ([`eb3eddf`](https://github.com/fpytloun/mnemory/commit/eb3eddf))
 
 ### Remember Pipeline
 
-- **Two-stage extract+dedup pipeline**: Remember pipeline rewritten to separate fact extraction from deduplication, with session context tracking for conversation continuity across multiple remember calls
+- **Two-stage extract+dedup pipeline**: Remember pipeline rewritten to separate fact extraction from deduplication, with session context tracking for conversation continuity across multiple remember calls ([`b089a48`](https://github.com/fpytloun/mnemory/commit/b089a48))
+- **Three-way role semantics with auto mode**: Remember pipeline now supports `role=None` (auto mode) that extracts facts from all conversation participants, attributing each to the correct role. Assistant facts require `agent_id` ([`521b8ba`](https://github.com/fpytloun/mnemory/commit/521b8ba))
+
+### Role Handling
+
+- **Role extraction fix for `role=assistant`**: Agent memories with `infer=True` now correctly use the agent extraction prompt ([`ff25699`](https://github.com/fpytloun/mnemory/commit/ff25699))
+- **Role metadata written on UPDATE actions**: Dedup UPDATE actions now correctly persist the role field in metadata ([`942568a`](https://github.com/fpytloun/mnemory/commit/942568a))
+
+### Core Memories
+
+- **Dedup core memories against search results**: `get_core_memories` results are deduplicated against search results, and recent memories are filtered by importance ([`969b786`](https://github.com/fpytloun/mnemory/commit/969b786))
+
+### Fsck Improvements
+
+- **Detect and fix wrong role metadata**: Quality phase now detects memories with incorrect `role` field and proposes fixes ([`23bc415`](https://github.com/fpytloun/mnemory/commit/23bc415))
+
+### Prompt & Extraction Improvements
+
+- **Softer dedup language**: Reduced over-suppression of new memories by softening dedup prompt guidance ([`ea3407e`](https://github.com/fpytloun/mnemory/commit/ea3407e))
+- **Restored inline examples**: Re-added extraction examples and rules that were dropped during the remember pipeline rewrite ([`bbf5f8d`](https://github.com/fpytloun/mnemory/commit/bbf5f8d))
+- **Improved extraction reliability**: Better remember extraction reliability and classification ([`b378182`](https://github.com/fpytloun/mnemory/commit/b378182))
 
 ## [1.5.0] — 2026-02-28
 
