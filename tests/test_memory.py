@@ -5112,6 +5112,120 @@ class TestRememberAutoMode:
                 vector_map={},
             )
 
+    def test_episodic_event_date_fallback_to_today(self):
+        """Episodic memories with no event_date should get today's date as fallback."""
+        from datetime import datetime, timezone
+
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        action = {
+            "text": "User wants to publish a new GitHub release",
+            "action": "ADD",
+            "target_id": None,
+            "old_memory": None,
+            "memory_type": "episodic",
+            "categories": ["technical"],
+            "importance": "normal",
+            "pinned": False,
+            "event_date": None,
+        }
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        result = service._execute_action(
+            action,
+            user_id="filip",
+            agent_id=None,
+            role="user",
+            ttl_days=None,
+            explicit_fields={},
+            vector_map={},
+        )
+
+        assert result is not None
+        assert result["event"] == "ADD"
+
+        # Verify the stored metadata has event_date set to today
+        insert_call = service.vector.insert.call_args
+        metadata = insert_call.kwargs.get("metadata") or insert_call[1].get("metadata")
+        assert metadata["event_date"] == today, (
+            f"Expected episodic event_date={today}, got: {metadata.get('event_date')}"
+        )
+
+    def test_non_episodic_event_date_stays_none(self):
+        """Non-episodic memories with no event_date should NOT get auto-populated."""
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        for mem_type in ("fact", "preference", "procedural", "context"):
+            service.vector.insert.reset_mock()
+
+            action = {
+                "text": f"Some {mem_type} memory",
+                "action": "ADD",
+                "target_id": None,
+                "old_memory": None,
+                "memory_type": mem_type,
+                "categories": ["personal"],
+                "importance": "normal",
+                "pinned": False,
+                "event_date": None,
+            }
+
+            service._execute_action(
+                action,
+                user_id="filip",
+                agent_id=None,
+                role="user",
+                ttl_days=None,
+                explicit_fields={},
+                vector_map={},
+            )
+
+            insert_call = service.vector.insert.call_args
+            metadata = insert_call.kwargs.get("metadata") or insert_call[1].get(
+                "metadata"
+            )
+            assert "event_date" not in metadata, (
+                f"Expected no event_date for {mem_type}, "
+                f"got: {metadata.get('event_date')}"
+            )
+
+    def test_episodic_event_date_not_overridden_when_present(self):
+        """Episodic memories with an LLM-extracted event_date should keep it."""
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        action = {
+            "text": "User went to the doctor",
+            "action": "ADD",
+            "target_id": None,
+            "old_memory": None,
+            "memory_type": "episodic",
+            "categories": ["personal"],
+            "importance": "normal",
+            "pinned": False,
+            "event_date": "2025-02-20",
+        }
+
+        service._execute_action(
+            action,
+            user_id="filip",
+            agent_id=None,
+            role="user",
+            ttl_days=None,
+            explicit_fields={},
+            vector_map={},
+        )
+
+        insert_call = service.vector.insert.call_args
+        metadata = insert_call.kwargs.get("metadata") or insert_call[1].get("metadata")
+        assert metadata["event_date"] == "2025-02-20", (
+            f"Expected LLM-extracted event_date=2025-02-20, "
+            f"got: {metadata.get('event_date')}"
+        )
+
     def test_session_context_annotated_with_role_prefixes_in_auto_mode(self):
         """Auto mode should annotate session context with [user]/[assistant] prefixes."""
         from mnemory.session import SessionStore

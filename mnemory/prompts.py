@@ -255,6 +255,9 @@ You are a memory manager for an AI assistant. Your job is to:
     recently, etc.) to absolute dates using Today's date.
   - Set event_date to null when the fact is timeless (e.g., a name,
     a preference, a permanent trait).
+  - For episodic events (decisions, intents, goals, interactions,
+    observations) with no explicit date reference, set event_date to
+    Today's date — these events are happening now.
 - Do NOT embed dates in the fact text unless the date IS the core
   fact (e.g., "User's birthday is August 13"). For episodic events,
   the date goes in event_date only — keep the text clean.
@@ -321,11 +324,11 @@ Output: {{"memories": [
   {{"text": "John proposed using Kubernetes",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical"],
-    "importance": "normal", "pinned": false, "event_date": null}},
+    "importance": "normal", "pinned": false, "event_date": "{today}"}},
   {{"text": "Sarah prefers ECS over Kubernetes for their scale",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical"],
-    "importance": "normal", "pinned": false, "event_date": null}}
+    "importance": "normal", "pinned": false, "event_date": "{today}"}}
 ], "store_artifact": false}}
 
 Input: "User: My mom likes sweet drinks, especially Malibu. She loves \
@@ -363,7 +366,7 @@ Output: {{"memories": [
   {{"text": "User wants to implement OIDC authentication for myapp using ALB and Cognito",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical", "project:myapp"],
-    "importance": "normal", "pinned": false, "event_date": null}}
+    "importance": "normal", "pinned": false, "event_date": "{today}"}}
 ], "store_artifact": false}}
 
 Input: "User: Our platform doesn't have distributed tracing yet, I want \
@@ -374,7 +377,7 @@ Output: {{"memories": [
   {{"text": "User wants to add distributed tracing to their platform using OpenTelemetry",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical"],
-    "importance": "normal", "pinned": false, "event_date": null}}
+    "importance": "normal", "pinned": false, "event_date": "{today}"}}
 ], "store_artifact": false}}
 (The user's intent/goal is episodic — it will be fulfilled eventually. \
 The knowledge gap is too transient to store separately.)
@@ -386,7 +389,7 @@ Output: {{"memories": [
   {{"text": "User decided to use PostgreSQL instead of MySQL for the billing service",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical", "decisions"],
-    "importance": "high", "pinned": false, "event_date": null}}
+    "importance": "high", "pinned": false, "event_date": "{today}"}}
 ], "store_artifact": false}}
 (A decision is episodic — it records what was decided at a point in time.)
 
@@ -571,6 +574,9 @@ You are a memory manager for an AI assistant. Your job is to:
     recently, etc.) to absolute dates using Today's date.
   - Set event_date to null when the fact is timeless (e.g., a name,
     a preference, a permanent trait).
+  - For episodic events (decisions, intents, goals, interactions,
+    observations) with no explicit date reference, set event_date to
+    Today's date — these events are happening now.
 - Do NOT embed dates in the fact text unless the date IS the core
   fact. For episodic events, the date goes in event_date only —
   keep the text clean.
@@ -1545,6 +1551,9 @@ You are a memory extraction system. Your job is to:
     recently, etc.) to absolute dates using Today's date.
   - Set event_date to null when the fact is timeless (e.g., a name,
     a preference, a permanent trait).
+  - For episodic events (decisions, intents, goals, interactions,
+    observations) with no explicit date reference, set event_date to
+    Today's date — these events are happening now.
 - Do NOT embed dates in the fact text unless the date IS the core
   fact (e.g., "User's birthday is August 13"). For episodic events,
   the date goes in event_date only — keep the text clean.
@@ -1715,11 +1724,12 @@ Output:
 
 Input: "John: I think we should use Kubernetes. Sarah: I disagree, \
 ECS is better for our scale."
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "John proposed using Kubernetes", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}},
-  {{"text": "Sarah prefers ECS over Kubernetes for their scale", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}}
+  {{"text": "John proposed using Kubernetes", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}},
+  {{"text": "Sarah prefers ECS over Kubernetes for their scale", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "John and Sarah discussed container orchestration — John favors Kubernetes, Sarah prefers ECS.", "store_artifact": false}}
 
 ### Example 7: Third-party facts (family, pets)
@@ -1754,10 +1764,11 @@ implementation observation — neither is a fact worth remembering.)
 Input:
 User: Help me set up OIDC authentication for our myapp service
 Assistant: I'll implement this using the ALB OIDC action with Cognito.
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "User wants to implement OIDC authentication for myapp using ALB and Cognito", "memory_type": "episodic", "categories": ["technical", "project:myapp"], "importance": "normal", "pinned": false, "event_date": null}}
+  {{"text": "User wants to implement OIDC authentication for myapp using ALB and Cognito", "memory_type": "episodic", "categories": ["technical", "project:myapp"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "User wants to set up OIDC auth for myapp. Assistant will use ALB OIDC with Cognito.", "store_artifact": false}}
 
 ### Example 10: Goal + knowledge gap (episodic, NOT fact)
@@ -1767,10 +1778,11 @@ User: Our platform doesn't have distributed tracing yet, I want \
 to add it. I don't really understand how OpenTelemetry works.
 Assistant: OpenTelemetry provides a unified framework for traces, metrics \
 and logs. I'd recommend starting with automatic instrumentation.
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "User wants to add distributed tracing to their platform using OpenTelemetry", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}}
+  {{"text": "User wants to add distributed tracing to their platform using OpenTelemetry", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "User wants to add distributed tracing but is unfamiliar with OpenTelemetry. Assistant explained the basics.", "store_artifact": false}}
 (The user's intent/goal is episodic — it will be fulfilled eventually. \
 The knowledge gap is too transient to store separately.)
@@ -1781,10 +1793,11 @@ Input:
 User: We decided to use PostgreSQL instead of MySQL for the \
 billing service.
 Assistant: Good choice. I'll update the docker-compose and migrations.
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "User decided to use PostgreSQL instead of MySQL for the billing service", "memory_type": "episodic", "categories": ["technical", "decisions"], "importance": "high", "pinned": false, "event_date": null}}
+  {{"text": "User decided to use PostgreSQL instead of MySQL for the billing service", "memory_type": "episodic", "categories": ["technical", "decisions"], "importance": "high", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "User decided to switch from MySQL to PostgreSQL for billing service.", "store_artifact": false}}
 (A decision is episodic — it records what was decided at a point in time.)
 
@@ -1810,10 +1823,11 @@ implement canary deployments with automatic rollback. I don't fully \
 understand how Argo Rollouts works, so I need to study that first.
 Assistant: Argo Rollouts extends Kubernetes with canary and blue-green \
 strategies. I'd suggest starting with one non-critical service.
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "User wants to implement canary deployments with automatic rollback using Argo Rollouts", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}}
+  {{"text": "User wants to implement canary deployments with automatic rollback using Argo Rollouts", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "User wants canary deployments with auto-rollback via Argo Rollouts but needs to learn it first.", "store_artifact": false}}
 (The feature request and knowledge gap are episodic — they describe \
 current intent and state, not permanent facts.)
@@ -1874,6 +1888,9 @@ You are a memory extraction system for an AI assistant. Your job is to:
     dates using Today's date.
   - Set event_date to null when the fact is timeless (e.g., a name,
     a preference, a permanent trait).
+  - For episodic events (decisions, intents, goals, interactions,
+    observations) with no explicit date reference, set event_date to
+    Today's date — these events are happening now.
 - Do NOT embed dates in the fact text unless the date IS the core fact.
 - Do NOT append storage dates, creation timestamps, or "(stored ...)"
   annotations to extracted facts.
@@ -1975,10 +1992,11 @@ User: Research bug immortality for me.
 Assistant: I reviewed 23 scientific papers on bug immortality and found
 that certain species of tardigrades exhibit near-indefinite dormancy
 under extreme conditions.
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "Assistant researched 23 scientific papers on bug immortality, finding tardigrades exhibit near-indefinite dormancy under extreme conditions", "memory_type": "episodic", "categories": ["technical"], "importance": "high", "pinned": false, "event_date": null}}
+  {{"text": "Assistant researched 23 scientific papers on bug immortality, finding tardigrades exhibit near-indefinite dormancy under extreme conditions", "memory_type": "episodic", "categories": ["technical"], "importance": "high", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "User asked assistant to research bug immortality. Assistant reviewed 23 papers and found tardigrades as a key example.", "store_artifact": false}}
 
 ### Example 3: Assistant style preference
@@ -2105,6 +2123,9 @@ is about:
   - Set event_date when the fact has a temporal anchor.
   - Convert relative references to absolute dates using Today's date.
   - Set event_date to null when the fact is timeless.
+  - For episodic events (decisions, intents, goals, interactions,
+    observations) with no explicit date reference, set event_date to
+    Today's date — these events are happening now.
 - Do NOT embed dates in the fact text unless the date IS the core fact.
 - Do NOT append storage dates or creation timestamps to extracted facts.
 - Do not extract the same fact twice. Each extracted fact must be
@@ -2184,11 +2205,12 @@ Input:
 User: I need help swapping the motor in my 2015 Skoda Octavia.
 Assistant: Can you provide the exact year and VIN or part numbers of \
 the original and new motor? I need those for precise connector info.
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "User needs help swapping the motor in their 2015 Skoda Octavia", "role": "user", "memory_type": "episodic", "categories": ["vehicles"], "importance": "normal", "pinned": false, "event_date": null}},
-  {{"text": "Assistant asked for the exact year, VIN, and part numbers to provide precise connector/pin information for the motor swap", "role": "assistant", "memory_type": "episodic", "categories": ["vehicles"], "importance": "normal", "pinned": false, "event_date": null}}
+  {{"text": "User needs help swapping the motor in their 2015 Skoda Octavia", "role": "user", "memory_type": "episodic", "categories": ["vehicles"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}},
+  {{"text": "Assistant asked for the exact year, VIN, and part numbers to provide precise connector/pin information for the motor swap", "role": "assistant", "memory_type": "episodic", "categories": ["vehicles"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "User needs help with a motor swap on their 2015 Skoda Octavia. Assistant requested VIN and part numbers for connector details.", "store_artifact": false}}
 
 ### Example 2: User personal facts (assistant response is context only)
@@ -2212,11 +2234,12 @@ Output:
 Input:
 User: Help me set up OIDC authentication for our myapp service.
 Assistant: I'll implement this using the ALB OIDC action with Cognito.
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "User wants to implement OIDC authentication for myapp", "role": "user", "memory_type": "episodic", "categories": ["technical", "project:myapp"], "importance": "normal", "pinned": false, "event_date": null}},
-  {{"text": "Assistant decided to implement OIDC for myapp using ALB OIDC action with Cognito", "role": "assistant", "memory_type": "episodic", "categories": ["technical", "project:myapp"], "importance": "normal", "pinned": false, "event_date": null}}
+  {{"text": "User wants to implement OIDC authentication for myapp", "role": "user", "memory_type": "episodic", "categories": ["technical", "project:myapp"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}},
+  {{"text": "Assistant decided to implement OIDC for myapp using ALB OIDC action with Cognito", "role": "assistant", "memory_type": "episodic", "categories": ["technical", "project:myapp"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "User wants OIDC auth for myapp. Assistant will use ALB OIDC with Cognito.", "store_artifact": false}}
 
 ### Example 4: Transient task (no facts)
@@ -2235,10 +2258,11 @@ Output:
 Input:
 User: We decided to use PostgreSQL instead of MySQL for the billing service.
 Assistant: Good choice. I'll update the docker-compose and migrations.
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "User decided to use PostgreSQL instead of MySQL for the billing service", "role": "user", "memory_type": "episodic", "categories": ["technical", "decisions"], "importance": "high", "pinned": false, "event_date": null}}
+  {{"text": "User decided to use PostgreSQL instead of MySQL for the billing service", "role": "user", "memory_type": "episodic", "categories": ["technical", "decisions"], "importance": "high", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "User decided to switch from MySQL to PostgreSQL for billing service.", "store_artifact": false}}
 (The assistant's "I'll update..." is transient task execution, not a substantive decision.)
 
@@ -2246,11 +2270,12 @@ Output:
 
 Input: "John: I think we should use Kubernetes. Sarah: I disagree, \
 ECS is better for our scale."
+(Today's date: 2025-03-15)
 
 Output:
 {{"memories": [
-  {{"text": "John proposed using Kubernetes", "role": "user", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}},
-  {{"text": "Sarah prefers ECS over Kubernetes for their scale", "role": "user", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}}
+  {{"text": "John proposed using Kubernetes", "role": "user", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}},
+  {{"text": "Sarah prefers ECS over Kubernetes for their scale", "role": "user", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "summary": "John and Sarah discussed container orchestration — John favors Kubernetes, Sarah prefers ECS.", "store_artifact": false}}
 (Non-assistant participants use role="user".)
 

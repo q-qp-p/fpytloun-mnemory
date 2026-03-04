@@ -1329,6 +1329,12 @@ class MemoryService:
         # timestamp). Falls back to caller's date when LLM returns null.
         effective_event_date = action.get("event_date") or event_date
 
+        # Fallback: episodic memories should always have an event_date.
+        # If the LLM didn't extract one and the caller didn't provide one,
+        # default to today's date — episodic events are happening now.
+        if effective_event_date is None and mem_type == "episodic":
+            effective_event_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
         if act == "ADD":
             vector = vector_map.get(text)
             if vector is None:
