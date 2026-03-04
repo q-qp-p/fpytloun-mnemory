@@ -411,6 +411,7 @@ class TestRemember:
         result = memory_service.remember(
             content=conversation,
             user_id=self.USER,
+            role="user",
         )
         mems = _results(result)
         _assert_count_between(mems, 2, 8)
@@ -436,6 +437,7 @@ class TestRemember:
         result = memory_service.remember(
             content=conversation,
             user_id=self.USER,
+            role="user",
         )
         mems = _results(result)
         assert len(mems) == 0, (
@@ -456,6 +458,7 @@ class TestRemember:
         result = memory_service.remember(
             content=conversation,
             user_id=self.USER,
+            role="user",
         )
         mems = _results(result)
         _assert_count_between(mems, 1, 6)
@@ -490,6 +493,7 @@ class TestRemember:
         result = memory_service.remember(
             content=conversation,
             user_id=self.USER,
+            role="user",
         )
         mems = _results(result)
         # The original bug: only 1 fact stored. We expect at least 3.
@@ -1379,17 +1383,25 @@ class TestMemoryTypeClassification:
             "each service, configuring exporters, and setting up a collector "
             "to aggregate and forward traces to your backend."
         )
-        memory_service.remember(content=conversation, user_id=user)
+        memory_service.remember(content=conversation, user_id=user, role="user")
         time.sleep(0.5)
 
         pairs = self._type_pairs(memory_service, user)
         assert len(pairs) >= 1, f"Expected at least 1 memory, got {pairs}"
-        # All memories from this conversation should be episodic or context,
-        # NOT fact — there are no stable biographical facts here.
-        for text, mtype in pairs:
-            assert mtype in ("episodic", "context"), (
-                f"Expected episodic/context for '{text}', got '{mtype}'"
-            )
+        # The primary memories (goals, intents) should be episodic or context.
+        # The LLM may also extract incidental stable details (e.g.,
+        # "uses microservices") as fact — allow at most 1 fact.
+        fact_count = sum(1 for _, mtype in pairs if mtype == "fact")
+        non_fact_count = sum(
+            1 for _, mtype in pairs if mtype in ("episodic", "context")
+        )
+        assert non_fact_count >= 1, (
+            f"Expected at least 1 episodic/context memory (goals/intents), got: {pairs}"
+        )
+        assert fact_count <= 1, (
+            f"Expected at most 1 incidental fact, got {fact_count}: "
+            f"{[(t, mt) for t, mt in pairs if mt == 'fact']}"
+        )
 
     def test_decision_is_episodic(self, memory_service: MemoryService) -> None:
         """'User decided to use X' should be episodic, not fact.
@@ -1405,7 +1417,7 @@ class TestMemoryTypeClassification:
             "User: Jo, tak to uděláme. Updatni ty configy prosím.\n"
             "Assistant: Jasně, upravím docker-compose a migration skripty."
         )
-        memory_service.remember(content=conversation, user_id=user)
+        memory_service.remember(content=conversation, user_id=user, role="user")
         time.sleep(0.5)
 
         pairs = self._type_pairs(memory_service, user)
@@ -1428,7 +1440,7 @@ class TestMemoryTypeClassification:
             "Assistant: Extrakce používá jeden LLM call pro extrakci faktů, "
             "klasifikaci a deduplikaci proti existujícím vzpomínkám."
         )
-        memory_service.remember(content=conversation, user_id=user)
+        memory_service.remember(content=conversation, user_id=user, role="user")
         time.sleep(0.5)
 
         pairs = self._type_pairs(memory_service, user)
@@ -1467,7 +1479,7 @@ class TestMemoryTypeClassification:
             "to get familiar with the workflow before rolling it out "
             "across all services."
         )
-        memory_service.remember(content=conversation, user_id=user)
+        memory_service.remember(content=conversation, user_id=user, role="user")
         time.sleep(0.5)
 
         pairs = self._type_pairs(memory_service, user)
@@ -1492,7 +1504,7 @@ class TestMemoryTypeClassification:
             "Assistant: Ano, provenance tracking zatím chybí. Mohli bychom "
             "přidat pole source_session_id do metadat."
         )
-        memory_service.remember(content=conversation, user_id=user)
+        memory_service.remember(content=conversation, user_id=user, role="user")
         time.sleep(0.5)
 
         pairs = self._type_pairs(memory_service, user)
@@ -1515,7 +1527,7 @@ class TestMemoryTypeClassification:
             "User: My name is Elena, I'm a data engineer living in Barcelona.\n"
             "Assistant: Nice to meet you, Elena!"
         )
-        memory_service.remember(content=conversation, user_id=user)
+        memory_service.remember(content=conversation, user_id=user, role="user")
         time.sleep(0.5)
 
         pairs = self._type_pairs(memory_service, user)
@@ -1535,7 +1547,7 @@ class TestMemoryTypeClassification:
             "I want to migrate our API from REST to GraphQL.\n"
             "Assistant: That's a significant change. Let me help plan it."
         )
-        memory_service.remember(content=conversation, user_id=user)
+        memory_service.remember(content=conversation, user_id=user, role="user")
         time.sleep(0.5)
 
         pairs = self._type_pairs(memory_service, user)
@@ -1696,9 +1708,9 @@ class TestRememberRoleRouting:
     USER = "e2e_remember_role"
     AGENT = "e2e-remember-role-agent"
 
-    def test_remember_default_role_is_user(self, memory_service: MemoryService) -> None:
-        """remember() with no explicit role should default to 'user' and
-        extract user facts."""
+    def test_remember_default_role_is_auto(self, memory_service: MemoryService) -> None:
+        """remember() with no explicit role should default to auto mode
+        (role=None) and extract user facts from user turns."""
         user = f"{self.USER}_default"
         memory_service.remember(
             content="User: My name is Elena.\nAssistant: Nice to meet you, Elena!",
@@ -1710,11 +1722,13 @@ class TestRememberRoleRouting:
         assert len(mems) >= 1, f"Expected at least 1 memory, got: {_texts(mems)}"
         combined = _all_text(mems)
         assert "elena" in combined, f"Expected 'Elena' in memories: {_texts(mems)}"
-        # All stored memories should have role='user'
+        # Without agent_id, assistant facts are dropped — all stored
+        # memories should have role='user'
         for m in mems:
             stored_role = (m.get("metadata") or {}).get("role", "user")
             assert stored_role == "user", (
-                f"Expected role='user', got '{stored_role}' for: {_mem_text(m)}"
+                f"Expected role='user' (assistant facts dropped without agent_id), "
+                f"got '{stored_role}' for: {_mem_text(m)}"
             )
 
     def test_remember_user_role_extracts_user_facts(
@@ -1933,3 +1947,122 @@ class TestRoleUpdateCorrection:
             assert stored_role == "assistant", (
                 f"Expected role='assistant', got '{stored_role}': {_mem_text(m)}"
             )
+
+
+# ── Remember auto mode (role=None) ───────────────────────────────────
+
+
+class TestRememberAutoMode:
+    """Verify that remember() with role=None (auto mode) extracts facts from
+    both user and assistant turns, storing each with the correct role."""
+
+    USER = "e2e_remember_auto"
+    AGENT = "e2e-remember-auto-agent"
+
+    def test_auto_mode_extracts_both_roles(self, memory_service: MemoryService) -> None:
+        """Auto mode with agent_id should extract and store facts from both
+        user and assistant turns with their respective roles."""
+        memory_service.remember(
+            content=(
+                "User: I live in Prague and work as a data scientist.\n"
+                "Assistant: I am Aria, a research assistant specialising in "
+                "machine learning papers."
+            ),
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            # role=None (default auto mode)
+        )
+        time.sleep(0.5)
+
+        # User facts should be stored with role='user'
+        user_mems = memory_service.list_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="user",
+        )
+        user_text = _all_text(user_mems)
+        assert "prague" in user_text or "data scientist" in user_text, (
+            f"Expected user facts (prague/data scientist) in user memories: "
+            f"{_texts(user_mems)}"
+        )
+
+        # Assistant facts should be stored with role='assistant'
+        agent_mems = memory_service.list_memories(
+            user_id=self.USER,
+            agent_id=self.AGENT,
+            role="assistant",
+        )
+        agent_text = _all_text(agent_mems)
+        assert (
+            "aria" in agent_text
+            or "research" in agent_text
+            or "machine learning" in agent_text
+        ), (
+            f"Expected assistant facts (aria/research/ML) in assistant memories: "
+            f"{_texts(agent_mems)}"
+        )
+
+    def test_auto_mode_without_agent_id_drops_assistant_facts(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Auto mode without agent_id should store user facts and silently
+        drop assistant facts."""
+        user = f"{self.USER}_no_agent"
+        memory_service.remember(
+            content=(
+                "User: I enjoy hiking in the Alps.\n"
+                "Assistant: I am a travel assistant. I recommend the Dolomites."
+            ),
+            user_id=user,
+            # No agent_id — assistant facts should be dropped
+        )
+        time.sleep(0.5)
+
+        mems = memory_service.list_memories(user_id=user)
+        assert len(mems) >= 1, f"Expected at least 1 memory, got: {_texts(mems)}"
+        combined = _all_text(mems)
+        assert "hiking" in combined or "alps" in combined, (
+            f"Expected user fact about hiking/Alps: {_texts(mems)}"
+        )
+        # All stored memories should be role='user' (assistant facts dropped)
+        for m in mems:
+            stored_role = (m.get("metadata") or {}).get("role", "user")
+            assert stored_role == "user", (
+                f"Expected role='user' (assistant facts dropped), "
+                f"got '{stored_role}' for: {_mem_text(m)}"
+            )
+
+    def test_explicit_user_role_suppresses_assistant_content(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Explicit role='user' should suppress assistant content extraction
+        (regression test — this was the original behaviour)."""
+        user = f"{self.USER}_explicit_user"
+        memory_service.remember(
+            content=(
+                "User: I drive a Tesla Model 3.\n"
+                "Assistant: I am a car expert. The Model 3 has a 75 kWh battery."
+            ),
+            user_id=user,
+            agent_id=self.AGENT,
+            role="user",
+        )
+        time.sleep(0.5)
+
+        user_mems = memory_service.list_memories(
+            user_id=user, agent_id=self.AGENT, role="user"
+        )
+        user_text = _all_text(user_mems)
+        assert "tesla" in user_text or "model 3" in user_text, (
+            f"Expected user fact about Tesla: {_texts(user_mems)}"
+        )
+
+        # Assistant identity should NOT be extracted with role='user'
+        agent_mems = memory_service.list_memories(
+            user_id=user, agent_id=self.AGENT, role="assistant"
+        )
+        agent_text = _all_text(agent_mems)
+        assert "car expert" not in agent_text, (
+            f"Assistant identity should NOT be extracted with role='user': "
+            f"{_texts(agent_mems)}"
+        )

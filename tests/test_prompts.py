@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 
 from mnemory.prompts import (
+    REMEMBER_EXTRACTION_AUTO_SCHEMA,
+    REMEMBER_EXTRACTION_SCHEMA,
     _validate_categories,
     _validate_importance,
     _validate_memory_type,
@@ -1099,11 +1101,19 @@ class TestBuildRememberExtractionPrompt:
         # Agent prompt focuses on assistant facts
         assert "about the assistant" in system.lower()
 
-    def test_default_role_is_user(self):
-        """Omitting role should default to user extraction prompt."""
-        messages_default, _ = build_remember_extraction_prompt("test content")
+    def test_default_role_is_auto(self):
+        """Omitting role should default to auto extraction prompt (role=None)."""
+        messages_default, schema_default = build_remember_extraction_prompt(
+            "test content"
+        )
+        messages_auto, schema_auto = build_remember_extraction_prompt(
+            "test content", role=None
+        )
+        assert messages_default[0]["content"] == messages_auto[0]["content"]
+        assert schema_default == schema_auto
+        # Auto prompt should differ from user prompt
         messages_user, _ = build_remember_extraction_prompt("test content", role="user")
-        assert messages_default[0]["content"] == messages_user[0]["content"]
+        assert messages_default[0]["content"] != messages_user[0]["content"]
 
     def test_assistant_role_normalises_plain_firstperson(self):
         """Plain first-person content should be prefixed with 'assistant: '
@@ -1211,3 +1221,212 @@ class TestBuildSummaryCompactionPrompt:
         # Should contain boundary tags around the summary
         assert "summary" in user_msg.lower()
         assert "my summary content" in user_msg
+
+
+# ── Auto mode (role=None) prompt and schema tests ────────────────────
+
+
+class TestAutoModePromptAndSchema:
+    """Test three-way role routing in build_remember_extraction_prompt."""
+
+    def test_auto_selects_auto_template(self):
+        """role=None should select the auto extraction template."""
+        messages, schema = build_remember_extraction_prompt(
+            "User: I like Python\nAssistant: Great choice!", role=None
+        )
+        system = messages[0]["content"]
+        # Auto prompt should mention extracting from both participants
+        assert "user" in system.lower() and "assistant" in system.lower()
+        # Auto schema should have per-fact role field
+        mem_props = schema["schema"]["properties"]["memories"]["items"]["properties"]
+        assert "role" in mem_props
+        assert mem_props["role"]["enum"] == ["user", "assistant"]
+
+    def test_auto_schema_returned_for_none(self):
+        """role=None should return REMEMBER_EXTRACTION_AUTO_SCHEMA."""
+        _, schema = build_remember_extraction_prompt("test", role=None)
+        assert schema is REMEMBER_EXTRACTION_AUTO_SCHEMA
+
+    def test_user_schema_returned_for_user(self):
+        """role='user' should return REMEMBER_EXTRACTION_SCHEMA (no per-fact role)."""
+        _, schema = build_remember_extraction_prompt("test", role="user")
+        assert schema is REMEMBER_EXTRACTION_SCHEMA
+
+    def test_assistant_schema_returned_for_assistant(self):
+        """role='assistant' should return REMEMBER_EXTRACTION_SCHEMA (no per-fact role)."""
+        _, schema = build_remember_extraction_prompt("test", role="assistant")
+        assert schema is REMEMBER_EXTRACTION_SCHEMA
+
+    def test_auto_schema_has_role_field(self):
+        """Auto schema should have a 'role' field in each memory item."""
+        items = REMEMBER_EXTRACTION_AUTO_SCHEMA["schema"]["properties"]["memories"][
+            "items"
+        ]
+        assert "role" in items["required"]
+        assert "role" in items["properties"]
+        assert items["properties"]["role"]["enum"] == ["user", "assistant"]
+
+    def test_regular_schema_lacks_role_field(self):
+        """Regular schema should NOT have a per-fact 'role' field."""
+        items = REMEMBER_EXTRACTION_SCHEMA["schema"]["properties"]["memories"]["items"]
+        assert "role" not in items.get("required", [])
+        assert "role" not in items["properties"]
+
+    def test_auto_template_differs_from_user(self):
+        """Auto template should differ from user template."""
+        msgs_auto, _ = build_remember_extraction_prompt("test", role=None)
+        msgs_user, _ = build_remember_extraction_prompt("test", role="user")
+        assert msgs_auto[0]["content"] != msgs_user[0]["content"]
+
+    def test_auto_template_differs_from_assistant(self):
+        """Auto template should differ from assistant template."""
+        msgs_auto, _ = build_remember_extraction_prompt("test", role=None)
+        msgs_asst, _ = build_remember_extraction_prompt("test", role="assistant")
+        assert msgs_auto[0]["content"] != msgs_asst[0]["content"]
+
+
+class TestParseRememberExtractionAutoRole:
+    """Test that parse_remember_extraction_response handles per-fact role."""
+
+    def test_role_preserved_from_auto_output(self):
+        """Per-fact role from auto extraction should be preserved."""
+        response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User likes Python",
+                        "role": "user",
+                        "memory_type": "preference",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": None,
+                    },
+                    {
+                        "text": "Assistant recommended FastAPI",
+                        "role": "assistant",
+                        "memory_type": "episodic",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": None,
+                    },
+                ],
+                "summary": "Discussed Python frameworks.",
+                "store_artifact": False,
+            }
+        )
+        facts, summary, _ = parse_remember_extraction_response(response)
+        assert len(facts) == 2
+        assert facts[0]["role"] == "user"
+        assert facts[1]["role"] == "assistant"
+
+    def test_missing_role_not_added(self):
+        """Facts without a role field (user/assistant explicit mode) should not have role key."""
+        response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User likes hiking",
+                        "memory_type": "preference",
+                        "categories": ["personal"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": None,
+                    }
+                ],
+                "summary": "Outdoor activities.",
+                "store_artifact": False,
+            }
+        )
+        facts, _, _ = parse_remember_extraction_response(response)
+        assert len(facts) == 1
+        assert "role" not in facts[0]
+
+    def test_invalid_role_defaults_to_user(self):
+        """Invalid role value should default to 'user'."""
+        response = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Some fact",
+                        "role": "system",
+                        "memory_type": "fact",
+                        "categories": ["personal"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": None,
+                    }
+                ],
+                "summary": "Summary.",
+                "store_artifact": False,
+            }
+        )
+        facts, _, _ = parse_remember_extraction_response(response)
+        assert facts[0]["role"] == "user"
+
+
+class TestParseDedupResponseRoleCarry:
+    """Test that parse_dedup_response carries per-fact role through to actions."""
+
+    def test_role_carried_from_fact_to_action(self):
+        """Role from Stage 1 fact should appear in the action dict."""
+        facts = [
+            {
+                "text": "User likes Python",
+                "role": "user",
+                "memory_type": "preference",
+                "categories": ["technical"],
+                "importance": "normal",
+                "pinned": False,
+                "event_date": None,
+            },
+            {
+                "text": "Assistant recommended FastAPI",
+                "role": "assistant",
+                "memory_type": "episodic",
+                "categories": ["technical"],
+                "importance": "normal",
+                "pinned": False,
+                "event_date": None,
+            },
+        ]
+        response = json.dumps(
+            {
+                "decisions": [
+                    {"fact_index": 0, "action": "ADD", "text": "User likes Python"},
+                    {
+                        "fact_index": 1,
+                        "action": "ADD",
+                        "text": "Assistant recommended FastAPI",
+                    },
+                ]
+            }
+        )
+        actions, decided = parse_dedup_response(response, {}, facts)
+        assert len(actions) == 2
+        assert actions[0]["role"] == "user"
+        assert actions[1]["role"] == "assistant"
+
+    def test_no_role_in_fact_means_no_role_in_action(self):
+        """Facts without role (explicit mode) should not add role to action."""
+        facts = [
+            {
+                "text": "User likes hiking",
+                "memory_type": "preference",
+                "categories": ["personal"],
+                "importance": "normal",
+                "pinned": False,
+                "event_date": None,
+            }
+        ]
+        response = json.dumps(
+            {
+                "decisions": [
+                    {"fact_index": 0, "action": "ADD", "text": "User likes hiking"},
+                ]
+            }
+        )
+        actions, _ = parse_dedup_response(response, {}, facts)
+        assert len(actions) == 1
+        assert "role" not in actions[0]

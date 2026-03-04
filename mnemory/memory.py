@@ -351,7 +351,7 @@ class MemoryService:
         *,
         user_id: str,
         agent_id: str | None = None,
-        role: str = "user",
+        role: str | None = None,
         session_id: str | None = None,
         session_timezone: str | None = None,
         context: str | None = None,
@@ -372,6 +372,13 @@ class MemoryService:
         - Designed for fire-and-forget background processing from plugins
 
         Args:
+            role: Controls the extraction point of view:
+                - None (default): Auto mode — extracts facts from ALL
+                  participants. Each fact gets its own role. Assistant
+                  facts are dropped if agent_id is not set.
+                - "user": User's POV — extracts only user facts.
+                - "assistant": Assistant's POV — extracts only assistant
+                  facts. Requires agent_id.
             session_id: Session ID for context tracking. When provided,
                 the pipeline uses accumulated conversation context from
                 previous remember calls in the same session.
@@ -383,8 +390,8 @@ class MemoryService:
         MAX_MEMORY_LENGTH. Returns the same format as add_memory.
         """
         # Validate inputs
-        if role not in ("user", "assistant"):
-            raise ValueError("role must be 'user' or 'assistant'")
+        if role is not None and role not in ("user", "assistant"):
+            raise ValueError("role must be 'user', 'assistant', or None")
         user_id = _validate_id(user_id, "user_id")
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
@@ -437,7 +444,7 @@ class MemoryService:
         *,
         user_id: str,
         agent_id: str | None,
-        role: str,
+        role: str | None,
         session_id: str | None,
         session_timezone: str | None,
         context: str | None,
@@ -447,6 +454,9 @@ class MemoryService:
         Stage 1: Extract facts from conversation text with session context.
         Stage 2: Dedup each fact against stored memories using per-fact
                  embeddings for accurate similarity search.
+
+        When role is None (auto mode), the LLM outputs a per-fact role
+        field. Each fact is then deduped and stored with its own role.
         """
         # 1. Get session context (if available)
         session_context: dict[str, Any] | None = None
@@ -502,7 +512,12 @@ class MemoryService:
         )
 
         # 4. Update session context
-        extracted_texts = [f["text"] for f in facts]
+        # In auto mode, annotate extracted facts with role prefixes so the
+        # next extraction call knows what was already stored per role.
+        if role is None:
+            extracted_texts = [f"[{f.get('role', 'user')}] {f['text']}" for f in facts]
+        else:
+            extracted_texts = [f["text"] for f in facts]
         self._update_session_context(session_id, extracted_texts, summary)
 
         # 5. Auto-artifact
@@ -524,7 +539,7 @@ class MemoryService:
         self,
         content: str,
         *,
-        role: str = "user",
+        role: str | None = None,
         session_context: dict[str, Any] | None,
         available_categories: list[str],
         max_memory_length: int,
@@ -537,10 +552,12 @@ class MemoryService:
         to parse (non-deterministic JSON formatting issues).
 
         Args:
-            role: "user" (default) or "assistant". Selects which extraction
-                prompt template to use. "assistant" extracts facts about the
-                agent itself (identity, personality, capabilities, research
-                conclusions).
+            role: Controls extraction point of view:
+                - None (default): Auto mode — extracts from all
+                  participants. Each fact includes a ``role`` field.
+                - "user": User's POV — extracts only user facts.
+                - "assistant": Assistant's POV — extracts only assistant
+                  facts.
 
         Returns:
             Tuple of (facts, summary, store_artifact).
@@ -614,7 +631,7 @@ class MemoryService:
         *,
         user_id: str,
         agent_id: str | None,
-        role: str,
+        role: str | None,
     ) -> list[dict[str, Any]]:
         """Stage 2: Dedup extracted facts against stored memories and store.
 
@@ -624,8 +641,28 @@ class MemoryService:
         3. If any facts have candidates: LLM dedup call
         4. Execute actions (ADD/UPDATE/DELETE)
 
+        When role is None (auto mode), each fact carries its own ``role``
+        field from Stage 1 extraction. The dedup search scope and storage
+        role are determined per-fact. Assistant facts are dropped if
+        agent_id is not set.
+
         Returns list of result dicts from _execute_action.
         """
+        # In auto mode, drop assistant facts when agent_id is not set
+        # (the invariant requires agent_id for role="assistant" memories).
+        if role is None and not agent_id:
+            original_count = len(facts)
+            facts = [f for f in facts if f.get("role", "user") != "assistant"]
+            dropped = original_count - len(facts)
+            if dropped:
+                logger.info(
+                    "Remember auto mode: dropped %d assistant fact(s) "
+                    "(no agent_id set)",
+                    dropped,
+                )
+            if not facts:
+                return []
+
         # 1. Batch embed all fact texts
         fact_texts = [f["text"] for f in facts]
         try:
@@ -648,7 +685,10 @@ class MemoryService:
                 )
                 continue
 
-            # Search for similar existing memories using the fact's embedding
+            # Dedup search scope: always search with the caller's agent_id.
+            # When agent_id is set, the dual-scope search below also checks
+            # shared memories, so both user and assistant facts are deduped
+            # against the full visible set (agent-scoped + shared).
             existing_raw = self.vector.search_similar(
                 vector,
                 user_id=user_id,
@@ -710,6 +750,8 @@ class MemoryService:
                     "importance": f["importance"],
                     "pinned": f["pinned"],
                     "event_date": f.get("event_date"),
+                    # Carry per-fact role through the action dict
+                    "role": f.get("role"),
                 }
                 for f in facts
             ]
@@ -723,12 +765,20 @@ class MemoryService:
         # 5. Execute actions
         results = []
         for action in actions:
+            # Resolve the effective role for this action:
+            # - Explicit pipeline role (user/assistant) overrides per-fact role
+            # - Auto mode (role=None) uses per-fact role from extraction
+            # - Default to "user" as safe fallback
+            effective_role = (
+                role if role is not None else (action.get("role") or "user")
+            )
+
             try:
                 result_entry = self._execute_action(
                     action,
                     user_id=user_id,
                     agent_id=agent_id,
-                    role=role,
+                    role=effective_role,
                     ttl_days=None,
                     explicit_fields={},
                     vector_map=vector_map,
@@ -781,6 +831,8 @@ class MemoryService:
                     "importance": f["importance"],
                     "pinned": f["pinned"],
                     "event_date": f.get("event_date"),
+                    # Carry per-fact role through the action dict (auto mode)
+                    "role": f.get("role"),
                 }
                 for f in facts
             ]
@@ -809,6 +861,8 @@ class MemoryService:
                         "importance": f["importance"],
                         "pinned": f["pinned"],
                         "event_date": f.get("event_date"),
+                        # Carry per-fact role through the action dict (auto mode)
+                        "role": f.get("role"),
                     }
                 )
 
@@ -1246,6 +1300,14 @@ class MemoryService:
         event_date: str | None = None,
     ) -> dict[str, Any] | None:
         """Execute a single memory action (ADD, UPDATE, or DELETE)."""
+        # Guard: role must be resolved to a concrete value before execution.
+        # The remember pipeline resolves per-fact roles before calling this.
+        if role not in ("user", "assistant"):
+            raise ValueError(
+                f"Invalid role '{role}' in _execute_action — must be "
+                f"'user' or 'assistant', not None or other values"
+            )
+
         act = action["action"]
         text = action["text"]
 

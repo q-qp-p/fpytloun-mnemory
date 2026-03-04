@@ -189,7 +189,7 @@ def remember(
             detail="Rate limit exceeded. Try again later.",
         )
 
-    # Validate role context — Pydantic enforces "user"|"assistant" values,
+    # Validate role context — Pydantic enforces valid values (user/assistant/null),
     # but agent_id presence for role="assistant" requires runtime context.
     if req.role == "assistant" and not ctx.agent_id:
         raise HTTPException(

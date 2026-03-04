@@ -78,14 +78,16 @@ Memories can have a TTL that causes them to decay (soft-expire) after a set numb
 
 ## Role
 
-The `role` parameter on `add_memory` controls who the memory is about:
+The `role` parameter controls who the memory is about:
 
 | Role | Description | Example |
 |---|---|---|
-| `user` (default) | Facts about the user | "User lives in Prague", "User prefers dark mode" |
+| `user` (default for `add_memory`) | Facts about the user | "User lives in Prague", "User prefers dark mode" |
 | `assistant` | Facts about the agent itself | "Your name is Bob", "You speak casually" |
 
-When `role="assistant"`, the server uses an agent-specific fact extraction prompt that focuses on the assistant's identity, personality, and capabilities. When `role="user"` (default), user fact extraction is used. The `role` is stored in metadata and can be used as a filter in `search_memories` and `list_memories`.
+When `role="assistant"`, the server uses an agent-specific fact extraction prompt that focuses on the assistant's identity, personality, and capabilities. When `role="user"` (default for `add_memory`), user fact extraction is used. The `role` is stored in metadata and can be used as a filter in `search_memories` and `list_memories`.
+
+The REST `POST /api/remember` endpoint also supports **auto mode** (`role=null`, the default for `remember`). In auto mode, the LLM extracts facts from all participants and attributes each fact to the correct role. Assistant facts are silently dropped if no `agent_id` is set in the session. This is the recommended mode for plugins that send full conversation exchanges.
 
 `get_core_memories` uses `role` to organize agent-scoped memories into sections:
 - **Agent Identity**: pinned, `role=assistant`, fact/preference type
@@ -124,7 +126,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 | `categories` | list[str] | Category tags |
 | `importance` | str | low, normal, high, critical |
 | `pinned` | bool | Whether to include in core memories |
-| `role` | str | "user" (default) or "assistant" — who the memory is about |
+| `role` | str | "user" or "assistant" — who the memory is about. Always stored as one of these two values. |
 | `artifacts` | list[dict] | Artifact metadata (id, filename, content_type, size, created_at) |
 | `event_date` | str\|None | ISO 8601 UTC datetime of when the event occurred |
 | `created_at_utc` | str | UTC timestamp |

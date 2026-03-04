@@ -2014,6 +2014,268 @@ memory_type, categories, importance, pinned, event_date.
 Return ONLY the JSON object. No explanation, no markdown."""
 
 
+_AUTO_REMEMBER_EXTRACTION_SYSTEM_PROMPT = """\
+You are a memory extraction system. Your job is to:
+1. Extract distinct facts from ALL participants in the conversation
+2. Classify each fact and attribute it to the correct participant
+3. Generate a brief summary of this exchange
+
+## Security
+
+{anti_injection}
+
+## Fact Extraction Rules
+
+- Extract distinct facts from the provided conversation exchange.
+- Each fact should be a single, atomic piece of information.
+- Extract facts from ALL participants — both user and assistant turns.
+  This is a general-purpose extraction mode that captures the full
+  conversation context.
+
+### Role Attribution
+
+Each extracted fact must include a "role" field indicating who the fact
+is about:
+
+- **role: "user"** — Facts about the user: preferences, personal info,
+  biographical details, decisions, goals, intents, family/friends/pets,
+  possessions, and anything the user reveals about themselves or their
+  world. Third-party facts (user's mother, user's cat) are also "user".
+- **role: "assistant"** — Facts about the assistant: recommendations
+  given, conclusions reached, specific questions asked to gather
+  information, research findings, decisions made by the assistant,
+  capabilities demonstrated, identity traits.
+
+### What to extract
+
+**From user turns:**
+- Personal facts, preferences, biographical info
+- Decisions, goals, intents, feature requests
+- Facts about third parties (family, colleagues, pets)
+- Use relationship-based subjects: "User's mother", "User's partner"
+
+**From assistant turns:**
+- Substantive recommendations and conclusions
+- Specific questions asked to gather information
+- Research findings and analysis outcomes
+- Decisions made by the assistant about approach or tools
+
+### What NOT to extract
+
+- Generic responses, pleasantries, task acknowledgments
+  ("Sure, I can help", "Let me look into that", "Got it!")
+- The assistant's step-by-step reasoning or internal analysis —
+  only extract the conclusion or decision that resulted from it
+- Transient task execution ("I'll update the file", "Let me check that")
+- Greetings, small talk with no substantive information
+- The same fact twice — merge overlapping information
+
+### Subject and style
+
+- Identify the subject of each fact from the content itself:
+  - When a named person is the subject, use their name
+    (e.g., "Caroline prefers dark mode", "John works at Google").
+  - When the content is first-person with no named speaker,
+    use "User" as the subject.
+  - For assistant facts, use "Assistant" as the subject
+    (e.g., "Assistant recommended using PostgreSQL").
+- Write facts in third person, always including the subject explicitly.
+- When the user tells the assistant to perform a task, extract the
+  underlying intent or goal — WHY the user wants this done. Store
+  the goal, not the instruction.
+- Each extracted fact must be self-contained and understandable
+  without the original conversation.
+- If the content is a multi-person conversation or transcript (not a
+  user/assistant exchange), extract facts about all participants.
+  Use role="user" for all non-assistant participants.
+- Preserve all important information — do not over-compress
+  at the cost of losing detail.
+- Preserve specific details exactly: proper nouns, names, titles,
+  numbers, quantities, and places.
+- When a message contains multiple distinct facts, extract each
+  as a separate memory.
+- Each fact must be under {max_length} characters.
+- Always write extracted facts in English, regardless of the input
+  language. Preserve proper nouns, names, titles, and specific terms
+  in their original form.
+- If no relevant facts can be extracted, return an empty list.
+- Today's date is {today}.
+- Each fact has an event_date field (YYYY-MM-DD or null). Use it to
+  record WHEN something happened or was mentioned:
+  - Set event_date when the fact has a temporal anchor.
+  - Convert relative references to absolute dates using Today's date.
+  - Set event_date to null when the fact is timeless.
+- Do NOT embed dates in the fact text unless the date IS the core fact.
+- Do NOT append storage dates or creation timestamps to extracted facts.
+- Do not extract the same fact twice. Each extracted fact must be
+  unique — if two pieces of information overlap, merge them.
+
+## Classification Rules
+
+For each extracted fact, classify:
+
+- **memory_type**: {memory_types}
+  - preference = likes, dislikes, style choices, tool preferences
+  - fact = stable biographical or personal information that remains
+    true until explicitly changed. NOT for goals, plans, intents,
+    or transient observations.
+    Heuristic: "Will this still be true in 3 months if nothing
+    changes?" If yes → fact. If it depends on completing a task →
+    episodic or context.
+  - episodic = events, interactions, decisions, conclusions, goals,
+    plans, intents, recommendations given, questions asked.
+    Anything that HAPPENED, was DECIDED, or is WANTED/PLANNED.
+  - procedural = workflows, habits, how the user/assistant does things
+  - context = session/short-term notes, current project state,
+    technical observations, implementation details.
+
+- **categories**: Pick from the available list below. Use [] if none fit.
+  "project" is for general project content. When the conversation
+  clearly involves a specific named project, create a subcategory by
+  appending the project name (e.g., project:mnemory, project:argocd-apps).
+
+- **importance**: {importance_levels}
+  - low = minor details, temporary notes
+  - normal = standard memories (default for most)
+  - high = important facts, key decisions, significant recommendations
+  - critical = essential, always-relevant information
+
+- **pinned**: true ONLY for essential identity facts (name, job, location),
+  core preferences, or critical information. Most memories should be false.
+
+{categories_section}
+
+{session_context_section}
+
+## Exchange Summary
+
+Generate a brief 1-3 sentence summary of this conversation exchange.
+The summary should capture the main topic, key decisions or outcomes,
+and enough context to understand pronoun references in future exchanges.
+
+## Artifact Decision
+
+Decide whether the original input content should be preserved as an
+artifact (a detailed document attached to the extracted memories for
+later retrieval).
+
+Set `store_artifact` to **true** when:
+- The content is a structured document (design doc, spec, report)
+- The content contains code, configuration, or technical reference
+- The content has detailed information that would lose significant
+  value if only the extracted key facts are kept
+
+Set `store_artifact` to **false** when:
+- The extracted memories fully capture the content's value
+- The content is casual conversation or simple statements
+- The content is ephemeral or not worth preserving in detail
+
+When in doubt, prefer **false**.
+
+**Important**: When you set `store_artifact` to true, extract only a
+brief high-level summary as the memory — do NOT also extract individual
+details as separate memories.
+
+## Examples
+
+### Example 1: User fact + assistant recommendation
+
+Input:
+User: I need help swapping the motor in my 2015 Skoda Octavia.
+Assistant: Can you provide the exact year and VIN or part numbers of \
+the original and new motor? I need those for precise connector info.
+
+Output:
+{{"memories": [
+  {{"text": "User needs help swapping the motor in their 2015 Skoda Octavia", "role": "user", "memory_type": "episodic", "categories": ["vehicles"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "Assistant asked for the exact year, VIN, and part numbers to provide precise connector/pin information for the motor swap", "role": "assistant", "memory_type": "episodic", "categories": ["vehicles"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User needs help with a motor swap on their 2015 Skoda Octavia. Assistant requested VIN and part numbers for connector details.", "store_artifact": false}}
+
+### Example 2: User personal facts (assistant response is context only)
+
+Input:
+User: My mom likes sweet drinks, especially Malibu. She loves \
+Stephen King books and has a garden. I have a Kurilian Bobtail cat.
+Assistant: Nice! A Malibu set or a new Stephen King novel could be great gifts.
+
+Output:
+{{"memories": [
+  {{"text": "User's mother likes sweet drinks, especially Malibu", "role": "user", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "User's mother loves Stephen King books", "role": "user", "memory_type": "fact", "categories": ["personal", "entertainment"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "User's mother has a garden", "role": "user", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "User has a Kurilian Bobtail cat", "role": "user", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User described their mother's preferences and mentioned owning a Kurilian Bobtail cat.", "store_artifact": false}}
+(The assistant's gift suggestion is a generic response, not a substantive recommendation.)
+
+### Example 3: Goal extraction + assistant decision
+
+Input:
+User: Help me set up OIDC authentication for our myapp service.
+Assistant: I'll implement this using the ALB OIDC action with Cognito.
+
+Output:
+{{"memories": [
+  {{"text": "User wants to implement OIDC authentication for myapp", "role": "user", "memory_type": "episodic", "categories": ["technical", "project:myapp"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "Assistant decided to implement OIDC for myapp using ALB OIDC action with Cognito", "role": "assistant", "memory_type": "episodic", "categories": ["technical", "project:myapp"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User wants OIDC auth for myapp. Assistant will use ALB OIDC with Cognito.", "store_artifact": false}}
+
+### Example 4: Transient task (no facts)
+
+Input:
+User: Read the Dockerfile and docker-compose.yml from the argocd-apps repo.
+Assistant: The docker-compose.yml builds backend from ./backend and uses \
+env_file: .env at runtime but provides no build.args for the frontend.
+
+Output:
+{{"memories": [], "summary": "User asked to review Docker files from argocd-apps repo. Assistant described the configuration.", "store_artifact": false}}
+(Transient task instruction + transient observation — neither is worth remembering.)
+
+### Example 5: User decision (assistant action is transient)
+
+Input:
+User: We decided to use PostgreSQL instead of MySQL for the billing service.
+Assistant: Good choice. I'll update the docker-compose and migrations.
+
+Output:
+{{"memories": [
+  {{"text": "User decided to use PostgreSQL instead of MySQL for the billing service", "role": "user", "memory_type": "episodic", "categories": ["technical", "decisions"], "importance": "high", "pinned": false, "event_date": null}}
+], "summary": "User decided to switch from MySQL to PostgreSQL for billing service.", "store_artifact": false}}
+(The assistant's "I'll update..." is transient task execution, not a substantive decision.)
+
+### Example 6: Multi-person conversation
+
+Input: "John: I think we should use Kubernetes. Sarah: I disagree, \
+ECS is better for our scale."
+
+Output:
+{{"memories": [
+  {{"text": "John proposed using Kubernetes", "role": "user", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "Sarah prefers ECS over Kubernetes for their scale", "role": "user", "memory_type": "episodic", "categories": ["technical"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "John and Sarah discussed container orchestration — John favors Kubernetes, Sarah prefers ECS.", "store_artifact": false}}
+(Non-assistant participants use role="user".)
+
+### Example 7: Non-English input
+
+Input:
+User: Ahoj, jmenuji se Petr a jsem z Ostravy. Rad varim a sbiram znamky.
+Assistant: Ahoj Petre! To jsou zajimave konicky!
+
+Output:
+{{"memories": [
+  {{"text": "User's name is Petr", "role": "user", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": true, "event_date": null}},
+  {{"text": "User is from Ostrava", "role": "user", "memory_type": "fact", "categories": ["personal"], "importance": "normal", "pinned": false, "event_date": null}},
+  {{"text": "User enjoys cooking and collecting stamps", "role": "user", "memory_type": "preference", "categories": ["personal", "entertainment"], "importance": "normal", "pinned": false, "event_date": null}}
+], "summary": "User introduced themselves as Petr from Ostrava who enjoys cooking and stamp collecting.", "store_artifact": false}}
+
+## Output Format
+
+Return a JSON object with a "memories" array, a "summary" string, and a
+"store_artifact" boolean. Each memory entry must have ALL fields: text,
+role, memory_type, categories, importance, pinned, event_date.
+
+Return ONLY the JSON object. No explanation, no markdown."""
+
+
 REMEMBER_EXTRACTION_SCHEMA: dict[str, Any] = {
     "name": "remember_extraction",
     "strict": True,
@@ -2080,11 +2342,92 @@ REMEMBER_EXTRACTION_SCHEMA: dict[str, Any] = {
     },
 }
 
+# Auto-mode schema: same as REMEMBER_EXTRACTION_SCHEMA but each memory
+# item includes a "role" field so the LLM can attribute facts to the
+# correct participant (user or assistant).
+REMEMBER_EXTRACTION_AUTO_SCHEMA: dict[str, Any] = {
+    "name": "remember_extraction_auto",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "required": ["memories", "summary", "store_artifact"],
+        "additionalProperties": False,
+        "properties": {
+            "memories": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "text",
+                        "role",
+                        "memory_type",
+                        "categories",
+                        "importance",
+                        "pinned",
+                        "event_date",
+                    ],
+                    "additionalProperties": False,
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The extracted fact text",
+                        },
+                        "role": {
+                            "type": "string",
+                            "enum": ["user", "assistant"],
+                            "description": (
+                                "Who this fact is about: 'user' for facts "
+                                "about the user (preferences, personal info, "
+                                "decisions, goals); 'assistant' for facts "
+                                "about the assistant (recommendations, "
+                                "conclusions, questions asked, identity)."
+                            ),
+                        },
+                        "memory_type": {
+                            "type": "string",
+                            "enum": list(VALID_MEMORY_TYPES),
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "importance": {
+                            "type": "string",
+                            "enum": list(IMPORTANCE_WEIGHTS.keys()),
+                        },
+                        "pinned": {"type": "boolean"},
+                        "event_date": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "ISO 8601 date (YYYY-MM-DD) when the event "
+                                "occurred, or null if no temporal anchor"
+                            ),
+                        },
+                    },
+                },
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "Brief 1-3 sentence summary of this conversation "
+                    "exchange for context continuity."
+                ),
+            },
+            "store_artifact": {
+                "type": "boolean",
+                "description": (
+                    "Whether the original content should be preserved as an artifact."
+                ),
+            },
+        },
+    },
+}
+
 
 def build_remember_extraction_prompt(
     content: str,
     *,
-    role: str = "user",
+    role: str | None = None,
     session_context: dict[str, Any] | None = None,
     available_categories: list[str] | None = None,
     max_memory_length: int = 1000,
@@ -2098,9 +2441,12 @@ def build_remember_extraction_prompt(
 
     Args:
         content: Formatted conversation text (e.g., "User: ...\nAssistant: ...").
-        role: "user" (default) or "assistant". Selects which extraction prompt
-            template to use. "assistant" extracts facts about the agent itself
-            (identity, personality, capabilities, research conclusions).
+        role: Controls the extraction "point of view":
+            - None (default): Auto mode — extracts facts from ALL
+              participants. The LLM outputs a per-fact ``role`` field.
+            - "user": User's POV — extracts only user facts, suppresses
+              assistant content.
+            - "assistant": Assistant's POV — extracts only assistant facts.
         session_context: Dict with 'extracted_memories' (list[str]) and
             'conversation_summary' (str) from the session.
         available_categories: Valid category names.
@@ -2133,12 +2479,17 @@ def build_remember_extraction_prompt(
     # Build session context section
     session_context_section = _build_session_context_section(session_context)
 
-    # Select template based on role
-    template = (
-        _AGENT_REMEMBER_EXTRACTION_SYSTEM_PROMPT
-        if role == "assistant"
-        else _REMEMBER_EXTRACTION_SYSTEM_PROMPT
-    )
+    # Select template and schema based on role
+    if role == "assistant":
+        template = _AGENT_REMEMBER_EXTRACTION_SYSTEM_PROMPT
+        schema = REMEMBER_EXTRACTION_SCHEMA
+    elif role == "user":
+        template = _REMEMBER_EXTRACTION_SYSTEM_PROMPT
+        schema = REMEMBER_EXTRACTION_SCHEMA
+    else:
+        # Auto mode (role=None): extract from all participants
+        template = _AUTO_REMEMBER_EXTRACTION_SYSTEM_PROMPT
+        schema = REMEMBER_EXTRACTION_AUTO_SCHEMA
 
     system_prompt = template.format(
         today=today,
@@ -2180,7 +2531,7 @@ def build_remember_extraction_prompt(
         {"role": "user", "content": user_content},
     ]
 
-    return messages, REMEMBER_EXTRACTION_SCHEMA
+    return messages, schema
 
 
 def _build_session_context_section(
@@ -2275,16 +2626,32 @@ def parse_remember_extraction_response(
         if isinstance(raw_event_date, str) and raw_event_date.strip():
             event_date = raw_event_date.strip()
 
-        facts.append(
-            {
-                "text": text,
-                "memory_type": memory_type,
-                "categories": categories,
-                "importance": importance,
-                "pinned": pinned,
-                "event_date": event_date,
-            }
-        )
+        fact: dict[str, Any] = {
+            "text": text,
+            "memory_type": memory_type,
+            "categories": categories,
+            "importance": importance,
+            "pinned": pinned,
+            "event_date": event_date,
+        }
+
+        # In auto mode, the LLM outputs a per-fact role field.
+        # Pass it through so the pipeline can route each fact correctly.
+        # Default to "user" for non-strict providers that omit the field.
+        raw_role = entry.get("role")
+        if raw_role is not None:
+            if raw_role in ("user", "assistant"):
+                fact["role"] = raw_role
+            else:
+                logger.warning(
+                    "Auto extraction returned invalid role '%s' for fact "
+                    "'%.80s', defaulting to 'user'",
+                    raw_role,
+                    text,
+                )
+                fact["role"] = "user"
+
+        facts.append(fact)
 
     return facts, summary, store_artifact
 
@@ -2552,19 +2919,22 @@ def parse_dedup_response(
         # Get metadata from the original Stage 1 fact
         fact = fact_by_index.get(fact_index, {}) if fact_index is not None else {}
 
-        results.append(
-            {
-                "text": text,
-                "action": action,
-                "target_id": target_id,
-                "old_memory": None,
-                "memory_type": fact.get("memory_type", "fact"),
-                "categories": fact.get("categories", []),
-                "importance": fact.get("importance", "normal"),
-                "pinned": fact.get("pinned", False),
-                "event_date": fact.get("event_date"),
-            }
-        )
+        action_dict: dict[str, Any] = {
+            "text": text,
+            "action": action,
+            "target_id": target_id,
+            "old_memory": None,
+            "memory_type": fact.get("memory_type", "fact"),
+            "categories": fact.get("categories", []),
+            "importance": fact.get("importance", "normal"),
+            "pinned": fact.get("pinned", False),
+            "event_date": fact.get("event_date"),
+        }
+        # Carry per-fact role through the action dict (auto mode).
+        # When present, this overrides the pipeline-level role.
+        if "role" in fact:
+            action_dict["role"] = fact["role"]
+        results.append(action_dict)
 
     return results, decided_indices
 

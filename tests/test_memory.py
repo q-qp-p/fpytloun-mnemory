@@ -4806,7 +4806,10 @@ class TestRememberTwoStagePipeline:
         )
 
         ctx = store.get_remember_context(session.session_id)
-        assert "User likes hiking" in ctx["extracted_memories"]
+        # Auto mode (role=None) annotates extracted memories with role prefix
+        assert any("User likes hiking" in m for m in ctx["extracted_memories"]), (
+            f"Expected 'User likes hiking' in {ctx['extracted_memories']}"
+        )
         assert "Discussed outdoor activities" in ctx["conversation_summary"]
 
     def test_session_context_updated_even_on_empty_extraction(self):
@@ -4859,6 +4862,548 @@ class TestRememberTwoStagePipeline:
 
         assert "user1" not in service._user_locks
         assert "user4" in service._user_locks
+
+
+class TestRememberAutoMode:
+    """Test three-way role semantics in the remember pipeline (role=None auto mode)."""
+
+    def _make_auto_extraction_response(
+        self, facts, summary="Turn summary.", store_artifact=False
+    ):
+        """Build a Stage 1 auto-mode extraction LLM response (with per-fact role)."""
+        import json
+
+        return json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": f["text"],
+                        "role": f.get("role", "user"),
+                        "memory_type": f.get("memory_type", "fact"),
+                        "categories": f.get("categories", ["personal"]),
+                        "importance": f.get("importance", "normal"),
+                        "pinned": f.get("pinned", False),
+                        "event_date": f.get("event_date"),
+                    }
+                    for f in facts
+                ],
+                "summary": summary,
+                "store_artifact": store_artifact,
+            }
+        )
+
+    def test_auto_mode_extracts_both_roles(self):
+        """role=None should extract facts from both user and assistant."""
+        service = _make_service()
+
+        extraction_resp = self._make_auto_extraction_response(
+            [
+                {"text": "User likes Python", "role": "user"},
+                {"text": "Assistant recommended FastAPI", "role": "assistant"},
+            ]
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536,
+            [0.2] * 1536,
+        ]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.side_effect = ["mem-1", "mem-2"]
+
+        result = service.remember(
+            content="User: I like Python\nAssistant: I recommend FastAPI",
+            user_id="filip",
+            agent_id="test-agent",
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 2
+
+        # Check that insert was called with correct roles
+        insert_calls = service.vector.insert.call_args_list
+        assert len(insert_calls) == 2
+        # First insert: user fact
+        assert insert_calls[0].kwargs.get("role") == "user"
+        # Second insert: assistant fact
+        assert insert_calls[1].kwargs.get("role") == "assistant"
+
+    def test_auto_mode_drops_assistant_facts_without_agent_id(self):
+        """role=None without agent_id should silently drop assistant facts."""
+        service = _make_service()
+
+        extraction_resp = self._make_auto_extraction_response(
+            [
+                {"text": "User likes Python", "role": "user"},
+                {"text": "Assistant recommended FastAPI", "role": "assistant"},
+            ]
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.return_value = "mem-1"
+
+        result = service.remember(
+            content="User: I like Python\nAssistant: I recommend FastAPI",
+            user_id="filip",
+            # No agent_id — assistant facts should be dropped
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        assert result["results"][0]["memory"] == "User likes Python"
+
+    def test_auto_mode_stores_assistant_facts_with_agent_id(self):
+        """role=None with agent_id should store both user and assistant facts."""
+        service = _make_service()
+
+        extraction_resp = self._make_auto_extraction_response(
+            [
+                {"text": "User likes Python", "role": "user"},
+                {"text": "Assistant recommended FastAPI", "role": "assistant"},
+            ]
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536,
+            [0.2] * 1536,
+        ]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.side_effect = ["mem-1", "mem-2"]
+
+        result = service.remember(
+            content="User: I like Python\nAssistant: I recommend FastAPI",
+            user_id="filip",
+            agent_id="test-agent",
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 2
+
+    def test_auto_mode_all_assistant_facts_dropped_returns_empty(self):
+        """When all facts are assistant-role and no agent_id, result should be empty."""
+        service = _make_service()
+
+        extraction_resp = self._make_auto_extraction_response(
+            [
+                {"text": "Assistant recommended FastAPI", "role": "assistant"},
+                {"text": "Assistant asked about the VIN", "role": "assistant"},
+            ]
+        )
+
+        service._llm.generate.return_value = extraction_resp
+
+        result = service.remember(
+            content="Assistant: I recommend FastAPI. What's your VIN?",
+            user_id="filip",
+            # No agent_id
+        )
+
+        assert result.get("error") is None
+        assert result["results"] == []
+
+    def test_explicit_user_role_suppresses_assistant(self):
+        """role='user' should use user extraction template (regression test)."""
+        service = _make_service()
+
+        # Even though content has assistant text, role='user' uses user prompt
+        # which suppresses assistant content extraction
+        messages_captured = []
+
+        def capture_generate(messages, **kwargs):
+            messages_captured.append(messages)
+            import json
+
+            return json.dumps(
+                {
+                    "memories": [
+                        {
+                            "text": "User likes Python",
+                            "memory_type": "preference",
+                            "categories": ["technical"],
+                            "importance": "normal",
+                            "pinned": False,
+                            "event_date": None,
+                        }
+                    ],
+                    "summary": "Discussed Python.",
+                    "store_artifact": False,
+                }
+            )
+
+        service._llm.generate.side_effect = capture_generate
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.return_value = "mem-1"
+
+        service.remember(
+            content="User: I like Python\nAssistant: I recommend FastAPI",
+            user_id="filip",
+            role="user",
+        )
+
+        # Verify the user extraction template was used (not auto).
+        # The user schema should NOT have a per-fact 'role' field —
+        # only the auto schema has it.
+        schema = service._llm.generate.call_args.kwargs.get("json_schema")
+        assert schema is not None, "Expected json_schema kwarg in LLM call"
+        mem_items = schema["schema"]["properties"]["memories"]["items"]
+        assert "role" not in mem_items["properties"], (
+            "User-mode schema should not have per-fact 'role' field"
+        )
+
+    def test_execute_action_rejects_none_role(self):
+        """_execute_action should raise ValueError if role is None."""
+        import pytest
+
+        service = _make_service()
+
+        action = {
+            "text": "Some fact",
+            "action": "ADD",
+            "target_id": None,
+            "old_memory": None,
+            "memory_type": "fact",
+            "categories": ["personal"],
+            "importance": "normal",
+            "pinned": False,
+            "event_date": None,
+        }
+
+        with pytest.raises(ValueError, match="Invalid role"):
+            service._execute_action(
+                action,
+                user_id="filip",
+                agent_id=None,
+                role=None,
+                ttl_days=None,
+                explicit_fields={},
+                vector_map={},
+            )
+
+    def test_execute_action_rejects_invalid_role(self):
+        """_execute_action should raise ValueError for non user/assistant role."""
+        import pytest
+
+        service = _make_service()
+
+        action = {
+            "text": "Some fact",
+            "action": "ADD",
+            "target_id": None,
+            "old_memory": None,
+            "memory_type": "fact",
+            "categories": ["personal"],
+            "importance": "normal",
+            "pinned": False,
+            "event_date": None,
+        }
+
+        with pytest.raises(ValueError, match="Invalid role"):
+            service._execute_action(
+                action,
+                user_id="filip",
+                agent_id=None,
+                role="system",
+                ttl_days=None,
+                explicit_fields={},
+                vector_map={},
+            )
+
+    def test_session_context_annotated_with_role_prefixes_in_auto_mode(self):
+        """Auto mode should annotate session context with [user]/[assistant] prefixes."""
+        from mnemory.session import SessionStore
+
+        service = _make_service()
+        store = SessionStore()
+        service._session_store = store
+
+        session = store.create(user_id="filip")
+
+        extraction_resp = self._make_auto_extraction_response(
+            [
+                {"text": "User likes Python", "role": "user"},
+                {"text": "Assistant recommended FastAPI", "role": "assistant"},
+            ],
+            summary="Discussed Python frameworks.",
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536,
+            [0.2] * 1536,
+        ]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.side_effect = ["mem-1", "mem-2"]
+
+        service.remember(
+            content="User: I like Python\nAssistant: I recommend FastAPI",
+            user_id="filip",
+            agent_id="test-agent",
+            session_id=session.session_id,
+        )
+
+        ctx = store.get_remember_context(session.session_id)
+        memories = ctx["extracted_memories"]
+        assert any("[user]" in m for m in memories), (
+            f"Expected '[user]' prefix in {memories}"
+        )
+        assert any("[assistant]" in m for m in memories), (
+            f"Expected '[assistant]' prefix in {memories}"
+        )
+
+    def test_session_context_no_prefix_in_explicit_role_mode(self):
+        """Explicit role='user' should NOT annotate session context with prefixes."""
+        from mnemory.session import SessionStore
+
+        service = _make_service()
+        store = SessionStore()
+        service._session_store = store
+
+        session = store.create(user_id="filip")
+
+        import json
+
+        extraction_resp = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User likes Python",
+                        "memory_type": "preference",
+                        "categories": ["technical"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": None,
+                    }
+                ],
+                "summary": "Discussed Python.",
+                "store_artifact": False,
+            }
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.return_value = "mem-1"
+
+        service.remember(
+            content="I like Python",
+            user_id="filip",
+            role="user",
+            session_id=session.session_id,
+        )
+
+        ctx = store.get_remember_context(session.session_id)
+        memories = ctx["extracted_memories"]
+        # No role prefixes in explicit mode
+        assert not any(m.startswith("[user]") for m in memories)
+        assert not any(m.startswith("[assistant]") for m in memories)
+
+    def test_auto_mode_default_role_is_none(self):
+        """remember() with no role argument should default to None (auto mode)."""
+        service = _make_service()
+
+        extraction_resp = self._make_auto_extraction_response(
+            [{"text": "User likes Python", "role": "user"}]
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.return_value = "mem-1"
+
+        # Call without role argument
+        result = service.remember(
+            content="I like Python",
+            user_id="filip",
+        )
+
+        assert result.get("error") is None
+        # Verify the auto schema was used (has per-fact role field)
+        call_args = service._llm.generate.call_args_list[0]
+        # Auto prompt should be used (not user prompt)
+        # We can verify by checking the schema passed has the role field
+        schema = call_args[1].get("json_schema") or call_args.kwargs.get("json_schema")
+        if schema:
+            mem_items = schema["schema"]["properties"]["memories"]["items"]
+            assert "role" in mem_items["properties"]
+
+    def test_auto_mode_effective_role_resolution(self):
+        """In auto mode, effective role should come from per-fact role field."""
+        service = _make_service()
+
+        extraction_resp = self._make_auto_extraction_response(
+            [
+                {"text": "User likes Python", "role": "user"},
+                {"text": "Assistant recommended FastAPI", "role": "assistant"},
+            ]
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536,
+            [0.2] * 1536,
+        ]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.side_effect = ["mem-1", "mem-2"]
+
+        service.remember(
+            content="User: I like Python\nAssistant: I recommend FastAPI",
+            user_id="filip",
+            agent_id="test-agent",
+            # role=None (default auto mode)
+        )
+
+        # Verify insert calls have correct roles
+        insert_calls = service.vector.insert.call_args_list
+        roles = [c.kwargs.get("role") for c in insert_calls]
+        assert "user" in roles
+        assert "assistant" in roles
+
+    def test_auto_mode_fact_without_role_defaults_to_user(self):
+        """In auto mode, a fact missing the role field should default to 'user'."""
+        service = _make_service()
+
+        # Simulate non-strict LLM that omits role field
+        import json
+
+        extraction_resp = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Some fact without role",
+                        "memory_type": "fact",
+                        "categories": ["personal"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": None,
+                        # No "role" field
+                    }
+                ],
+                "summary": "Summary.",
+                "store_artifact": False,
+            }
+        )
+
+        service._llm.generate.return_value = extraction_resp
+        service.vector.embedding.embed_batch.return_value = [[0.1] * 1536]
+        service.vector.search_similar.return_value = []
+        service.vector.insert.return_value = "mem-1"
+
+        result = service.remember(
+            content="Some conversation",
+            user_id="filip",
+            # role=None (auto mode), no agent_id
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 1
+        # Should be stored as user role (default)
+        insert_call = service.vector.insert.call_args
+        assert insert_call.kwargs.get("role") == "user"
+
+    def test_dedup_llm_failure_preserves_per_fact_role(self):
+        """When the dedup LLM call fails, the fallback ADD-all path should
+        preserve per-fact roles from extraction."""
+        service = _make_service()
+
+        extraction_resp = self._make_auto_extraction_response(
+            [
+                {"text": "User likes Python", "role": "user"},
+                {"text": "Assistant recommended FastAPI", "role": "assistant"},
+            ]
+        )
+
+        # First call: extraction succeeds. Second call: dedup fails.
+        service._llm.generate.side_effect = [
+            extraction_resp,
+            Exception("LLM dedup failure"),
+        ]
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536,
+            [0.2] * 1536,
+        ]
+        # Return candidates to trigger the dedup LLM call
+        service.vector.search_similar.return_value = [
+            {
+                "id": "existing-1",
+                "memory": "User likes Java",
+                "score": 0.85,
+                "metadata": {},
+            }
+        ]
+        service.vector.insert.side_effect = ["mem-1", "mem-2"]
+
+        result = service.remember(
+            content="User: I like Python\nAssistant: I recommend FastAPI",
+            user_id="filip",
+            agent_id="test-agent",
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 2
+
+        # Verify roles are preserved in the fallback path
+        insert_calls = service.vector.insert.call_args_list
+        roles = [c.kwargs.get("role") for c in insert_calls]
+        assert "user" in roles
+        assert "assistant" in roles
+
+    def test_dedup_unmentioned_fact_preserves_role(self):
+        """When the dedup LLM omits a fact from its response, the fallback
+        ADD action should preserve the per-fact role."""
+        import json
+
+        service = _make_service()
+
+        extraction_resp = self._make_auto_extraction_response(
+            [
+                {"text": "User likes Python", "role": "user"},
+                {"text": "Assistant recommended FastAPI", "role": "assistant"},
+            ]
+        )
+
+        # Dedup response only mentions fact 0, omits fact 1
+        dedup_resp = json.dumps(
+            {
+                "decisions": [
+                    {"fact_index": 0, "action": "ADD", "text": "User likes Python"},
+                    # fact_index 1 not mentioned — should default to ADD
+                ]
+            }
+        )
+
+        service._llm.generate.side_effect = [extraction_resp, dedup_resp]
+        service.vector.embedding.embed_batch.return_value = [
+            [0.1] * 1536,
+            [0.2] * 1536,
+        ]
+        service.vector.search_similar.return_value = [
+            {
+                "id": "existing-1",
+                "memory": "User likes Java",
+                "score": 0.85,
+                "metadata": {},
+            }
+        ]
+        service.vector.insert.side_effect = ["mem-1", "mem-2"]
+
+        result = service.remember(
+            content="User: I like Python\nAssistant: I recommend FastAPI",
+            user_id="filip",
+            agent_id="test-agent",
+        )
+
+        assert result.get("error") is None
+        assert len(result["results"]) == 2
+
+        # Verify both roles are preserved
+        insert_calls = service.vector.insert.call_args_list
+        roles = [c.kwargs.get("role") for c in insert_calls]
+        assert "user" in roles
+        assert "assistant" in roles
 
 
 class TestMNArtifactLinking:

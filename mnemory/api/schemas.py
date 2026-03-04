@@ -409,13 +409,15 @@ class RememberRequest(BaseModel):
             "the project and produce self-contained memories."
         ),
     )
-    role: Literal["user", "assistant"] = Field(
-        "user",
+    role: Literal["user", "assistant"] | None = Field(
+        None,
         description=(
-            "Who the memories are about: 'user' (default) or 'assistant'. "
-            "Use 'assistant' to extract facts about the agent itself — its "
-            "identity, personality, capabilities, and research conclusions. "
-            "Requires agent_id to be set in the session (X-Agent-Id header)."
+            "Controls the extraction point of view. "
+            "null (default): auto mode — extracts facts from ALL "
+            "participants (user and assistant), each stored with its "
+            "own role. 'user': extracts only user facts, suppresses "
+            "assistant content. 'assistant': extracts only assistant "
+            "facts (requires agent_id via X-Agent-Id header)."
         ),
     )
 

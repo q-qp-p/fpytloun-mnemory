@@ -183,7 +183,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 | `categories` | list[str] | Category tags |
 | `importance` | str | low, normal, high, critical |
 | `pinned` | bool | Whether to include in core memories |
-| `role` | str | "user" (default) or "assistant" — who the memory is about |
+| `role` | str | "user" or "assistant" — who the memory is about. Always stored as one of these two values. |
 | `artifacts` | list[dict] | Artifact metadata (id, filename, content_type, size, created_at) |
 | `event_date` | str\|None | ISO 8601 UTC datetime of when the event occurred (None = not set). Used to anchor relative time references during extraction and for temporal queries at search time. |
 | `created_at_utc` | str | Our own UTC timestamp |
@@ -230,7 +230,7 @@ Migrations run automatically on startup before the server accepts requests. Stat
 
 - **Artifact metadata**: Artifact references (id, filename, size, etc.) are stored in the fast memory's metadata in the vector store. The actual content is in S3/filesystem. Deleting a memory should also delete its artifacts.
 
-- **Role parameter**: The `role` parameter on `add_memory` controls which extraction prompt is used. When `role="assistant"`, content is passed to the agent-specific extraction prompt (`_AGENT_SYSTEM_PROMPT` in `prompts.py`), focusing on the assistant's identity, personality, and capabilities. When `role="user"` (default), the user extraction prompt is used. The `role` is also stored in metadata for filtering in search/list and for section organization in `get_core_memories`. Requires `agent_id` when set to `"assistant"`.
+- **Role parameter**: The `role` parameter controls which extraction prompt is used. On `add_memory`, it defaults to `"user"`. On `remember()`, it defaults to `None` (auto mode). When `role="assistant"`, content is passed to the agent-specific extraction prompt (`_AGENT_SYSTEM_PROMPT` in `prompts.py`), focusing on the assistant's identity, personality, and capabilities. When `role="user"`, the user extraction prompt is used. When `role=None` (auto mode, `remember` only), the auto extraction prompt (`_AUTO_REMEMBER_EXTRACTION_SYSTEM_PROMPT`) extracts facts from all participants, attributing each fact to the correct role via a per-fact `role` field in the LLM output. Assistant facts are silently dropped if `agent_id` is not set. The `role` is stored in metadata for filtering in search/list and for section organization in `get_core_memories`. Requires `agent_id` when set to `"assistant"`.
 
 - **Sub-agents**: Agent IDs support colon-separated namespacing (e.g., `openwebui:bob`). The session validation in `_resolve_agent_id()` allows any `agent_id` that starts with `session_agent_id + ":"`. Sub-agents are fully independent — no memory inheritance from the parent. The `_is_sub_agent()` helper in `server.py` encapsulates the prefix check. `verify_memory_access()` in `memory.py` also allows access to sub-agent memories from the parent session.
 

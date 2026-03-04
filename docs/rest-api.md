@@ -78,9 +78,18 @@ Fire-and-forget memory storage. Call after each exchange.
   "messages": [
     {"role": "user", "content": "I just moved to Berlin"},
     {"role": "assistant", "content": "That's exciting!"}
-  ]
+  ],
+  "role": null
 }
 ```
+
+The `role` parameter controls the extraction point of view:
+
+| Value | Behavior |
+|---|---|
+| `null` (default) | **Auto mode** — extracts facts from ALL participants. Each fact is attributed to the correct role (`user` or `assistant`). Assistant facts are silently dropped if no `agent_id` is set in the session. |
+| `"user"` | Extracts only user facts, suppresses assistant content. |
+| `"assistant"` | Extracts only assistant facts (identity, recommendations, conclusions). Requires `agent_id` via `X-Agent-Id` header. |
 
 - Returns `{"accepted": true}` immediately, processes in background
 - Reuses the same extraction pipeline as `add_memory(infer=True)` — no extra LLM calls

@@ -56,7 +56,11 @@ For detailed content too long for fast memory (research reports, analysis, code,
 
 The `role` parameter tells the server who the memory is about:
 
-- **`role="user"`** (default): Facts about the user — preferences, personal info, context, decisions.
+- **`role="user"`** (default for `add_memory`): Facts about the user — preferences, personal info, context, decisions.
 - **`role="assistant"`**: Facts about the agent — identity, personality, capabilities, knowledge. Requires `agent_id` to be set.
+
+The REST `POST /api/remember` endpoint supports a third option:
+
+- **`role=null`** (default for `remember`): **Auto mode** — extracts facts from ALL participants (user and assistant turns). Each fact is attributed to the correct role automatically. Assistant facts are silently dropped if no `agent_id` is set in the session.
 
 When searching or listing, `role` filters results by who the memory is about. Search automatically returns both agent-specific and shared user memories.
