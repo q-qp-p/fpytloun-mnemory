@@ -50,6 +50,9 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.core_recent_min_importance = "normal"
     # Hybrid search
     mock_config.memory.search_score_threshold_hybrid = 0.0
+    # find/ask pipeline LLM config
+    mock_config.memory.find_model = ""
+    mock_config.memory.find_reasoning_effort = None
 
 
 def _make_service(auto_classify=False, track_access=False):
@@ -61,6 +64,7 @@ def _make_service(auto_classify=False, track_access=False):
 
     mock_sparse = MagicMock()
     mock_sparse.embed.return_value = None
+    mock_sparse.embed_batch.return_value = None
 
     with (
         patch("mnemory.memory.VectorStore"),
@@ -73,6 +77,7 @@ def _make_service(auto_classify=False, track_access=False):
     # Replace with fresh mocks for test control
     service.vector = MagicMock()
     service._llm = MagicMock()
+    service._find_llm = service._llm
 
     # Default: embedding returns a dummy vector
     service.vector.embedding.embed.return_value = [0.1] * 1536

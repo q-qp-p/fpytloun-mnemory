@@ -81,6 +81,8 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `SEARCH_KEYWORD_WEIGHT` | `0.2` | **Deprecated.** Ignored — replaced by BM25 hybrid search. Kept for backward compatibility |
 | `DEFAULT_TIMEZONE` | | Default IANA timezone for naive `event_date` values (e.g., `Europe/Prague`). Empty = server local timezone. Can be overridden per session via `X-Timezone` header |
 | `FIND_MEMORIES_QUERIES` | `5` | Maximum number of search queries the LLM generates for `find_memories` (may return fewer or zero) |
+| `FIND_LLM_MODEL` | | Override LLM model for find/ask pipeline — query generation, reranking, answer generation (empty = use main `LLM_MODEL`). Smaller models like `gpt-4.1-nano` work well for these structured tasks |
+| `FIND_REASONING_EFFORT` | `low` | Reasoning effort for find/ask LLM calls. Defaults to `low` since query generation and reranking are simple structured tasks. Set empty to inherit `LLM_REASONING_EFFORT` |
 | `MAX_INPUT_LENGTH` | `400000` | Max chars for input to `add_memory(infer=True)` and `remember()`. ~100k tokens |
 | `MEMORY_SESSION_TTL` | `86400` | Default session idle TTL in seconds (24 hours). Each access (recall/remember) resets the timer |
 | `MEMORY_SESSION_SWEEP_INTERVAL` | `300` | Interval in seconds between session cleanup sweeps (5 minutes) |

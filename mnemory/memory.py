@@ -197,6 +197,37 @@ class MemoryService:
     ):
         self._config = config
         self._llm = LLMClient(config.llm)
+
+        # Separate LLM client for find/ask pipeline (query gen, rerank,
+        # answer). Uses a different model or reasoning effort for faster
+        # structured tasks. Follows the same pattern as FSCK_LLM_MODEL.
+        if config.memory.find_model:
+            from mnemory.config import LLMConfig as _LLMConfig
+
+            self._find_llm = LLMClient(
+                _LLMConfig(
+                    model=config.memory.find_model,
+                    base_url=config.llm.base_url,
+                    api_key=config.llm.api_key,
+                    temperature=config.llm.temperature,
+                    reasoning_effort=config.memory.find_reasoning_effort,
+                )
+            )
+        elif config.memory.find_reasoning_effort != config.llm.reasoning_effort:
+            from mnemory.config import LLMConfig as _LLMConfig
+
+            self._find_llm = LLMClient(
+                _LLMConfig(
+                    model=config.llm.model,
+                    base_url=config.llm.base_url,
+                    api_key=config.llm.api_key,
+                    temperature=config.llm.temperature,
+                    reasoning_effort=config.memory.find_reasoning_effort,
+                )
+            )
+        else:
+            self._find_llm = self._llm
+
         self.vector = VectorStore(config)
         self.artifact = ArtifactStore(
             config.artifact,
@@ -1785,6 +1816,7 @@ class MemoryService:
         query_sparse_vector: Any = None,
         date_start: str | None = None,
         date_end: str | None = None,
+        track_access: bool = True,
     ) -> list[dict]:
         """Search memories with semantic similarity, filtered and reranked.
 
@@ -1867,7 +1899,9 @@ class MemoryService:
             self._mark_decayed(memories)
 
         # Access tracking: update last_accessed_at, access_count, reset TTL
-        self._track_access(memories)
+        # (skipped when caller handles it, e.g. find_memories)
+        if track_access:
+            self._track_access(memories)
 
         return memories
 
@@ -1883,8 +1917,10 @@ class MemoryService:
         limit: int = 10,
         include_decayed: bool = False,
         query_vector: list[float] | None = None,
+        query_sparse_vector: Any = None,
         date_start: str | None = None,
         date_end: str | None = None,
+        track_access: bool = True,
     ) -> list[dict]:
         """Search both agent-scoped and shared memories, merge and deduplicate.
 
@@ -1896,6 +1932,8 @@ class MemoryService:
 
         When query_vector is provided, both searches reuse the same
         pre-computed vector, avoiding redundant embedding API calls.
+        When query_sparse_vector is provided, reuses the pre-computed
+        BM25 sparse vector instead of generating one internally.
         """
         user_id = _validate_id(user_id, "user_id")
         session_agent_id = _validate_id(session_agent_id, "agent_id")
@@ -1927,8 +1965,10 @@ class MemoryService:
         }
 
         # Generate sparse query vector for hybrid search (shared across
-        # both sub-searches to avoid redundant BM25 tokenization)
-        query_sparse_vector = self._get_sparse_vector(query)
+        # both sub-searches to avoid redundant BM25 tokenization).
+        # Skip if caller already provided a pre-computed sparse vector.
+        if query_sparse_vector is None:
+            query_sparse_vector = self._get_sparse_vector(query)
         if query_sparse_vector is not None:
             search_kwargs["query_sparse_vector"] = query_sparse_vector
 
@@ -1987,12 +2027,68 @@ class MemoryService:
         if include_decayed:
             self._mark_decayed(memories)
 
-        # Access tracking
-        self._track_access(memories)
+        # Access tracking (skipped when caller handles it, e.g. find_memories)
+        if track_access:
+            self._track_access(memories)
 
         return memories
 
     # ── Find Memories (AI-powered multi-query search) ─────────────────
+
+    def _run_find_search(
+        self,
+        query: str,
+        query_vector: list[float],
+        query_sparse_vector: Any,
+        *,
+        user_id: str,
+        session_agent_id: str | None,
+        agent_id: str | None,
+        memory_type: str | None,
+        categories: list[str] | None,
+        role: str | None,
+        limit: int,
+        include_decayed: bool,
+        date_start: str | None,
+        date_end: str | None,
+    ) -> list[dict]:
+        """Execute a single search query for find_memories (parallel-safe).
+
+        Dispatches to dual-scope or single-scope search based on whether
+        a session_agent_id is present. Access tracking is disabled — the
+        caller handles it once on the final merged result set.
+        """
+        if session_agent_id:
+            return self.search_memories_dual_scope(
+                query,
+                user_id=user_id,
+                session_agent_id=session_agent_id,
+                memory_type=memory_type,
+                categories=categories,
+                role=role,
+                limit=limit,
+                include_decayed=include_decayed,
+                query_vector=query_vector,
+                query_sparse_vector=query_sparse_vector,
+                date_start=date_start,
+                date_end=date_end,
+                track_access=False,
+            )
+        return self.search_memories(
+            query,
+            user_id=user_id,
+            agent_id=agent_id,
+            memory_type=memory_type,
+            categories=categories,
+            role=role,
+            limit=limit,
+            include_decayed=include_decayed,
+            query_vector=query_vector,
+            query_sparse_vector=query_sparse_vector,
+            date_start=date_start,
+            date_end=date_end,
+            track_access=False,
+        )
 
     def find_memories(
         self,
@@ -2061,7 +2157,7 @@ class MemoryService:
             context=context,
             project_categories=project_cats or None,
         )
-        raw_response = self._llm.generate(messages, json_schema=schema)
+        raw_response = self._find_llm.generate(messages, json_schema=schema)
         try:
             data = parse_json_response(raw_response)
             queries = data.get("queries", [])
@@ -2125,55 +2221,58 @@ class MemoryService:
 
         query_vectors = self.vector.embedding.embed_batch(valid_queries)
 
-        # Step 3: Run each query through search, collect results
+        # Batch BM25 sparse vectors upfront (avoids per-query generation
+        # inside each search call, enables clean parallel execution)
+        try:
+            sparse_vectors = self._sparse.embed_batch(valid_queries) or [None] * len(
+                valid_queries
+            )
+        except Exception:
+            logger.warning("Sparse batch embedding failed, using dense-only")
+            sparse_vectors = [None] * len(valid_queries)
+
+        # Step 3: Run all queries through search in parallel, collect results
         per_query_limit = limit * 2
         merged_by_id: dict[str, dict] = {}
 
-        for q, qvec in zip(valid_queries, query_vectors):
-            try:
-                if session_agent_id:
-                    results = self.search_memories_dual_scope(
-                        q,
-                        user_id=user_id,
-                        session_agent_id=session_agent_id,
-                        memory_type=memory_type,
-                        categories=categories,
-                        role=role,
-                        limit=per_query_limit,
-                        include_decayed=include_decayed,
-                        query_vector=qvec,
-                        date_start=date_start,
-                        date_end=date_end,
-                    )
-                else:
-                    results = self.search_memories(
-                        q,
-                        user_id=user_id,
-                        agent_id=agent_id,
-                        memory_type=memory_type,
-                        categories=categories,
-                        role=role,
-                        limit=per_query_limit,
-                        include_decayed=include_decayed,
-                        query_vector=qvec,
-                        date_start=date_start,
-                        date_end=date_end,
-                    )
-            except Exception:
-                logger.warning("find_memories: search failed for query '%s'", q)
-                continue
-
-            total_searched += len(results)
-
-            for mem in results:
-                mid = mem.get("id")
-                if not mid:
+        with ThreadPoolExecutor(max_workers=len(valid_queries)) as pool:
+            futures = [
+                pool.submit(
+                    self._run_find_search,
+                    q,
+                    qvec,
+                    svec,
+                    user_id=user_id,
+                    session_agent_id=session_agent_id,
+                    agent_id=agent_id,
+                    memory_type=memory_type,
+                    categories=categories,
+                    role=role,
+                    limit=per_query_limit,
+                    include_decayed=include_decayed,
+                    date_start=date_start,
+                    date_end=date_end,
+                )
+                for q, qvec, svec in zip(valid_queries, query_vectors, sparse_vectors)
+            ]
+            for future in futures:
+                try:
+                    results = future.result()
+                except Exception:
+                    logger.warning("find_memories: search failed for a query")
                     continue
-                existing = merged_by_id.get(mid)
-                if existing is None:
-                    merged_by_id[mid] = mem
-                elif mem.get("score", 0) > existing.get("score", 0):
-                    existing["score"] = mem["score"]
+
+                total_searched += len(results)
+
+                for mem in results:
+                    mid = mem.get("id")
+                    if not mid:
+                        continue
+                    existing = merged_by_id.get(mid)
+                    if existing is None:
+                        merged_by_id[mid] = mem
+                    elif mem.get("score", 0) > existing.get("score", 0):
+                        existing["score"] = mem["score"]
 
         merged = list(merged_by_id.values())
 
@@ -2222,7 +2321,7 @@ class MemoryService:
         # Step 6: LLM reranking with the original question as context
         # Uses numeric indices instead of UUIDs to reduce output tokens
         messages, schema = build_rerank_prompt(question, rerank_candidates, today=today)
-        raw_response = self._llm.generate(messages, json_schema=schema)
+        raw_response = self._find_llm.generate(messages, json_schema=schema)
         try:
             data = parse_json_response(raw_response)
             scored = data.get("scored", [])
@@ -2354,7 +2453,7 @@ class MemoryService:
             question[:100],
         )
 
-        answer = self._llm.generate(messages, max_tokens=4000)
+        answer = self._find_llm.generate(messages, max_tokens=4000)
 
         return {
             "answer": answer,

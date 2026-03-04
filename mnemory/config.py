@@ -337,6 +337,14 @@ class MemoryConfig:
         default_factory=lambda: _env_int("FIND_MEMORIES_QUERIES", 5)
     )
 
+    # find/ask pipeline: optional separate LLM model and reasoning effort.
+    # Query generation and reranking are simple structured tasks that don't
+    # need deep reasoning. Defaults to main LLM_MODEL with "low" reasoning.
+    find_model: str = field(default_factory=lambda: _env("FIND_LLM_MODEL", ""))
+    find_reasoning_effort: str | None = field(
+        default_factory=lambda: _env("FIND_REASONING_EFFORT", "low") or None
+    )
+
     # Default timezone for naive event_date values (no timezone info).
     # IANA timezone name (e.g., "UTC", "Europe/Prague", "America/New_York").
     # Empty string = use server's local timezone.
