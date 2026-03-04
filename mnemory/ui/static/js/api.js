@@ -182,19 +182,19 @@ const MnemoryAPI = {
   },
 
   /**
-   * Build the URL for raw artifact download (returns actual bytes with
-   * correct Content-Type). Use for <img src="...">, download links, etc.
-   * Includes the API key as a query parameter for browser-embedded use.
+   * Get a signed URL for raw artifact download. Requests a short-lived
+   * download token from the server, then returns the URL with the token
+   * embedded as a query parameter. Use for <img src="...">, download links.
+   *
+   * @returns {Promise<string>} Signed URL for direct browser access.
    */
-  getArtifactRawUrl(memoryId, artifactId) {
-    const base = `${this.baseUrl}/memories/${memoryId}/artifacts/${artifactId}/raw`;
-    const params = new URLSearchParams();
-    const key = this.getKey();
-    if (key) params.set('key', key);
-    const selectedUser = this.getSelectedUser();
-    if (selectedUser) params.set('user_id', selectedUser);
-    const qs = params.toString();
-    return qs ? `${base}?${qs}` : base;
+  async getArtifactRawUrl(memoryId, artifactId) {
+    const result = await this.post(
+      `/memories/${memoryId}/artifacts/${artifactId}/download-token`,
+      {},
+    );
+    if (!result?.url) throw new Error('No download URL returned');
+    return result.url;
   },
 
   saveArtifact(memoryId, data) {

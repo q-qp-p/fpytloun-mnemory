@@ -1,12 +1,12 @@
 """MCP server for mnemory.
 
-Exposes 16 tools over Streamable HTTP for memory management:
+Exposes 17 tools over Streamable HTTP for memory management:
 - initialize_memory (session init with instructions + core memories)
 - add_memory, add_memories, search_memories, find_memories
 - get_core_memories, get_recent_memories
 - list_memories, update_memory, delete_memory, delete_all_memories
 - list_categories
-- save_artifact, get_artifact, list_artifacts, delete_artifact
+- save_artifact, get_artifact, get_artifact_url, list_artifacts, delete_artifact
 
 Includes /health and /metrics endpoints, optional API key authentication,
 session-level identity resolution (user_id from API key mapping,
@@ -22,6 +22,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sys
 
 from mcp.server.fastmcp import FastMCP
@@ -94,6 +95,31 @@ def _get_service():
 
 _fsck_service = None
 _maintenance_service = None
+_signing_key: bytes | None = None
+
+# Max binary artifact size (bytes) that can be returned inline via the
+# MCP get_artifact tool. Larger binaries must use get_artifact_url.
+_MCP_BINARY_INLINE_LIMIT = 1_048_576  # 1 MB
+
+
+def _get_signing_key() -> bytes:
+    """Get or derive the HMAC signing key for download tokens.
+
+    Cached after first call. Derived from API key material so it
+    survives restarts (unless no auth is configured, in which case
+    an ephemeral random key is used).
+    """
+    global _signing_key
+    if _signing_key is None:
+        from mnemory.tokens import derive_signing_key
+
+        cfg = _get_config().server
+        _signing_key = derive_signing_key(
+            api_key=cfg.api_key,
+            api_keys=cfg.api_keys,
+        )
+    return _signing_key
+
 
 # Migration state flag — health endpoint returns 503 while True
 _migration_running = False
@@ -1475,8 +1501,12 @@ def get_artifact(
     """Retrieve artifact content.
 
     Text artifacts support pagination via offset/limit parameters.
-    Binary artifacts (images, PDFs, etc.) always return the full content
-    as a single base64-encoded string — offset and limit are ignored.
+    Binary artifacts (images, PDFs, etc.) return the full content as a
+    single base64-encoded string — offset and limit are ignored.
+
+    **Binary size limit:** Binary artifacts larger than 1 MB cannot be
+    returned inline via this tool. For large binary artifacts, use
+    ``get_artifact_url`` to generate a signed download URL instead.
 
     Response includes total_size (characters for text, bytes for binary),
     is_text (true/false), and has_more (always false for binary).
@@ -1502,6 +1532,30 @@ def get_artifact(
             offset=offset,
             limit=limit,
         )
+
+        # Binary artifacts over 1 MB are too large for MCP inline transport.
+        # Return a guidance message instead of the content.
+        if (
+            not result.get("is_text", True)
+            and result.get("total_size", 0) > _MCP_BINARY_INLINE_LIMIT
+        ):
+            return json.dumps(
+                {
+                    "error": True,
+                    "message": (
+                        f"Binary artifact is too large for inline retrieval "
+                        f"({result['total_size']} bytes, limit is "
+                        f"{_MCP_BINARY_INLINE_LIMIT} bytes). "
+                        f"Use get_artifact_url to generate a signed download URL."
+                    ),
+                    "total_size": result["total_size"],
+                    "content_type": result.get(
+                        "content_type", "application/octet-stream"
+                    ),
+                    "use_tool": "get_artifact_url",
+                }
+            )
+
         return json.dumps(result, default=str)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -1570,6 +1624,95 @@ def delete_artifact(
         logger.exception("Error in delete_artifact")
         return json.dumps(
             {"error": True, "message": "Internal error processing delete_artifact"}
+        )
+
+
+# ── Tool 13: get_artifact_url ─────────────────────────────────────────
+
+
+@mcp.tool()
+def get_artifact_url(
+    memory_id: str,
+    artifact_id: str,
+    user_id: str | None = None,
+    ttl: int | None = None,
+) -> str:
+    """Generate a short-lived signed URL for direct artifact download.
+
+    Returns a URL that can be opened in a browser, embedded in
+    ``<img src="...">``, or used for direct file download — without
+    requiring API key headers.
+
+    The URL contains a cryptographic token scoped to this specific
+    artifact and user. It expires after ``ttl`` seconds (default 1 hour,
+    max 24 hours).
+
+    Use this instead of ``get_artifact`` when:
+    - The artifact is binary (image, PDF) and you want to display it
+    - The artifact is large (>1 MB) and ``get_artifact`` returns a
+      guidance message instead of content
+    - You need a URL the user can open directly in their browser
+
+    Args:
+        memory_id: ID of the memory the artifact is attached to.
+        artifact_id: ID of the artifact.
+        user_id: User identifier. Optional if pre-configured via API key mapping.
+        ttl: Token lifetime in seconds (default: server configured,
+             typically 3600). Maximum: server configured, typically 86400.
+    """
+    try:
+        from mnemory.tokens import generate_download_token
+
+        uid = _resolve_user_id(user_id)
+        collector = get_collector()
+        if collector:
+            collector.record_operation("get_artifact_url", uid)
+
+        cfg = _get_config().server
+        if ttl is not None and ttl < 1:
+            return json.dumps(
+                {"error": True, "message": "ttl must be at least 1 second"}
+            )
+        ttl_seconds = min(ttl or cfg.download_token_ttl, cfg.download_token_max_ttl)
+
+        # Verify the artifact exists and user has access before generating a token.
+        service = _get_service()
+        artifacts = service.list_artifacts(memory_id, user_id=uid)
+        if not any(a["id"] == artifact_id for a in artifacts):
+            return json.dumps(
+                {"error": True, "message": "Artifact not found or access denied"}
+            )
+
+        token = generate_download_token(
+            signing_key=_get_signing_key(),
+            user_id=uid,
+            memory_id=memory_id,
+            artifact_id=artifact_id,
+            ttl_seconds=ttl_seconds,
+        )
+
+        # Build the URL path.
+        path = f"/api/memories/{memory_id}/artifacts/{artifact_id}/raw?token={token}"
+        base_url = cfg.base_url.rstrip("/") if cfg.base_url else ""
+        url = f"{base_url}{path}" if base_url else path
+
+        # Include artifact metadata for convenience.
+        meta = next(a for a in artifacts if a["id"] == artifact_id)
+        return json.dumps(
+            {
+                "url": url,
+                "expires_in": ttl_seconds,
+                "content_type": meta.get("content_type", "application/octet-stream"),
+                "filename": meta.get("filename", "artifact"),
+                "size": meta.get("size", 0),
+            }
+        )
+    except ValueError as e:
+        return json.dumps({"error": True, "message": str(e)})
+    except Exception:
+        logger.exception("Error in get_artifact_url")
+        return json.dumps(
+            {"error": True, "message": "Internal error processing get_artifact_url"}
         )
 
 
@@ -1664,9 +1807,46 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 _session_user_bound.set(False)
 
         if not has_auth:
-            # No auth configured — still check identity headers
+            # No auth configured — still check identity headers.
+            # Download tokens still work (they carry user_id in payload).
+            if request.url.path.endswith("/raw"):
+                dl_token = request.query_params.get("token", "")
+                if dl_token:
+                    dl_uid = self._validate_download_token(request, dl_token)
+                    if dl_uid:
+                        _session_user_id.set(dl_uid)
+                        _session_user_bound.set(True)
+                    # If token is invalid, fall through to no-auth path
+                    # (no auth configured, so access is allowed anyway)
             self._set_identity_from_headers(request)
         else:
+            # For /raw endpoints, check for download token first.
+            # Download tokens bypass API key auth — they are self-contained
+            # HMAC-signed tokens scoped to a specific artifact.
+            # NOTE: When a ?token= parameter is present, it takes precedence
+            # over API key headers. An invalid token returns 401 even if
+            # valid API key headers are also present. This is intentional —
+            # the presence of a token signals the client's auth intent.
+            if request.url.path.endswith("/raw"):
+                dl_token = request.query_params.get("token", "")
+                if dl_token:
+                    dl_uid = self._validate_download_token(request, dl_token)
+                    if dl_uid:
+                        _session_user_id.set(dl_uid)
+                        _session_user_bound.set(True)
+                        try:
+                            return await call_next(request)
+                        finally:
+                            _session_user_id.set(None)
+                            _session_agent_id.set(None)
+                            _session_timezone.set(None)
+                            _session_user_bound.set(False)
+                    else:
+                        return JSONResponse(
+                            {"error": "Invalid or expired download token"},
+                            status_code=401,
+                        )
+
             # Extract token from Authorization: Bearer or X-API-Key header
             token = self._extract_token(request)
             if not token:
@@ -1698,15 +1878,10 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             else:
                 # Fall back to identity headers (X-User-Id, then
                 # X-OpenWebUI-User-Email for Open WebUI integration).
-                # For artifact /raw endpoints only, also accept user_id
-                # as a query parameter (browser-embedded <img src> can't
-                # set custom headers).
                 header_uid = (
                     request.headers.get("x-user-id", "").strip()
                     or request.headers.get("x-openwebui-user-email", "").strip()
                 )
-                if not header_uid and request.url.path.endswith("/raw"):
-                    header_uid = request.query_params.get("user_id", "").strip()
                 if header_uid:
                     _session_user_id.set(header_uid)
 
@@ -1731,11 +1906,11 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             _session_user_bound.set(False)
 
     def _extract_token(self, request: Request) -> str:
-        """Extract API token from request headers or query parameter.
+        """Extract API token from request headers.
 
-        Checks in order: Authorization: Bearer header, X-API-Key header,
-        ``key`` query parameter. The query parameter fallback supports
-        browser-embedded requests (e.g., ``<img src="...?key=...">``).
+        Checks in order: Authorization: Bearer header, X-API-Key header.
+        No query parameter fallback — browser-embedded requests (e.g.,
+        ``<img src="...">``) must use short-lived download tokens instead.
         """
         auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("bearer "):
@@ -1743,8 +1918,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         header_key = request.headers.get("x-api-key", "")
         if header_key:
             return header_key
-        # Fallback: query parameter (for <img src="...">, download links)
-        return request.query_params.get("key", "")
+        return ""
 
     def _set_identity_from_headers(self, request: Request) -> None:
         """Set session identity from HTTP headers (no-auth mode).
@@ -1765,6 +1939,38 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         header_tz = request.headers.get("x-timezone", "").strip()
         if header_tz:
             _session_timezone.set(header_tz)
+
+    # Regex for extracting memory_id and artifact_id from /raw URLs.
+    # Using a compiled regex avoids fragile index-based parsing that could
+    # match wrong segments if an ID happened to equal "memories"/"artifacts".
+    _RAW_PATH_RE = re.compile(r"/memories/([^/]+)/artifacts/([^/]+)/raw$")
+
+    @staticmethod
+    def _validate_download_token(request: Request, token: str) -> str | None:
+        """Validate a download token from a /raw URL query parameter.
+
+        Extracts memory_id and artifact_id from the URL path and
+        validates the token's HMAC signature, expiry, and scope.
+
+        Returns:
+            The user_id from the token if valid, None otherwise.
+        """
+        from mnemory.tokens import validate_download_token
+
+        # Extract memory_id and artifact_id from URL path.
+        # Expected: /api/memories/{mid}/artifacts/{aid}/raw
+        match = APIKeyMiddleware._RAW_PATH_RE.search(request.url.path)
+        if not match:
+            logger.debug("Cannot extract IDs from path: %s", request.url.path)
+            return None
+        memory_id, artifact_id = match.group(1), match.group(2)
+
+        return validate_download_token(
+            signing_key=_get_signing_key(),
+            token=token,
+            memory_id=memory_id,
+            artifact_id=artifact_id,
+        )
 
 
 async def health_check(request: Request) -> JSONResponse:

@@ -50,6 +50,9 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `METRICS_CACHE_TTL` | `60` | Cache TTL in seconds for Qdrant gauge aggregation on `/metrics` |
 | `MGMT_PORT` | | Management port for `/health` and `/metrics` (see [Management Port](#management-port) below) |
 | `MGMT_HOST` | (falls back to `MCP_HOST`) | Bind host for the management port |
+| `SERVER_BASE_URL` | | Base URL for generated download URLs (e.g., `https://mnemory.example.com`). If not set, URLs are relative paths. |
+| `DOWNLOAD_TOKEN_TTL` | `3600` | Default lifetime in seconds for artifact download tokens (1 hour) |
+| `DOWNLOAD_TOKEN_MAX_TTL` | `86400` | Maximum allowed lifetime in seconds for download tokens (24 hours) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 ## Memory Behavior

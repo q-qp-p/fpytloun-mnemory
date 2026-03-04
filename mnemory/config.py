@@ -208,6 +208,15 @@ class ServerConfig:
         default_factory=lambda: _env_int("METRICS_CACHE_TTL", 60)
     )
 
+    # Download token settings for artifact raw access
+    download_token_ttl: int = field(
+        default_factory=lambda: _env_int("DOWNLOAD_TOKEN_TTL", 3600)
+    )
+    download_token_max_ttl: int = field(
+        default_factory=lambda: _env_int("DOWNLOAD_TOKEN_MAX_TTL", 86400)
+    )
+    base_url: str = field(default_factory=lambda: _env("SERVER_BASE_URL"))
+
     @property
     def has_mgmt_port(self) -> bool:
         """Whether a separate management port is configured."""

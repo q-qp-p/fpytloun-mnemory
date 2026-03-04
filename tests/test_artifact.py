@@ -598,3 +598,98 @@ class TestBinaryArtifacts:
                 filename="big.bin",
                 content_type="application/octet-stream",
             )
+
+
+# ── MCP binary inline cap ────────────────────────────────────────────
+
+
+class TestMCPBinaryInlineCap:
+    """Test that the MCP get_artifact tool caps binary artifacts at 1 MB."""
+
+    def test_large_binary_returns_guidance(self):
+        """Binary artifact >1 MB should return guidance to use get_artifact_url."""
+        import json
+        from unittest.mock import patch
+
+        # Mock the service to return a large binary result
+        large_result = {
+            "content": "base64data...",
+            "total_size": 2_000_000,  # 2 MB
+            "is_text": False,
+            "has_more": False,
+            "content_type": "image/png",
+        }
+
+        with (
+            patch("mnemory.server._resolve_user_id", return_value="user1"),
+            patch("mnemory.server._get_service") as mock_svc,
+            patch("mnemory.server.get_collector", return_value=None),
+        ):
+            mock_svc.return_value.get_artifact.return_value = large_result
+
+            from mnemory.server import get_artifact
+
+            result_str = get_artifact("mem-1", "art-1", user_id="user1")
+            result = json.loads(result_str)
+
+        assert result["error"] is True
+        assert "too large" in result["message"]
+        assert result["use_tool"] == "get_artifact_url"
+        assert result["total_size"] == 2_000_000
+
+    def test_small_binary_returns_content(self):
+        """Binary artifact <=1 MB should return content normally."""
+        import json
+        from unittest.mock import patch
+
+        small_result = {
+            "content": "base64data...",
+            "total_size": 500_000,  # 500 KB
+            "is_text": False,
+            "has_more": False,
+            "content_type": "image/png",
+        }
+
+        with (
+            patch("mnemory.server._resolve_user_id", return_value="user1"),
+            patch("mnemory.server._get_service") as mock_svc,
+            patch("mnemory.server.get_collector", return_value=None),
+        ):
+            mock_svc.return_value.get_artifact.return_value = small_result
+
+            from mnemory.server import get_artifact
+
+            result_str = get_artifact("mem-1", "art-1", user_id="user1")
+            result = json.loads(result_str)
+
+        assert "error" not in result
+        assert result["content"] == "base64data..."
+        assert result["total_size"] == 500_000
+
+    def test_text_artifact_not_capped(self):
+        """Text artifacts should never be capped regardless of size."""
+        import json
+        from unittest.mock import patch
+
+        text_result = {
+            "content": "x" * 5000,
+            "total_size": 5_000_000,  # 5 MB of text
+            "is_text": True,
+            "has_more": True,
+        }
+
+        with (
+            patch("mnemory.server._resolve_user_id", return_value="user1"),
+            patch("mnemory.server._get_service") as mock_svc,
+            patch("mnemory.server.get_collector", return_value=None),
+        ):
+            mock_svc.return_value.get_artifact.return_value = text_result
+
+            from mnemory.server import get_artifact
+
+            result_str = get_artifact("mem-1", "art-1", user_id="user1")
+            result = json.loads(result_str)
+
+        assert "error" not in result
+        assert result["is_text"] is True
+        assert result["has_more"] is True

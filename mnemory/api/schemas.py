@@ -607,6 +607,33 @@ class FsckApplyResponse(BaseModel):
     details: list[FsckApplyDetail] = Field(default_factory=list)
 
 
+# ── Download Tokens ───────────────────────────────────────────────────
+
+
+class DownloadTokenRequest(BaseModel):
+    """Request to generate a short-lived download token for an artifact."""
+
+    ttl: int | None = Field(
+        None,
+        description=(
+            "Token lifetime in seconds. Default and max are server-configured "
+            "via DOWNLOAD_TOKEN_TTL and DOWNLOAD_TOKEN_MAX_TTL."
+        ),
+        ge=1,
+    )
+
+
+class DownloadTokenResponse(BaseModel):
+    """Response with a signed download token and URL."""
+
+    token: str = Field(..., description="HMAC-signed download token")
+    url: str = Field(..., description="Full URL with token for direct download")
+    expires_in: int = Field(..., description="Token lifetime in seconds")
+    content_type: str = Field(..., description="Artifact MIME type")
+    filename: str = Field(..., description="Artifact filename")
+    size: int = Field(..., description="Artifact size in bytes")
+
+
 # ── Common ────────────────────────────────────────────────────────────
 
 

@@ -274,9 +274,14 @@ document.addEventListener('alpine:init', () => {
         loading: true, isText, rawUrl: null,
       };
       if (!isText) {
-        // Binary artifact — use the raw download URL directly.
+        // Binary artifact — get a signed download URL.
         // For images, the UI renders an <img>; for others, a download link.
-        this.view.rawUrl = MnemoryAPI.getArtifactRawUrl(this.memoryId, artifact.id);
+        try {
+          this.view.rawUrl = await MnemoryAPI.getArtifactRawUrl(this.memoryId, artifact.id);
+        } catch (err) {
+          Alpine.store('notify').error(`Failed to get download URL: ${err.message}`);
+          this.view.open = false;
+        }
         this.view.loading = false;
         return;
       }

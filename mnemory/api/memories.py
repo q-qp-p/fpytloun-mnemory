@@ -20,6 +20,8 @@ from mnemory.api.schemas import (
     AskMemoriesResponse,
     CoreMemoriesResponse,
     DeleteMemoriesBatchRequest,
+    DownloadTokenRequest,
+    DownloadTokenResponse,
     FindMemoriesRequest,
     ListMemoriesResponse,
     RecentMemoriesResponse,
@@ -514,6 +516,66 @@ def get_artifact(
     return result
 
 
+@router.post(
+    "/{memory_id}/artifacts/{artifact_id}/download-token",
+    response_model=DownloadTokenResponse,
+)
+def create_download_token(
+    memory_id: str,
+    artifact_id: str,
+    req: DownloadTokenRequest | None = None,
+    ctx: SessionContext = Depends(get_session_context),
+):
+    """Generate a short-lived signed download token for an artifact.
+
+    Returns a token and URL that can be used for direct browser access
+    (``<img src="...?token=...">``, download links) without requiring
+    API key headers. Tokens are HMAC-signed, scoped to the specific
+    artifact, and expire after ``ttl`` seconds.
+
+    The returned URL includes the token as a query parameter and can
+    be opened directly in a browser.
+    """
+    from mnemory.server import _get_config, _get_signing_key
+    from mnemory.tokens import generate_download_token
+
+    _record("create_download_token", ctx)
+    service = _get_service()
+
+    # Verify artifact exists and user has access.
+    artifacts = service.list_artifacts(memory_id, user_id=ctx.user_id)
+    if not any(a["id"] == artifact_id for a in artifacts):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    cfg = _get_config().server
+    ttl_seconds = min(
+        (req.ttl if req and req.ttl else cfg.download_token_ttl),
+        cfg.download_token_max_ttl,
+    )
+
+    token = generate_download_token(
+        signing_key=_get_signing_key(),
+        user_id=ctx.user_id,
+        memory_id=memory_id,
+        artifact_id=artifact_id,
+        ttl_seconds=ttl_seconds,
+    )
+
+    path = f"/api/memories/{memory_id}/artifacts/{artifact_id}/raw?token={token}"
+    base_url = cfg.base_url.rstrip("/") if cfg.base_url else ""
+    url = f"{base_url}{path}" if base_url else path
+
+    meta = next(a for a in artifacts if a["id"] == artifact_id)
+    return DownloadTokenResponse(
+        token=token,
+        url=url,
+        expires_in=ttl_seconds,
+        content_type=meta.get("content_type", "application/octet-stream"),
+        filename=meta.get("filename", "artifact"),
+        size=meta.get("size", 0),
+    )
+
+
 @router.get("/{memory_id}/artifacts/{artifact_id}/raw")
 def get_artifact_raw(
     memory_id: str,
@@ -525,9 +587,10 @@ def get_artifact_raw(
     Returns the raw bytes directly — suitable for rendering images in
     browsers, downloading files, or embedding via ``<img src="...">``.
 
-    Note: For browser-embedded use (``<img src="...">``), the API key
-    can be passed as a ``key`` query parameter since custom headers
-    cannot be set on HTML element requests.
+    Authentication: Use a short-lived download token as a ``token``
+    query parameter. Generate tokens via the ``download-token`` endpoint
+    or the ``get_artifact_url`` MCP tool. Standard API key headers also
+    work for programmatic access.
     """
     _record("get_artifact", ctx)
     service = _get_service()

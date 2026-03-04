@@ -30,7 +30,8 @@ mnemory exposes 17 tools via the [Model Context Protocol](https://modelcontextpr
 | Tool | Description |
 |---|---|
 | `save_artifact` | Attach detailed content to a memory |
-| `get_artifact` | Retrieve artifact content with pagination |
+| `get_artifact` | Retrieve artifact content (text paginated, binary ≤1 MB inline) |
+| `get_artifact_url` | Generate a signed download URL for direct browser access |
 | `list_artifacts` | List artifacts on a memory |
 | `delete_artifact` | Remove an artifact |
 
@@ -53,6 +54,8 @@ Three search tools are available:
 ### Artifacts
 
 For detailed content too long for fast memory (research reports, analysis, code, data), save it as an artifact attached to a memory. The memory holds the searchable summary; the artifact holds the full details. Search results show which memories have artifacts — fetch them with `get_artifact` when you need the details.
+
+**Binary size limit:** Binary artifacts larger than 1 MB cannot be returned inline via `get_artifact`. For large binary artifacts, use `get_artifact_url` to generate a short-lived signed download URL that can be opened in a browser or embedded in `<img>` tags.
 
 ### Role Parameter
 
