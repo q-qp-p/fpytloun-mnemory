@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-03-04
+
+### Bug Fixes
+
+- **Episodic memories now always have `event_date`**: Episodic memories (decisions, intents, goals, interactions) created via the remember endpoint or add_memory were stored without `event_date` because extraction prompts instructed the LLM to set null for facts without explicit temporal anchors. Updated all 5 extraction prompt sections and ~18 examples to clarify that episodic events should default to today's date. Added a code-level fallback in `_execute_action()` that auto-sets `event_date` to today (UTC) for episodic memories when neither the LLM nor the caller provides one ([`f2d038f`](https://github.com/fpytloun/mnemory/commit/f2d038f))
+
 ## [1.6.0] — 2026-03-04
 
 ### Hybrid Search
