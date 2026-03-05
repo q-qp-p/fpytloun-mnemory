@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-03-05
+
+### Secure Artifact Download Tokens
+
+- **HMAC-signed download tokens**: Replaced long-lived API keys in URLs with short-lived, stateless HMAC-signed tokens for artifact raw access. Tokens are scoped to a specific artifact, expire after a configurable TTL (default 1 hour, max 24 hours), and are verified without server-side storage. Browser-embedded `<img src="...?token=...">` and download links now use these tokens instead of API keys ([`29b2223`](https://github.com/fpytloun/mnemory/commit/29b2223))
+- **New MCP tool `get_artifact_url`**: Generates a signed download URL for direct browser access to artifacts. Returns URL, expiry, content type, filename, and size. Use when artifacts are binary or larger than 1 MB ([`29b2223`](https://github.com/fpytloun/mnemory/commit/29b2223))
+- **New REST endpoint `POST /api/memories/{id}/artifacts/{aid}/download-token`**: Authenticated endpoint that generates a download token with optional custom TTL. Returns the token and a ready-to-use URL ([`29b2223`](https://github.com/fpytloun/mnemory/commit/29b2223))
+- **1 MB binary inline cap on `get_artifact`**: Binary artifacts larger than 1 MB are no longer returned inline via the MCP `get_artifact` tool. Instead, a guidance message directs the client to use `get_artifact_url`. Text artifacts are unaffected ([`29b2223`](https://github.com/fpytloun/mnemory/commit/29b2223))
+- **Removed `key` query parameter**: The `key` query parameter for passing API keys in URLs has been removed from the auth middleware. All browser-embedded artifact access must use download tokens ([`29b2223`](https://github.com/fpytloun/mnemory/commit/29b2223))
+- **New config vars**: `SERVER_BASE_URL` (for full URL generation), `DOWNLOAD_TOKEN_TTL` (default 3600s), `DOWNLOAD_TOKEN_MAX_TTL` (default 86400s) ([`29b2223`](https://github.com/fpytloun/mnemory/commit/29b2223))
+
+### Binary Artifact Support
+
+- **Fixed binary artifact retrieval**: Binary artifacts (images, PDFs, etc.) now return full content as a single base64 blob instead of being truncated by text pagination. Added `load_raw()` method for direct byte access and `GET /api/memories/{id}/artifacts/{aid}/raw` endpoint for browser rendering ([`ff89fc7`](https://github.com/fpytloun/mnemory/commit/ff89fc7))
+- **Increased max artifact size to 10 MB**: `MAX_ARTIFACT_SIZE` default raised from 100 KB to 10 MB (10485760 bytes) ([`ff89fc7`](https://github.com/fpytloun/mnemory/commit/ff89fc7))
+- **UI binary rendering**: Management UI now detects binary artifacts — images render inline via `<img>`, other binary types show download links. Text artifacts retain paginated display ([`ff89fc7`](https://github.com/fpytloun/mnemory/commit/ff89fc7))
+
+### New MCP Tool: ask_memories
+
+- **`ask_memories` tool**: Ask a natural language question and get a human-readable prose answer synthesized from stored memories. Uses `find_memories` internally for retrieval, then passes results to an LLM for answer generation. Set `include_memories=true` to also receive the supporting memories. Most expensive operation (3 LLM calls) — use when you need a synthesized answer rather than raw results ([`db2fd19`](https://github.com/fpytloun/mnemory/commit/db2fd19))
+
+### Performance
+
+- **Parallelized find/ask search queries**: `find_memories` and `ask_memories` now run generated search queries concurrently using `ThreadPoolExecutor` instead of sequentially, reducing latency by ~400–1200 ms depending on query count ([`407926d`](https://github.com/fpytloun/mnemory/commit/407926d))
+- **Configurable find/ask LLM model**: New `FIND_LLM_MODEL` env var allows using a faster/cheaper model for query generation and reranking in the find/ask pipeline ([`407926d`](https://github.com/fpytloun/mnemory/commit/407926d))
+
+### Bug Fixes
+
+- **Core memories no longer hard-truncated**: Replaced hard character truncation with per-section entry limits (`CORE_MAX_PER_SECTION`). Main sections are never truncated — only the recent context section is gracefully trimmed per-entry. Improved agent memory guidance in core memories output ([`856a564`](https://github.com/fpytloun/mnemory/commit/856a564))
+- **Code analysis no longer misclassified as permanent facts**: Extraction prompts updated to prevent transient technical observations and code analysis conclusions from being stored as permanent `fact` type memories ([`1c51431`](https://github.com/fpytloun/mnemory/commit/1c51431))
+- **Session-specific assistant memories filtered from extraction**: Extraction prompts now filter out session-specific assistant memories (e.g., "I concluded X in this session") that should not persist across conversations ([`7ec1b3d`](https://github.com/fpytloun/mnemory/commit/7ec1b3d))
+
 ## [1.6.1] — 2026-03-04
 
 ### Bug Fixes
