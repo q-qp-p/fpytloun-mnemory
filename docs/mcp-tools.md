@@ -12,15 +12,15 @@ mnemory exposes 17 tools via the [Model Context Protocol](https://modelcontextpr
 
 | Tool | Description |
 |---|---|
-| `add_memory` | Store a memory with optional metadata, `infer` flag, `role`, and `event_date` |
-| `add_memories` | Batch-add multiple memories in a single call |
-| `search_memories` | Semantic search with type/category/role/date filters, importance reranking |
+| `add_memory` | Store a memory with optional metadata, `infer` flag, `role`, `event_date`, and `labels` |
+| `add_memories` | Batch-add multiple memories in a single call (supports `labels` per item) |
+| `search_memories` | Semantic search with type/category/role/date/labels filters, importance reranking |
 | `find_memories` | AI-powered search: generates multiple queries, searches, and reranks by relevance to your question. Temporal-aware — resolves "last week", "in 2023", etc. |
 | `ask_memories` | Ask a question and get a human-readable answer synthesized from relevant memories. Uses `find_memories` internally, then generates a natural language answer. Most expensive (3 LLM calls). |
 | `get_core_memories` | Load pinned + recent context at conversation start. Use for clients that inject MCP server instructions (e.g., Claude Code). |
 | `get_recent_memories` | Get recent activity from the last N days with scope filter (user/agent/all) |
-| `list_memories` | List all/filtered memories |
-| `update_memory` | Update content or metadata of existing memory (including `event_date`) |
+| `list_memories` | List all/filtered memories (supports `labels` filter) |
+| `update_memory` | Update content or metadata of existing memory (including `event_date` and `labels`) |
 | `delete_memory` | Delete a memory and its artifacts |
 | `delete_all_memories` | Delete all memories in scope |
 | `list_categories` | List categories with counts for discoverability |
@@ -42,6 +42,7 @@ mnemory exposes 17 tools via the [Model Context Protocol](https://modelcontextpr
 - **`infer=true`** (default): The server runs a single LLM call that extracts facts, classifies metadata (type, categories, importance), and deduplicates against existing memories. Use when passing raw conversation text or unstructured content.
 - **`infer=false`**: Skips the LLM call — content is embedded and stored directly. Much faster (single embedding call vs. LLM + embedding). Use when your content is already a clean, concise fact.
 - **`add_memories`** (batch): Processes multiple memories in a single call, avoiding per-item round-trip latency.
+- **`labels`**: Client-provided key-value metadata that bypasses LLM extraction entirely. When using `infer=true`, labels are inherited by all extracted facts. See [Memory Model — Labels](memory-model.md#labels) for details.
 
 ### Searching
 

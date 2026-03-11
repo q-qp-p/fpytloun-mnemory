@@ -300,6 +300,12 @@ class Filter:
         payload: dict = {"session_id": session_id, "messages": last_two}
         if context:
             payload["context"] = context
+        # Attach labels for provenance tracking (chat_id links memories
+        # to a specific conversation, source identifies the client)
+        labels: dict[str, str] = {"source": "open-webui"}
+        if chat_id:
+            labels["chat_id"] = chat_id
+        payload["labels"] = labels
         asyncio.create_task(self._post("/api/remember", payload, __user__))
 
         return body

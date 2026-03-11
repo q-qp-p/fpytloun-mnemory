@@ -2539,6 +2539,7 @@ class MemoryService:
         include_decayed: bool = False,
         session_timezone: str | None = None,
         context: str | None = None,
+        labels: dict[str, Any] | None = None,
     ) -> dict:
         """Ask a question and generate a human-readable answer from memories.
 
@@ -2584,6 +2585,7 @@ class MemoryService:
             include_decayed=include_decayed,
             session_timezone=session_timezone,
             context=context,
+            labels=labels,
         )
 
         results = find_result.get("results", [])

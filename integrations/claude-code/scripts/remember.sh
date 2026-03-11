@@ -80,11 +80,16 @@ if [ -n "$MNEMORY_USER_ID" ]; then
     HEADERS+=(-H "X-User-Id: $MNEMORY_USER_ID")
 fi
 
+# Build labels for provenance tracking
+LABELS=$(jq -n --arg src "claude-code" --arg sid "$SESSION_ID_FROM_INPUT" \
+    '{source: $src} + (if $sid != "" then {session_id: $sid} else {} end)')
+
 # Build request body
 BODY=$(jq -n \
     --argjson messages "$MESSAGES" \
     --arg session_id "$MNEMORY_SESSION_ID" \
-    '{messages: $messages}
+    --argjson labels "$LABELS" \
+    '{messages: $messages, labels: $labels}
     + (if $session_id != "" then {session_id: $session_id} else {} end)'
 )
 

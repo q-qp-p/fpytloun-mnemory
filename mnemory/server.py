@@ -916,6 +916,7 @@ def ask_memories(
     include_decayed: bool = False,
     context: str | None = None,
     include_memories: bool = False,
+    labels: dict[str, Any] | None = None,
 ) -> str:
     """Ask a question and get a human-readable answer based on stored memories.
 
@@ -945,6 +946,8 @@ def ask_memories(
         include_memories: If true, include the supporting memories used to
                          generate the answer in the response. Default false —
                          returns only the answer text, queries, and stats.
+        labels: Filter by label key-value pairs. All specified labels must
+                match (AND logic). List values use any-of matching.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -967,6 +970,7 @@ def ask_memories(
                 include_decayed=include_decayed,
                 session_timezone=session_tz,
                 context=context,
+                labels=labels,
             )
         else:
             aid = _resolve_agent_id(agent_id)
@@ -981,6 +985,7 @@ def ask_memories(
                 include_decayed=include_decayed,
                 session_timezone=session_tz,
                 context=context,
+                labels=labels,
             )
 
         answer = result.get("answer", "")

@@ -186,6 +186,9 @@ class AskMemoriesRequest(BaseModel):
             "returns only the answer text, queries, and stats."
         ),
     )
+    labels: dict[str, Any] | None = Field(
+        None, description="Filter by label key-value pairs (AND logic)"
+    )
 
 
 class MemoryItem(BaseModel):

@@ -133,5 +133,61 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 | `ttl_days` | int\|None | Original TTL setting in days (None = permanent) |
 | `expires_at` | str\|None | ISO 8601 expiration timestamp (None = never expires) |
 | `decayed_at` | str\|None | When memory entered decayed state (None = active) |
+| `labels` | dict\|None | Client-provided key-value metadata (e.g., project, topic, conversation_id). Bypasses LLM extraction. Filterable in search/list queries. |
 | `last_accessed_at` | str\|None | Last time returned in search |
 | `access_count` | int | Number of times accessed in search |
+
+## Labels
+
+Labels are client-provided key-value metadata that can be attached to any memory. Unlike categories and memory types, labels **bypass the LLM entirely** — they are stored exactly as provided and never inferred or modified by the extraction pipeline.
+
+### Use Cases
+
+- **Project scoping**: `{"project": "myapp"}` — filter memories by project
+- **Conversation tracking**: `{"conversation_id": "conv-123"}` — link memories to conversations
+- **Environment tagging**: `{"env": "prod", "region": "eu-west-1"}` — tag by deployment context
+- **Custom workflows**: `{"reviewed": true, "priority": 1}` — application-specific metadata
+
+### Value Types
+
+Labels support flat values only:
+
+| Type | Example |
+|---|---|
+| `str` | `"myapp"` |
+| `int` | `42` |
+| `float` | `3.14` |
+| `bool` | `true` |
+| `list[str]` | `["tag1", "tag2"]` |
+
+Nested dicts and other complex types are not allowed.
+
+### Inheritance
+
+When using `infer=True` or the `remember` pipeline, labels are **inherited by all extracted facts**. If you call `add_memory(content="...", labels={"project": "myapp"})` and the LLM extracts 3 facts, all 3 get those labels.
+
+### Filtering
+
+Labels can be used as filters in `search_memories`, `find_memories`, and `list_memories`. Filtering uses AND logic across multiple keys, with list values using any-of (OR) within a single key:
+
+```
+labels={"project": "myapp", "env": "prod"}
+```
+
+This matches memories where `labels.project == "myapp"` AND `labels.env == "prod"`.
+
+### Updating
+
+- Passing `labels={"key": "value"}` to `update_memory` **merges** with existing labels (caller wins on key conflicts)
+- Passing `labels={}` (empty dict) **clears** all labels
+- Passing `labels=None` (or omitting) **preserves** existing labels
+
+### Constraints
+
+| Constraint | Default | Config |
+|---|---|---|
+| Max labels per memory | 20 | `LABELS_MAX_FIELDS` |
+| Max key length | 64 chars | `LABELS_MAX_KEY_LENGTH` |
+| Max string value length | 1000 chars | `LABELS_MAX_VALUE_LENGTH` |
+| Key pattern | `^[a-zA-Z_][a-zA-Z0-9_]*$` | — |
+| Reserved keys | System field names (e.g., `memory_type`, `user_id`, `labels`) | — |

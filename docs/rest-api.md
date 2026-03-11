@@ -61,13 +61,15 @@ Combined initialize + search. Call on each user message.
   "query": "Should I buy a dog?",
   "include_instructions": true,
   "managed": true,
-  "score_threshold": 0.5
+  "score_threshold": 0.5,
+  "labels": {"project": "myapp"}
 }
 ```
 
 - First call (no `session_id`): creates session, returns instructions + core memories + `find_memories` results
 - Subsequent calls: returns only NEW relevant memories via fast `search_memories` (no LLM), filtering out already-returned IDs
 - `score_threshold`: optional per-request minimum score (0.0-1.0) for search results, applied on top of server's `SEARCH_SCORE_THRESHOLD`. Prevents context bloat from weak matches on follow-up messages.
+- `labels`: optional label filter — only return memories matching these key-value pairs. See [Memory Model — Labels](memory-model.md#labels).
 - Graceful degradation: `find_memories` fails -> `search_memories` -> core memories only -> empty response
 
 ### POST /api/remember
@@ -81,7 +83,8 @@ Fire-and-forget memory storage. Call after each exchange.
     {"role": "user", "content": "I just moved to Berlin"},
     {"role": "assistant", "content": "That's exciting!"}
   ],
-  "role": null
+  "role": null,
+  "labels": {"conversation_id": "conv-123"}
 }
 ```
 
@@ -95,6 +98,7 @@ The `role` parameter controls the extraction point of view:
 
 - Returns `{"accepted": true}` immediately, processes in background
 - Reuses the same extraction pipeline as `add_memory(infer=True)` — no extra LLM calls
+- `labels`: optional key-value metadata attached to all extracted memories. Bypasses LLM — stored as-is. See [Memory Model — Labels](memory-model.md#labels).
 - Stored memory IDs are added to the session to prevent echo on next recall
 - Rate limited per user (configurable via `REMEMBER_RATE_LIMIT`)
 

@@ -340,6 +340,7 @@ export const MnemoryPlugin: Plugin = async ({ client, worktree, directory }) => 
             session_id: state.mnemorySessionId,
             messages,
             ...(workingDirectory && { context: `Working directory: ${workingDirectory}` }),
+            labels: { session_id: sessionId, source: "opencode" },
           }).catch(() => {})
         } catch {
           // Graceful degradation

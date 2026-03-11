@@ -408,7 +408,7 @@
                       <span class="badge badge-category" x-text="'#' + cat"></span>
                     </template>
                     <template x-for="[k, v] in Object.entries(result.metadata?.labels || {})" :key="'lbl-'+k">
-                      <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                      <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v)"></span>
                     </template>
                     <!-- Right group: agent, pinned, assistant, artifacts -->
                     <span class="flex-1"></span>
@@ -627,7 +627,7 @@
                       <span class="badge badge-category" x-text="'#' + cat"></span>
                     </template>
                     <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
-                      <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                      <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v)"></span>
                     </template>
                     <!-- Right group: agent, pinned, assistant, artifacts -->
                     <span class="flex-1"></span>
@@ -894,7 +894,7 @@
                           <span class="badge badge-category" x-text="'#' + cat"></span>
                         </template>
                         <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
-                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v)"></span>
                         </template>
                         <span class="flex-1"></span>
                         <span x-show="mem.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
@@ -963,7 +963,7 @@
                           <span class="badge badge-category" x-text="'#' + cat"></span>
                         </template>
                         <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
-                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v)"></span>
                         </template>
                         <span class="flex-1"></span>
                         <span x-show="mem.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
@@ -1033,7 +1033,7 @@
                           <span class="badge badge-category" x-text="'#' + cat"></span>
                         </template>
                         <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
-                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v)"></span>
                         </template>
                         <span class="flex-1"></span>
                         <span x-show="mem.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
@@ -1103,7 +1103,7 @@
                           <span class="badge badge-category" x-text="'#' + cat"></span>
                         </template>
                         <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
-                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v)"></span>
                         </template>
                         <span class="flex-1"></span>
                         <span x-show="mem.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
@@ -1545,7 +1545,7 @@
                                       <span class="badge badge-category" x-text="'#' + cat"></span>
                                     </template>
                                     <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
-                                      <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                                      <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v)"></span>
                                     </template>
                                     <!-- Right: agent, artifacts, assistant, pinned -->
                                     <span class="flex-1"></span>

@@ -6,6 +6,7 @@ automatically for sync route functions.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -255,6 +256,7 @@ def ask_memories(
             include_decayed=req.include_decayed,
             session_timezone=ctx.timezone,
             context=req.context,
+            labels=req.labels,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -337,8 +339,6 @@ def list_memories(
     cat_list = [c.strip() for c in categories.split(",")] if categories else None
     labels_dict: dict | None = None
     if labels:
-        import json
-
         try:
             labels_dict = json.loads(labels)
         except json.JSONDecodeError:

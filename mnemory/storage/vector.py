@@ -20,6 +20,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     OrderBy,
     PayloadField,
@@ -36,6 +37,31 @@ logger = logging.getLogger(__name__)
 # Use SHA-256 for content hashing (dedup, not security-critical,
 # but avoids MD5 deprecation warnings from security scanners).
 _hash = hashlib.sha256
+
+
+def _build_labels_conditions(labels_filter: dict) -> list[FieldCondition]:
+    """Build Qdrant filter conditions from a labels dict.
+
+    Each key-value pair becomes a must condition on ``labels.<key>``.
+    List values use MatchAny (any-of), scalar values use MatchValue (exact).
+
+    Args:
+        labels_filter: Dict of label key-value pairs to filter by.
+
+    Returns:
+        List of FieldCondition objects to append to a must clause.
+    """
+    conditions: list[FieldCondition] = []
+    for key, value in labels_filter.items():
+        if isinstance(value, list):
+            conditions.append(
+                FieldCondition(key=f"labels.{key}", match=MatchAny(any=value))
+            )
+        else:
+            conditions.append(
+                FieldCondition(key=f"labels.{key}", match=MatchValue(value=value))
+            )
+    return conditions
 
 
 class VectorStore:
@@ -377,7 +403,6 @@ class VectorStore:
             Fusion,
             FusionQuery,
             IsEmptyCondition,
-            MatchAny,
             Prefetch,
         )
 
@@ -410,17 +435,7 @@ class VectorStore:
                 FieldCondition(key="categories", match=MatchAny(any=categories))
             )
         if labels_filter:
-            for key, value in labels_filter.items():
-                if isinstance(value, list):
-                    must_conditions.append(
-                        FieldCondition(key=f"labels.{key}", match=MatchAny(any=value))
-                    )
-                else:
-                    must_conditions.append(
-                        FieldCondition(
-                            key=f"labels.{key}", match=MatchValue(value=value)
-                        )
-                    )
+            must_conditions.extend(_build_labels_conditions(labels_filter))
         if exclude_expired and not include_decayed:
             now = datetime.now(timezone.utc)
             ttl_filter = Filter(
@@ -655,7 +670,7 @@ class VectorStore:
 
         Returns dict with "results" key containing list of memory dicts.
         """
-        from qdrant_client.models import IsEmptyCondition, MatchAny
+        from qdrant_client.models import IsEmptyCondition
 
         must_conditions: list = [
             FieldCondition(key="user_id", match=MatchValue(value=user_id)),
@@ -679,17 +694,7 @@ class VectorStore:
                         FieldCondition(key=key, match=MatchValue(value=value))
                     )
         if labels_filter:
-            for key, value in labels_filter.items():
-                if isinstance(value, list):
-                    must_conditions.append(
-                        FieldCondition(key=f"labels.{key}", match=MatchAny(any=value))
-                    )
-                else:
-                    must_conditions.append(
-                        FieldCondition(
-                            key=f"labels.{key}", match=MatchValue(value=value)
-                        )
-                    )
+            must_conditions.extend(_build_labels_conditions(labels_filter))
 
         scroll_kwargs: dict[str, Any] = {
             "collection_name": self.collection_name,

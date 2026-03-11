@@ -409,7 +409,7 @@ Labels are inherited by ALL facts extracted during infer=True.
 Labels bypass LLM extraction — they are stored exactly as provided.
 
 ### Filtering
-Pass labels to search_memories, find_memories, or list_memories:
+Pass labels to search_memories, find_memories, ask_memories, or list_memories:
   search_memories(query="...", labels={"project": "myapp"})
 Multiple labels use AND logic (all must match).
 List values use any-of matching within a single key.

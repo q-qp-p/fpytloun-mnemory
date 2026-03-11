@@ -102,6 +102,10 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `FSCK_AUTO_INTERVAL` | `0` | Interval in hours between automatic background memory checks. `0` = disabled |
 | `FSCK_AUTO_MIN_CONFIDENCE` | `0.95` | Minimum confidence score (0.0-1.0) for a fix to be auto-applied |
 | `FSCK_AUTO_MIN_SEVERITY` | `medium` | Minimum severity for a fix to be auto-applied. Options: `low`, `medium`, `high` |
+| `LABELS_MAX_FIELDS` | `20` | Max number of label keys per memory |
+| `LABELS_MAX_KEY_LENGTH` | `64` | Max length of a label key (alphanumeric + underscore only) |
+| `LABELS_MAX_VALUE_LENGTH` | `1000` | Max length of a string label value |
+| `LABELS_INDEXES` | | Comma-separated list of label keys to index in Qdrant for fast filtering (e.g., `project,topic,conversation_id`). Only needed for remote Qdrant with large datasets |
 
 ## Instruction Modes
 

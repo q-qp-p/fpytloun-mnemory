@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mnemory.memory import MemoryService, _parse_event_date, _validate_id
+from mnemory.memory import (
+    MemoryService,
+    _parse_event_date,
+    _validate_id,
+    _validate_labels,
+)
 
 
 def _mock_memory_config(mock_config: MagicMock) -> None:
@@ -55,6 +60,11 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     # find/ask pipeline LLM config
     mock_config.memory.find_model = ""
     mock_config.memory.find_reasoning_effort = None
+    # Labels config
+    mock_config.memory.labels_max_fields = 20
+    mock_config.memory.labels_max_key_length = 64
+    mock_config.memory.labels_max_value_length = 1000
+    mock_config.memory.labels_indexes = []
 
 
 def _make_service(auto_classify=False, track_access=False):
@@ -115,6 +125,122 @@ class TestValidateId:
     def test_max_length_ok(self):
         result = _validate_id("a" * 256, "user_id")
         assert len(result) == 256
+
+
+# ── _validate_labels ─────────────────────────────────────────────────
+
+
+class TestValidateLabels:
+    """Test label key/value validation."""
+
+    @staticmethod
+    def _config():
+        cfg = MagicMock()
+        cfg.labels_max_fields = 20
+        cfg.labels_max_key_length = 64
+        cfg.labels_max_value_length = 1000
+        return cfg
+
+    def test_valid_string_value(self):
+        result = _validate_labels({"project": "myapp"}, self._config())
+        assert result == {"project": "myapp"}
+
+    def test_valid_int_value(self):
+        result = _validate_labels({"count": 42}, self._config())
+        assert result == {"count": 42}
+
+    def test_valid_float_value(self):
+        result = _validate_labels({"score": 0.95}, self._config())
+        assert result == {"score": 0.95}
+
+    def test_valid_bool_value(self):
+        result = _validate_labels({"active": True}, self._config())
+        assert result == {"active": True}
+
+    def test_valid_list_str_value(self):
+        result = _validate_labels({"tags": ["a", "b"]}, self._config())
+        assert result == {"tags": ["a", "b"]}
+
+    def test_empty_dict_valid(self):
+        result = _validate_labels({}, self._config())
+        assert result == {}
+
+    def test_multiple_labels(self):
+        labels = {"project": "myapp", "topic": "auth", "priority": 1}
+        result = _validate_labels(labels, self._config())
+        assert result == labels
+
+    def test_reserved_key_rejected(self):
+        with pytest.raises(ValueError, match="reserved"):
+            _validate_labels({"user_id": "test"}, self._config())
+
+    def test_reserved_key_labels_rejected(self):
+        with pytest.raises(ValueError, match="reserved"):
+            _validate_labels({"labels": "nested"}, self._config())
+
+    def test_invalid_key_pattern_spaces(self):
+        with pytest.raises(ValueError, match="invalid"):
+            _validate_labels({"my key": "val"}, self._config())
+
+    def test_invalid_key_pattern_starts_with_digit(self):
+        with pytest.raises(ValueError, match="invalid"):
+            _validate_labels({"1key": "val"}, self._config())
+
+    def test_invalid_key_pattern_special_chars(self):
+        with pytest.raises(ValueError, match="invalid"):
+            _validate_labels({"key-name": "val"}, self._config())
+
+    def test_underscore_prefix_valid(self):
+        result = _validate_labels({"_internal": "val"}, self._config())
+        assert result == {"_internal": "val"}
+
+    def test_key_too_long(self):
+        cfg = self._config()
+        cfg.labels_max_key_length = 10
+        with pytest.raises(ValueError, match="too long"):
+            _validate_labels({"a" * 11: "val"}, cfg)
+
+    def test_string_value_too_long(self):
+        cfg = self._config()
+        cfg.labels_max_value_length = 5
+        with pytest.raises(ValueError, match="too long"):
+            _validate_labels({"key": "toolong"}, cfg)
+
+    def test_list_value_item_too_long(self):
+        cfg = self._config()
+        cfg.labels_max_value_length = 5
+        with pytest.raises(ValueError, match="too long"):
+            _validate_labels({"key": ["ok", "toolong"]}, cfg)
+
+    def test_too_many_labels(self):
+        cfg = self._config()
+        cfg.labels_max_fields = 2
+        with pytest.raises(ValueError, match="Too many labels"):
+            _validate_labels({"a": "1", "b": "2", "c": "3"}, cfg)
+
+    def test_non_dict_input(self):
+        with pytest.raises(ValueError, match="must be a dict"):
+            _validate_labels("not a dict", self._config())
+
+    def test_unsupported_value_type_dict(self):
+        with pytest.raises(ValueError, match="unsupported value type"):
+            _validate_labels({"key": {"nested": "dict"}}, self._config())
+
+    def test_unsupported_value_type_none(self):
+        with pytest.raises(ValueError, match="unsupported value type"):
+            _validate_labels({"key": None}, self._config())
+
+    def test_list_with_non_string_items(self):
+        with pytest.raises(ValueError, match="list values must all be strings"):
+            _validate_labels({"key": ["ok", 123]}, self._config())
+
+    def test_empty_key_rejected(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            _validate_labels({"": "val"}, self._config())
+
+    def test_non_string_key_rejected(self):
+        with pytest.raises(ValueError, match="must be a string"):
+            _validate_labels({123: "val"}, self._config())
 
 
 # ── Search score threshold ────────────────────────────────────────────
