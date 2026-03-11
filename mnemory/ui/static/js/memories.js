@@ -18,6 +18,7 @@ function memoriesTab() {
       role: '',
       limit: 5000,
       include_decayed: false,
+      labels_json: '',
     },
 
     sortBy: 'newest',
@@ -50,6 +51,7 @@ function memoriesTab() {
         ttl_days: '',
         event_date: '',
         infer: true,
+        labels: '',
       },
     },
 
@@ -183,6 +185,19 @@ function memoriesTab() {
         }
       }
 
+      // Client-side filter: labels
+      if (this.filters.labels_json) {
+        try {
+          const filterLabels = JSON.parse(this.filters.labels_json);
+          arr = arr.filter(m => {
+            const memLabels = m.metadata?.labels || {};
+            return Object.entries(filterLabels).every(([k, v]) => memLabels[k] === v);
+          });
+        } catch (e) {
+          // Invalid JSON — skip labels filter
+        }
+      }
+
       // All sorting is client-side
       switch (this.sortBy) {
         case 'newest':
@@ -251,6 +266,7 @@ function memoriesTab() {
           ttl_days: '',
           event_date: '',
           infer: true,
+          labels: '',
         },
       };
     },
@@ -275,6 +291,14 @@ function memoriesTab() {
         if (f.event_date.trim()) payload.event_date = f.event_date.trim();
         const cats = f.categories ? f.categories.split(',').map(c => c.trim()).filter(Boolean) : [];
         if (cats.length > 0) payload.categories = cats;
+        if (f.labels) {
+          try {
+            const labels = JSON.parse(f.labels);
+            if (Object.keys(labels).length > 0) payload.labels = labels;
+          } catch (e) {
+            // Invalid JSON — skip labels
+          }
+        }
 
         const result = await MnemoryAPI.addMemory(payload);
         // result.results is an array of {id, memory, event}
@@ -310,6 +334,7 @@ function memoriesTab() {
           if (payload.pinned !== undefined) m.metadata.pinned = payload.pinned;
           if (payload.ttl_days !== undefined) m.metadata.ttl_days = payload.ttl_days;
           if (payload.agent_id !== undefined) m.metadata.agent_id = payload.agent_id || null;
+          if ('labels' in payload) m.metadata.labels = payload.labels;
         }
       });
     },

@@ -78,6 +78,7 @@ def add_memory(
             ttl_days=req.ttl_days,
             event_date=req.event_date,
             session_timezone=ctx.timezone,
+            labels=req.labels,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -114,6 +115,7 @@ def add_memories_batch(
                 ttl_days=item.ttl_days,
                 event_date=item.event_date,
                 session_timezone=ctx.timezone,
+                labels=item.labels,
             )
             results.append(result)
         except Exception:
@@ -180,6 +182,7 @@ def search_memories(
                 include_decayed=req.include_decayed,
                 date_start=req.date_start,
                 date_end=req.date_end,
+                labels=req.labels,
             )
         else:
             results = service.search_memories(
@@ -193,6 +196,7 @@ def search_memories(
                 include_decayed=req.include_decayed,
                 date_start=req.date_start,
                 date_end=req.date_end,
+                labels=req.labels,
             )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -321,12 +325,26 @@ def list_memories(
     sort: str | None = Query(
         None, description="Sort order: newest (desc by created_at), oldest (asc)"
     ),
+    labels: str | None = Query(
+        None,
+        description='Filter by labels as JSON object (AND logic), e.g. \'{"source":"web"}\'',
+    ),
     ctx: SessionContext = Depends(get_session_context),
 ):
     """List all or filtered memories with optional sorting."""
     _record("list_memories", ctx)
     service = _get_service()
     cat_list = [c.strip() for c in categories.split(",")] if categories else None
+    labels_dict: dict | None = None
+    if labels:
+        import json
+
+        try:
+            labels_dict = json.loads(labels)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=422, detail="Invalid JSON in labels parameter"
+            )
     try:
         # When session has agent_id, use dual-scope to return both
         # agent-specific and shared user memories (mirrors MCP behavior).
@@ -340,6 +358,7 @@ def list_memories(
                 limit=limit,
                 include_decayed=include_decayed,
                 sort=sort,
+                labels=labels_dict,
             )
         else:
             results = service.list_memories(
@@ -351,6 +370,7 @@ def list_memories(
                 limit=limit,
                 include_decayed=include_decayed,
                 sort=sort,
+                labels=labels_dict,
             )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -383,6 +403,8 @@ def update_memory(
             kwargs["ttl_days"] = req.ttl_days
         if req.event_date is not None:
             kwargs["event_date"] = req.event_date
+        if req.labels is not None:
+            kwargs["labels"] = req.labels
         # agent_id: non-None means caller wants to change it
         if req.agent_id is not None:
             if req.agent_id == "":

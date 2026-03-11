@@ -11,6 +11,7 @@ classification, and deduplication against existing memories.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -89,6 +90,113 @@ def _validate_id(value: str, name: str) -> str:
     if len(value) > _MAX_ID_LENGTH:
         raise ValueError(f"{name} too long (max {_MAX_ID_LENGTH} chars)")
     return value
+
+
+# Reserved metadata field names that cannot be used as label keys.
+_RESERVED_LABEL_KEYS = frozenset(
+    {
+        "memory_type",
+        "categories",
+        "importance",
+        "pinned",
+        "role",
+        "artifacts",
+        "created_at_utc",
+        "updated_at_utc",
+        "event_date",
+        "ttl_days",
+        "expires_at",
+        "decayed_at",
+        "last_accessed_at",
+        "access_count",
+        "data",
+        "hash",
+        "created_at",
+        "updated_at",
+        "user_id",
+        "agent_id",
+        "run_id",
+        "actor_id",
+        "labels",
+    }
+)
+
+# Allowed value types for label values.
+_LABEL_VALUE_TYPES = (str, int, float, bool)
+
+_LABEL_KEY_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _validate_labels(labels: dict, config) -> dict:
+    """Validate label keys and values.
+
+    Args:
+        labels: Dict of label key-value pairs.
+        config: MemoryConfig instance with label constraints.
+
+    Returns:
+        Validated labels dict.
+
+    Raises:
+        ValueError: If any key or value is invalid.
+    """
+    if not isinstance(labels, dict):
+        raise ValueError("labels must be a dict")
+
+    max_fields = config.labels_max_fields
+    max_key_len = config.labels_max_key_length
+    max_val_len = config.labels_max_value_length
+
+    if len(labels) > max_fields:
+        raise ValueError(f"Too many labels: {len(labels)} (max {max_fields})")
+
+    validated: dict = {}
+    for key, value in labels.items():
+        # Key validation
+        if not isinstance(key, str):
+            raise ValueError(f"Label key must be a string, got {type(key).__name__}")
+        if not key:
+            raise ValueError("Label key must not be empty")
+        if len(key) > max_key_len:
+            raise ValueError(
+                f"Label key '{key[:32]}...' too long: {len(key)} chars "
+                f"(max {max_key_len})"
+            )
+        if not _LABEL_KEY_PATTERN.match(key):
+            raise ValueError(
+                f"Label key '{key}' is invalid. Keys must be alphanumeric "
+                "with underscores, starting with a letter or underscore."
+            )
+        if key in _RESERVED_LABEL_KEYS:
+            raise ValueError(f"Label key '{key}' is reserved and cannot be used.")
+
+        # Value validation
+        if isinstance(value, list):
+            # list[str] is allowed
+            if not all(isinstance(v, str) for v in value):
+                raise ValueError(f"Label '{key}' list values must all be strings")
+            for v in value:
+                if len(v) > max_val_len:
+                    raise ValueError(
+                        f"Label '{key}' list value too long: {len(v)} chars "
+                        f"(max {max_val_len})"
+                    )
+            validated[key] = value
+        elif isinstance(value, _LABEL_VALUE_TYPES):
+            if isinstance(value, str) and len(value) > max_val_len:
+                raise ValueError(
+                    f"Label '{key}' value too long: {len(value)} chars "
+                    f"(max {max_val_len})"
+                )
+            validated[key] = value
+        else:
+            raise ValueError(
+                f"Label '{key}' has unsupported value type "
+                f"{type(value).__name__}. Allowed: str, int, float, bool, "
+                "list[str]."
+            )
+
+    return validated
 
 
 def _resolve_today(session_timezone: str | None) -> str:
@@ -281,6 +389,7 @@ class MemoryService:
         ttl_days: int | None = None,
         event_date: str | None = None,
         session_timezone: str | None = None,
+        labels: dict[str, Any] | None = None,
     ) -> dict:
         """Store a fast memory with metadata.
 
@@ -349,6 +458,11 @@ class MemoryService:
                 operation="add_memory",
             )
 
+        # Validate labels if provided
+        validated_labels: dict[str, Any] | None = None
+        if labels is not None:
+            validated_labels = _validate_labels(labels, self._config.memory)
+
         # Parse and normalize event_date to UTC ISO 8601
         # Timezone priority: explicit tz in string > session header > config > server local
         normalized_event_date: str | None = None
@@ -381,6 +495,7 @@ class MemoryService:
                 ttl_days=ttl_days,
                 event_date=normalized_event_date,
                 session_timezone=session_timezone,
+                labels=validated_labels,
             )
         else:
             result = self._add_direct(
@@ -394,6 +509,7 @@ class MemoryService:
                 role=role,
                 ttl_days=ttl_days,
                 event_date=normalized_event_date,
+                labels=validated_labels,
             )
 
         # Invalidate caches — new memory may affect core memories or categories
@@ -412,6 +528,7 @@ class MemoryService:
         session_id: str | None = None,
         session_timezone: str | None = None,
         context: str | None = None,
+        labels: dict[str, Any] | None = None,
     ) -> dict:
         """Process conversation content for memory extraction.
 
@@ -455,6 +572,11 @@ class MemoryService:
         if role == "assistant" and not agent_id:
             raise ValueError("agent_id is required when role='assistant'")
 
+        # Validate labels if provided
+        validated_labels: dict[str, Any] | None = None
+        if labels is not None:
+            validated_labels = _validate_labels(labels, self._config.memory)
+
         # Cap at model context budget (keep most recent content)
         max_input = self._config.memory.max_input_length
         if len(content) > max_input:
@@ -473,6 +595,7 @@ class MemoryService:
                 session_id=session_id,
                 session_timezone=session_timezone,
                 context=context,
+                labels=validated_labels,
             )
 
         # Invalidate caches
@@ -505,6 +628,7 @@ class MemoryService:
         session_id: str | None,
         session_timezone: str | None,
         context: str | None,
+        labels: dict[str, Any] | None = None,
     ) -> dict:
         """Two-stage remember pipeline: extract then dedup.
 
@@ -566,6 +690,7 @@ class MemoryService:
             user_id=user_id,
             agent_id=agent_id,
             role=role,
+            labels=labels,
         )
 
         # 4. Update session context
@@ -688,6 +813,7 @@ class MemoryService:
         user_id: str,
         agent_id: str | None,
         role: str | None,
+        labels: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Stage 2: Dedup extracted facts against stored memories and store.
 
@@ -829,6 +955,12 @@ class MemoryService:
                 role if role is not None else (action.get("role") or "user")
             )
 
+            # Pass labels through explicit_fields so they are inherited
+            # by all extracted facts (labels bypass LLM entirely)
+            remember_explicit: dict[str, Any] = {}
+            if labels:
+                remember_explicit["labels"] = labels
+
             try:
                 result_entry = self._execute_action(
                     action,
@@ -836,7 +968,7 @@ class MemoryService:
                     agent_id=agent_id,
                     role=effective_role,
                     ttl_days=None,
-                    explicit_fields={},
+                    explicit_fields=remember_explicit,
                     vector_map=vector_map,
                     event_date=None,
                 )
@@ -1019,6 +1151,7 @@ class MemoryService:
         artifact_threshold: int | None = None,
         session_timezone: str | None = None,
         context: str | None = None,
+        labels: dict[str, Any] | None = None,
     ) -> dict:
         """Add memory with LLM-driven extraction, classification, and dedup.
 
@@ -1094,6 +1227,8 @@ class MemoryService:
             explicit_fields["importance"] = importance
         if pinned is not None:
             explicit_fields["pinned"] = pinned
+        if labels is not None:
+            explicit_fields["labels"] = labels
 
         max_len = self._config.memory.max_memory_length
         messages, json_schema, id_mapping = build_extraction_prompt(
@@ -1404,6 +1539,10 @@ class MemoryService:
             }
             if effective_event_date is not None:
                 metadata["event_date"] = effective_event_date
+            # Attach labels from caller (bypasses LLM — client-provided only)
+            caller_labels = explicit_fields.get("labels")
+            if caller_labels:
+                metadata["labels"] = caller_labels
             ttl_meta = build_expiry_metadata(ttl_days, mem_type, self._config.memory)
             metadata.update(ttl_meta)
 
@@ -1470,6 +1609,16 @@ class MemoryService:
 
             # Preserve artifacts from existing memory
             metadata_update["artifacts"] = existing_meta.get("artifacts", [])
+            # Merge labels: caller-provided labels win on key conflicts,
+            # existing labels preserved for keys not in caller's dict
+            existing_labels = existing_meta.get("labels", {})
+            caller_labels = explicit_fields.get("labels")
+            if caller_labels is not None:
+                merged_labels = {**existing_labels, **caller_labels}
+                if merged_labels:
+                    metadata_update["labels"] = merged_labels
+            elif existing_labels:
+                metadata_update["labels"] = existing_labels
             metadata_update["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
 
             # Update content + re-embed via full point replacement
@@ -1602,6 +1751,7 @@ class MemoryService:
         role: str,
         ttl_days: int | None,
         event_date: str | None = None,
+        labels: dict[str, Any] | None = None,
     ) -> dict:
         """Add memory directly without LLM inference (infer=False path).
 
@@ -1687,6 +1837,8 @@ class MemoryService:
         }
         if event_date is not None:
             metadata["event_date"] = event_date
+        if labels:
+            metadata["labels"] = labels
 
         # Add TTL metadata
         ttl_meta = build_expiry_metadata(ttl_days, memory_type, self._config.memory)
@@ -1814,6 +1966,7 @@ class MemoryService:
         date_start: str | None = None,
         date_end: str | None = None,
         track_access: bool = True,
+        labels: dict[str, Any] | None = None,
     ) -> list[dict]:
         """Search memories with semantic similarity, filtered and reranked.
 
@@ -1870,6 +2023,7 @@ class MemoryService:
             query_sparse_vector=query_sparse_vector,
             date_start=date_start,
             date_end=date_end,
+            labels_filter=labels,
         )
 
         memories = result.get("results", [])
@@ -1918,6 +2072,7 @@ class MemoryService:
         date_start: str | None = None,
         date_end: str | None = None,
         track_access: bool = True,
+        labels: dict[str, Any] | None = None,
     ) -> list[dict]:
         """Search both agent-scoped and shared memories, merge and deduplicate.
 
@@ -1959,6 +2114,7 @@ class MemoryService:
             "query_vector": query_vector,
             "date_start": date_start,
             "date_end": date_end,
+            "labels_filter": labels,
         }
 
         # Generate sparse query vector for hybrid search (shared across
@@ -2048,6 +2204,7 @@ class MemoryService:
         include_decayed: bool,
         date_start: str | None,
         date_end: str | None,
+        labels: dict[str, Any] | None = None,
     ) -> list[dict]:
         """Execute a single search query for find_memories (parallel-safe).
 
@@ -2070,6 +2227,7 @@ class MemoryService:
                 date_start=date_start,
                 date_end=date_end,
                 track_access=False,
+                labels=labels,
             )
         return self.search_memories(
             query,
@@ -2085,6 +2243,7 @@ class MemoryService:
             date_start=date_start,
             date_end=date_end,
             track_access=False,
+            labels=labels,
         )
 
     def find_memories(
@@ -2101,6 +2260,7 @@ class MemoryService:
         include_decayed: bool = False,
         session_timezone: str | None = None,
         context: str | None = None,
+        labels: dict[str, Any] | None = None,
     ) -> dict:
         """Find memories relevant to a complex question using AI-powered search.
 
@@ -2249,6 +2409,7 @@ class MemoryService:
                     include_decayed=include_decayed,
                     date_start=date_start,
                     date_end=date_end,
+                    labels=labels,
                 )
                 for q, qvec, svec in zip(valid_queries, query_vectors, sparse_vectors)
             ]
@@ -2999,6 +3160,7 @@ class MemoryService:
         limit: int = 50,
         include_decayed: bool = False,
         sort: str | None = None,
+        labels: dict[str, Any] | None = None,
     ) -> list[dict]:
         """List memories with optional filtering and sorting.
 
@@ -3032,6 +3194,7 @@ class MemoryService:
             filters=filters if filters else None,
             limit=limit * 2,  # Fetch extra for post-filtering
             order_by=order_by,
+            labels_filter=labels,
         )
 
         memories = result.get("results", [])
@@ -3061,6 +3224,7 @@ class MemoryService:
         limit: int = 50,
         include_decayed: bool = False,
         sort: str | None = None,
+        labels: dict[str, Any] | None = None,
     ) -> list[dict]:
         """List both agent-scoped and shared memories, merge and deduplicate.
 
@@ -3093,6 +3257,7 @@ class MemoryService:
             filters=filters if filters else None,
             limit=fetch_limit,
             order_by=order_by,
+            labels_filter=labels,
         )
         # Fetch 2: shared memories only (no agent_id).
         # shared_only=True ensures we only get memories without any agent_id,
@@ -3104,6 +3269,7 @@ class MemoryService:
             filters=filters if filters else None,
             limit=fetch_limit,
             order_by=order_by,
+            labels_filter=labels,
         )
 
         # Merge and deduplicate by memory ID
@@ -3190,6 +3356,7 @@ class MemoryService:
         ttl_days: int | None = ...,  # type: ignore[assignment]
         event_date: str | None = ...,  # type: ignore[assignment]
         agent_id: str | None = ...,  # type: ignore[assignment]
+        labels: dict[str, Any] | None = None,
     ) -> dict:
         """Update a memory's content and/or metadata.
 
@@ -3218,6 +3385,13 @@ class MemoryService:
             metadata_updates["importance"] = validate_importance(importance)
         if pinned is not None:
             metadata_updates["pinned"] = pinned
+        if labels is not None:
+            if labels:
+                metadata_updates["labels"] = _validate_labels(
+                    labels, self._config.memory
+                )
+            else:
+                metadata_updates["labels"] = {}
 
         # agent_id update: set or clear
         if agent_id is not ...:

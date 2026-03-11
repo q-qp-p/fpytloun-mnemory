@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import sys
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -154,7 +155,9 @@ def _run_migrations(service: MemoryService) -> None:
     # the collection (e.g. to add sparse vector config), the original
     # payload indexes were lost. _ensure_indexes() is idempotent.
     try:
-        service.vector._ensure_indexes()
+        service.vector._ensure_indexes(
+            labels_indexes=service._config.memory.labels_indexes or None,
+        )
     except Exception:
         logger.warning(
             "Failed to ensure payload indexes after migration",
@@ -453,6 +456,7 @@ def add_memory(
     role: str = "user",
     ttl_days: int | None = None,
     event_date: str | None = None,
+    labels: dict[str, Any] | None = None,
 ) -> str:
     """Store a memory about the user or agent.
 
@@ -523,6 +527,10 @@ def add_memory(
                     today). Also stored as metadata for temporal queries.
                     Timezone priority: explicit offset in the string >
                     X-Timezone header > DEFAULT_TIMEZONE env > server local.
+        labels: Optional key-value labels for client-specific metadata
+                (e.g., project, topic, conversation_id). Keys must be
+                alphanumeric with underscores. Values: str, int, float,
+                bool, or list[str]. Max 20 labels per memory.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -542,6 +550,7 @@ def add_memory(
             role=role,
             ttl_days=ttl_days,
             event_date=event_date,
+            labels=labels,
             session_timezone=_get_session_timezone(),
         )
         return json.dumps(result, default=str)
@@ -631,6 +640,7 @@ def add_memories(
 
         try:
             item_role = mem.get("role", role)
+            item_labels = mem.get("labels")
             result = service.add_memory(
                 mem["content"],
                 user_id=uid,
@@ -643,6 +653,7 @@ def add_memories(
                 role=item_role,
                 ttl_days=mem.get("ttl_days"),
                 event_date=mem.get("event_date"),
+                labels=item_labels,
                 session_timezone=_get_session_timezone(),
             )
             # Check for error returned by add_memory (e.g., content too long)
@@ -689,6 +700,7 @@ def search_memories(
     include_decayed: bool = False,
     date_start: str | None = None,
     date_end: str | None = None,
+    labels: dict[str, Any] | None = None,
 ) -> str:
     """Search memories by semantic similarity with filtering and importance reranking.
 
@@ -721,6 +733,8 @@ def search_memories(
         date_end: Filter by date range end (YYYY-MM-DD). Matches memories
                   with event_date <= date_end, or created_at <= date_end
                   when event_date is not set.
+        labels: Filter by label key-value pairs. All specified labels must
+                match (AND logic). List values use any-of matching.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -743,6 +757,7 @@ def search_memories(
                 include_decayed=include_decayed,
                 date_start=date_start,
                 date_end=date_end,
+                labels=labels,
             )
         else:
             # No session agent — use param for backward compat
@@ -758,6 +773,7 @@ def search_memories(
                 include_decayed=include_decayed,
                 date_start=date_start,
                 date_end=date_end,
+                labels=labels,
             )
         return _format_memories(results)
     except ValueError as e:
@@ -783,6 +799,7 @@ def find_memories(
     agent_id: str | None = None,
     include_decayed: bool = False,
     context: str | None = None,
+    labels: dict[str, Any] | None = None,
 ) -> str:
     """Find memories relevant to a complex question using AI-powered search.
 
@@ -825,6 +842,8 @@ def find_memories(
         context: Optional context hint for query generation (e.g., current
                  working directory, active project). Generates additional
                  relevant queries without filtering exclusively to this context.
+        labels: Filter by label key-value pairs. All specified labels must
+                match (AND logic). List values use any-of matching.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -847,6 +866,7 @@ def find_memories(
                 include_decayed=include_decayed,
                 session_timezone=session_tz,
                 context=context,
+                labels=labels,
             )
         else:
             aid = _resolve_agent_id(agent_id)
@@ -861,6 +881,7 @@ def find_memories(
                 include_decayed=include_decayed,
                 session_timezone=session_tz,
                 context=context,
+                labels=labels,
             )
         memories = result.get("results", [])
         queries = result.get("queries", [])
@@ -1113,6 +1134,7 @@ def list_memories(
     limit: int = 50,
     agent_id: str | None = None,
     include_decayed: bool = False,
+    labels: dict[str, Any] | None = None,
 ) -> str:
     """List all stored memories for a user, optionally filtered.
 
@@ -1136,6 +1158,8 @@ def list_memories(
                   X-Agent-Id header.
         include_decayed: If true, include expired/decayed memories in results.
                         Useful for browsing historical memories. Default false.
+        labels: Filter by label key-value pairs. All specified labels must
+                match (AND logic). List values use any-of matching.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1155,6 +1179,7 @@ def list_memories(
                 role=role,
                 limit=limit,
                 include_decayed=include_decayed,
+                labels=labels,
             )
         else:
             # No session agent — use param for backward compat
@@ -1167,6 +1192,7 @@ def list_memories(
                 role=role,
                 limit=limit,
                 include_decayed=include_decayed,
+                labels=labels,
             )
         return _format_memories(results)
     except ValueError as e:
@@ -1191,6 +1217,7 @@ def update_memory(
     pinned: bool | None = None,
     ttl_days: int | None = None,
     event_date: str | None = None,
+    labels: dict[str, Any] | None = None,
 ) -> str:
     """Update an existing memory's content or metadata.
 
@@ -1236,6 +1263,8 @@ def update_memory(
             kwargs["ttl_days"] = ttl_days
         if event_date is not None:
             kwargs["event_date"] = event_date
+        if labels is not None:
+            kwargs["labels"] = labels
 
         result = _get_service().update_memory(memory_id, **kwargs)
         return json.dumps(result, default=str)
@@ -1757,6 +1786,10 @@ def _format_memories(memories: list[dict]) -> str:
         # Event date (when the event occurred)
         if metadata.get("event_date"):
             entry["event_date"] = metadata["event_date"]
+
+        # Labels
+        if metadata.get("labels"):
+            entry["labels"] = metadata["labels"]
 
         # TTL state
         if metadata.get("expires_at"):

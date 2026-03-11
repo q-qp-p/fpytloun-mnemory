@@ -352,6 +352,11 @@
               <label for="search-artifacts" class="text-sm text-secondary cursor-pointer">Has artifacts</label>
             </div>
             <div>
+              <label class="block text-xs text-muted mb-1">Labels (JSON)</label>
+              <input type="text" x-model="filters.labels_json" class="input text-sm"
+                     placeholder='{"project": "myapp"}'>
+            </div>
+            <div>
               <label class="block text-xs text-secondary mb-1">Sort</label>
               <select x-model="sortBy" class="select text-sm">
                 <option value="relevance">Relevance</option>
@@ -402,6 +407,9 @@
                     <template x-for="cat in (result.metadata?.categories || [])" :key="cat">
                       <span class="badge badge-category" x-text="'#' + cat"></span>
                     </template>
+                    <template x-for="[k, v] in Object.entries(result.metadata?.labels || {})" :key="'lbl-'+k">
+                      <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                    </template>
                     <!-- Right group: agent, pinned, assistant, artifacts -->
                     <span class="flex-1"></span>
                     <span x-show="result.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
@@ -432,6 +440,7 @@
                   <div><span class="text-muted">TTL:</span> <span class="text-secondary" x-text="result.metadata?.ttl_days ? result.metadata.ttl_days + ' days' : 'permanent'"></span></div>
                   <div><span class="text-muted">Expires:</span> <span class="text-secondary" x-text="formatDate(result.metadata?.expires_at) || '—'"></span></div>
                   <div><span class="text-muted">Accessed:</span> <span class="text-secondary" x-text="(result.metadata?.access_count ?? 0) + ' times'"></span></div>
+                  <div class="col-span-2"><span class="text-muted">Labels:</span> <span class="text-secondary font-mono text-xs" x-text="JSON.stringify(result.metadata?.labels || {})"></span></div>
                 </div>
                 <div class="flex gap-2 flex-wrap">
                   <button @click.stop="copyId(result.id)" class="btn-ghost text-xs">Copy ID</button>
@@ -549,6 +558,11 @@
                    class="rounded border-brand-border bg-brand-elevated text-brand-accent focus:ring-brand-accent/30">
             <label for="mem-artifacts" class="text-sm text-secondary cursor-pointer">Has artifacts</label>
           </div>
+          <div>
+            <label class="block text-xs text-muted mb-1">Labels (JSON)</label>
+            <input type="text" x-model="filters.labels_json" @change="applyFilters()" class="input text-sm"
+                   placeholder='{"project": "myapp"}'>
+          </div>
           <div class="ml-auto flex items-center gap-3">
             <span class="text-sm text-muted">Showing <span class="text-secondary" x-text="sortedMemories.length"></span> of <span class="text-secondary" x-text="totalFiltered"></span><span x-show="hasMoreOnServer">+</span> memories</span>
             <button @click="loadMemories(false)" class="btn-secondary text-sm" :disabled="loading">
@@ -612,6 +626,9 @@
                     <template x-for="cat in (mem.metadata?.categories || [])" :key="cat">
                       <span class="badge badge-category" x-text="'#' + cat"></span>
                     </template>
+                    <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
+                      <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                    </template>
                     <!-- Right group: agent, pinned, assistant, artifacts -->
                     <span class="flex-1"></span>
                     <span x-show="mem.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
@@ -642,6 +659,7 @@
                   <div><span class="text-muted">TTL:</span> <span class="text-secondary" x-text="mem.metadata?.ttl_days ? mem.metadata.ttl_days + ' days' : 'permanent'"></span></div>
                   <div><span class="text-muted">Accessed:</span> <span class="text-secondary" x-text="(mem.metadata?.access_count ?? 0) + ' times'"></span></div>
                   <div><span class="text-muted">Importance:</span> <span class="text-secondary" x-text="mem.metadata?.importance"></span></div>
+                  <div class="col-span-2"><span class="text-muted">Labels:</span> <span class="text-secondary font-mono text-xs" x-text="JSON.stringify(mem.metadata?.labels || {})"></span></div>
                 </div>
                 <div class="flex gap-2 flex-wrap">
                   <button @click.stop="copyId(mem.id)" class="btn-ghost text-xs">Copy ID</button>
@@ -764,6 +782,12 @@
                   </div>
                 </div>
 
+                <div>
+                  <label class="block text-sm text-secondary mb-1">Labels <span class="text-xs text-muted">(JSON, e.g. {"project": "myapp"})</span></label>
+                  <input type="text" x-model="addModal.form.labels" class="input text-sm"
+                         placeholder='{"project": "myapp", "topic": "auth"}'>
+                </div>
+
                 <div class="grid grid-cols-2 gap-4">
                   <div>
                     <label class="block text-sm text-secondary mb-1">Role</label>
@@ -869,6 +893,9 @@
                         <template x-for="cat in (mem.metadata?.categories || [])" :key="cat">
                           <span class="badge badge-category" x-text="'#' + cat"></span>
                         </template>
+                        <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
+                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                        </template>
                         <span class="flex-1"></span>
                         <span x-show="mem.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
                           <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
@@ -889,6 +916,7 @@
                       <div><span class="text-muted">Agent:</span> <span class="text-secondary" x-text="mem.metadata?.agent_id || '—'"></span></div>
                       <div><span class="text-muted">Importance:</span> <span class="text-secondary" x-text="mem.metadata?.importance"></span></div>
                       <div><span class="text-muted">TTL:</span> <span class="text-secondary" x-text="mem.metadata?.ttl_days ? mem.metadata.ttl_days + ' days' : 'permanent'"></span></div>
+                      <div class="col-span-2"><span class="text-muted">Labels:</span> <span class="text-secondary font-mono text-xs" x-text="JSON.stringify(mem.metadata?.labels || {})"></span></div>
                     </div>
                     <div class="flex gap-2 flex-wrap">
                       <button @click.stop="copyId(mem.id)" class="btn-ghost text-xs">Copy ID</button>
@@ -934,6 +962,9 @@
                         <template x-for="cat in (mem.metadata?.categories || [])" :key="cat">
                           <span class="badge badge-category" x-text="'#' + cat"></span>
                         </template>
+                        <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
+                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                        </template>
                         <span class="flex-1"></span>
                         <span x-show="mem.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
                           <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
@@ -954,6 +985,7 @@
                       <div><span class="text-muted">Agent:</span> <span class="text-secondary" x-text="mem.metadata?.agent_id || '—'"></span></div>
                       <div><span class="text-muted">Importance:</span> <span class="text-secondary" x-text="mem.metadata?.importance"></span></div>
                       <div><span class="text-muted">TTL:</span> <span class="text-secondary" x-text="mem.metadata?.ttl_days ? mem.metadata.ttl_days + ' days' : 'permanent'"></span></div>
+                      <div class="col-span-2"><span class="text-muted">Labels:</span> <span class="text-secondary font-mono text-xs" x-text="JSON.stringify(mem.metadata?.labels || {})"></span></div>
                     </div>
                     <div class="flex gap-2 flex-wrap">
                       <button @click.stop="copyId(mem.id)" class="btn-ghost text-xs">Copy ID</button>
@@ -1000,6 +1032,9 @@
                         <template x-for="cat in (mem.metadata?.categories || [])" :key="cat">
                           <span class="badge badge-category" x-text="'#' + cat"></span>
                         </template>
+                        <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
+                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                        </template>
                         <span class="flex-1"></span>
                         <span x-show="mem.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
                           <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
@@ -1020,6 +1055,7 @@
                       <div><span class="text-muted">Agent:</span> <span class="text-secondary" x-text="mem.metadata?.agent_id || '—'"></span></div>
                       <div><span class="text-muted">Importance:</span> <span class="text-secondary" x-text="mem.metadata?.importance"></span></div>
                       <div><span class="text-muted">TTL:</span> <span class="text-secondary" x-text="mem.metadata?.ttl_days ? mem.metadata.ttl_days + ' days' : 'permanent'"></span></div>
+                      <div class="col-span-2"><span class="text-muted">Labels:</span> <span class="text-secondary font-mono text-xs" x-text="JSON.stringify(mem.metadata?.labels || {})"></span></div>
                     </div>
                     <div class="flex gap-2 flex-wrap">
                       <button @click.stop="copyId(mem.id)" class="btn-ghost text-xs">Copy ID</button>
@@ -1066,6 +1102,9 @@
                         <template x-for="cat in (mem.metadata?.categories || [])" :key="cat">
                           <span class="badge badge-category" x-text="'#' + cat"></span>
                         </template>
+                        <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
+                          <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                        </template>
                         <span class="flex-1"></span>
                         <span x-show="mem.metadata?.agent_id" class="badge bg-indigo-500/15 text-indigo-400 inline-flex items-center gap-1">
                           <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
@@ -1085,6 +1124,7 @@
                       <div><span class="text-muted">TTL:</span> <span class="text-secondary" x-text="mem.metadata?.ttl_days ? mem.metadata.ttl_days + ' days' : 'permanent'"></span></div>
                       <div><span class="text-muted">Event Date:</span> <span class="text-secondary" x-text="mem.metadata?.event_date || '—'"></span></div>
                       <div><span class="text-muted">Accessed:</span> <span class="text-secondary" x-text="(mem.metadata?.access_count ?? 0) + ' times'"></span></div>
+                      <div class="col-span-2"><span class="text-muted">Labels:</span> <span class="text-secondary font-mono text-xs" x-text="JSON.stringify(mem.metadata?.labels || {})"></span></div>
                     </div>
                     <div class="flex gap-2 flex-wrap">
                       <button @click.stop="copyId(mem.id)" class="btn-ghost text-xs">Copy ID</button>
@@ -1504,6 +1544,9 @@
                                     <template x-for="cat in (mem.metadata?.categories || [])" :key="cat">
                                       <span class="badge badge-category" x-text="'#' + cat"></span>
                                     </template>
+                                    <template x-for="[k, v] in Object.entries(mem.metadata?.labels || {})" :key="'lbl-'+k">
+                                      <span class="badge bg-teal-500/15 text-teal-400 text-xs" x-text="k + '=' + v"></span>
+                                    </template>
                                     <!-- Right: agent, artifacts, assistant, pinned -->
                                     <span class="flex-1"></span>
                                      <template x-if="mem.agent_id || mem.metadata?.agent_id">
@@ -1552,6 +1595,7 @@
                                   <div><span class="text-muted">TTL:</span> <span class="text-secondary" x-text="mem.metadata?.ttl_days ? mem.metadata.ttl_days + ' days' : 'permanent'"></span></div>
                                   <div><span class="text-muted">Accessed:</span> <span class="text-secondary" x-text="(mem.metadata?.access_count ?? 0) + ' times'"></span></div>
                                   <div><span class="text-muted">Importance:</span> <span class="text-secondary" x-text="mem.metadata?.importance || '\u2014'"></span></div>
+                                  <div class="col-span-2"><span class="text-muted">Labels:</span> <span class="text-secondary font-mono text-xs" x-text="JSON.stringify(mem.metadata?.labels || {})"></span></div>
                                 </div>
                               </div>
                             </div>
@@ -1755,6 +1799,11 @@
           <label class="block text-sm text-secondary mb-1">Categories <span class="text-xs text-muted">(comma-separated)</span></label>
           <input type="text" x-model="$store.memoryEdit.form.categories" class="input text-sm"
                  placeholder="personal, work, technical">
+        </div>
+        <div>
+          <label class="block text-sm text-secondary mb-1">Labels <span class="text-xs text-muted">(JSON, e.g. {"project": "myapp"})</span></label>
+          <input type="text" x-model="$store.memoryEdit.form.labels" class="input text-sm"
+                 placeholder='{"project": "myapp", "topic": "auth"}'>
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div class="flex items-center gap-2">

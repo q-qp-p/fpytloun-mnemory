@@ -122,9 +122,11 @@ class VectorStore:
             logger.debug("Collection '%s' already exists", name)
 
         # Ensure payload indexes exist (idempotent — safe to run every startup)
-        self._ensure_indexes()
+        self._ensure_indexes(
+            labels_indexes=self._config.memory.labels_indexes or None,
+        )
 
-    def _ensure_indexes(self) -> None:
+    def _ensure_indexes(self, labels_indexes: list[str] | None = None) -> None:
         """Create payload indexes for efficient filtering and ordering.
 
         Runs on every startup (not just collection creation) to ensure
@@ -134,6 +136,11 @@ class VectorStore:
 
         Only applies to remote Qdrant; local embedded mode doesn't
         need explicit indexes.
+
+        Args:
+            labels_indexes: Optional list of label field names to create
+                keyword indexes for. Each name gets indexed as
+                ``labels.<field_name>`` for efficient label filtering.
         """
         if not self._config.vector.is_remote:
             return
@@ -169,6 +176,16 @@ class VectorStore:
             )
         except Exception:
             pass  # Index may already exist
+        # Keyword indexes for configured label fields
+        for field_name in labels_indexes or []:
+            try:
+                self._client.create_payload_index(
+                    collection_name=name,
+                    field_name=f"labels.{field_name}",
+                    field_schema="keyword",
+                )
+            except Exception:
+                pass  # Index may already exist
 
     @property
     def collection_name(self) -> str:
@@ -299,6 +316,7 @@ class VectorStore:
         shared_only: bool = False,
         filters: dict | None = None,
         categories: list[str] | None = None,
+        labels_filter: dict | None = None,
         limit: int = 100,
         exclude_expired: bool = False,
         include_decayed: bool = False,
@@ -391,6 +409,18 @@ class VectorStore:
             must_conditions.append(
                 FieldCondition(key="categories", match=MatchAny(any=categories))
             )
+        if labels_filter:
+            for key, value in labels_filter.items():
+                if isinstance(value, list):
+                    must_conditions.append(
+                        FieldCondition(key=f"labels.{key}", match=MatchAny(any=value))
+                    )
+                else:
+                    must_conditions.append(
+                        FieldCondition(
+                            key=f"labels.{key}", match=MatchValue(value=value)
+                        )
+                    )
         if exclude_expired and not include_decayed:
             now = datetime.now(timezone.utc)
             ttl_filter = Filter(
@@ -604,6 +634,7 @@ class VectorStore:
         agent_id: str | None = None,
         shared_only: bool = False,
         filters: dict | None = None,
+        labels_filter: dict | None = None,
         limit: int = 100,
         order_by: OrderBy | None = None,
     ) -> dict:
@@ -646,6 +677,18 @@ class VectorStore:
                 else:
                     must_conditions.append(
                         FieldCondition(key=key, match=MatchValue(value=value))
+                    )
+        if labels_filter:
+            for key, value in labels_filter.items():
+                if isinstance(value, list):
+                    must_conditions.append(
+                        FieldCondition(key=f"labels.{key}", match=MatchAny(any=value))
+                    )
+                else:
+                    must_conditions.append(
+                        FieldCondition(
+                            key=f"labels.{key}", match=MatchValue(value=value)
+                        )
                     )
 
         scroll_kwargs: dict[str, Any] = {

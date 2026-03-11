@@ -55,6 +55,7 @@ def _search_with_scope(
     service: object,
     query: str,
     ctx: SessionContext,
+    labels: dict | None = None,
 ) -> list[dict]:
     """Search memories using dual-scope when agent_id is set.
 
@@ -67,11 +68,13 @@ def _search_with_scope(
             query=query,
             user_id=ctx.user_id,
             session_agent_id=ctx.agent_id,
+            labels=labels,
         )
     return service.search_memories(
         query=query,
         user_id=ctx.user_id,
         agent_id=None,
+        labels=labels,
     )
 
 
@@ -107,6 +110,7 @@ def recall(
     session_store = _get_session_store()
 
     query = _extract_query(req)
+    labels = req.labels
 
     # Determine if this is a first call or subsequent
     session = None
@@ -191,6 +195,7 @@ def recall(
                     limit=max_results,
                     session_timezone=ctx.timezone,
                     context=req.context,
+                    labels=labels,
                 )
                 search_results = result.get("results", [])
             except Exception:
@@ -200,13 +205,15 @@ def recall(
                 )
                 # Fallback to simple search
                 try:
-                    search_results = _search_with_scope(service, query, ctx)
+                    search_results = _search_with_scope(
+                        service, query, ctx, labels=labels
+                    )
                 except Exception:
                     logger.warning("search_memories also failed", exc_info=True)
         else:
             # Search mode: fast vector search, no LLM
             try:
-                search_results = _search_with_scope(service, query, ctx)
+                search_results = _search_with_scope(service, query, ctx, labels=labels)
             except Exception:
                 logger.warning("search_memories failed", exc_info=True)
 

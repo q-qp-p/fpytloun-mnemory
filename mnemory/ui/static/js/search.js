@@ -41,6 +41,7 @@ function searchTab() {
       role: '',
       limit: 10,
       include_decayed: false,
+      labels_json: '',
     },
 
     /** Whether the filter panel is visible */
@@ -139,6 +140,13 @@ function searchTab() {
         if (this.filters.include_decayed || this.filterDecayedOnly) {
           filters.include_decayed = true;
         }
+        if (this.filters.labels_json) {
+          try {
+            filters.labels = JSON.parse(this.filters.labels_json);
+          } catch (e) {
+            // Invalid JSON — skip labels filter
+          }
+        }
 
         let response;
         if (this.mode === 'ask') {
@@ -190,6 +198,7 @@ function searchTab() {
           if (payload.pinned !== undefined) r.metadata.pinned = payload.pinned;
           if (payload.ttl_days !== undefined) r.metadata.ttl_days = payload.ttl_days;
           if (payload.agent_id !== undefined) r.metadata.agent_id = payload.agent_id || null;
+          if ('labels' in payload) r.metadata.labels = payload.labels;
         }
       });
     },

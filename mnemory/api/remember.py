@@ -115,6 +115,7 @@ def _process_remember(
     session_id: str | None,
     timezone: str | None,
     context: str | None = None,
+    labels: dict | None = None,
 ) -> None:
     """Background task: extract and store memories from conversation content.
 
@@ -130,6 +131,7 @@ def _process_remember(
             session_id=session_id,
             session_timezone=timezone,
             context=context,
+            labels=labels,
         )
 
         # Update session: prolong TTL and track stored memory IDs
@@ -212,6 +214,7 @@ def remember(
         session_id=req.session_id,
         timezone=ctx.timezone,
         context=req.context,
+        labels=req.labels,
     )
 
     return RememberResponse(accepted=True)

@@ -6,7 +6,7 @@ Cursor, etc.) consume as native tools.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -48,6 +48,9 @@ class AddMemoryRequest(BaseModel):
     event_date: str | None = Field(
         None, description="ISO 8601 datetime for when the event occurred"
     )
+    labels: dict[str, Any] | None = Field(
+        None, description="Key-value labels for client-specific metadata"
+    )
 
 
 class BatchMemoryItem(BaseModel):
@@ -62,6 +65,7 @@ class BatchMemoryItem(BaseModel):
     role: Literal["user", "assistant"] = "user"
     ttl_days: int | None = None
     event_date: str | None = None
+    labels: dict[str, Any] | None = None
 
 
 class AddMemoriesBatchRequest(BaseModel):
@@ -129,6 +133,9 @@ class SearchMemoriesRequest(BaseModel):
             "or created_at when event_date is not set."
         ),
     )
+    labels: dict[str, Any] | None = Field(
+        None, description="Filter by label key-value pairs (AND logic)"
+    )
 
 
 class FindMemoriesRequest(BaseModel):
@@ -142,6 +149,9 @@ class FindMemoriesRequest(BaseModel):
     role: str | None = Field(None, description="Filter by role")
     limit: int = Field(10, ge=1, le=100, description="Max results to return")
     include_decayed: bool = Field(False, description="Include expired/decayed memories")
+    labels: dict[str, Any] | None = Field(
+        None, description="Filter by label key-value pairs (AND logic)"
+    )
     context: str | None = Field(
         None,
         max_length=10_000,
@@ -238,6 +248,10 @@ class UpdateMemoryRequest(BaseModel):
             "New event date (ISO 8601, e.g., '2023-05-08'). Pass null to clear."
         ),
     )
+    labels: dict[str, Any] | None = Field(
+        None,
+        description="Updated labels (empty dict clears, omit to keep existing)",
+    )
     agent_id: str | None = Field(
         None,
         description=(
@@ -271,6 +285,9 @@ class ListMemoriesRequest(BaseModel):
     role: str | None = Field(None, description="Filter by role")
     limit: int = Field(50, ge=1, le=500, description="Max results")
     include_decayed: bool = Field(False, description="Include expired memories")
+    labels: dict[str, Any] | None = Field(
+        None, description="Filter by label key-value pairs (AND logic)"
+    )
 
 
 # ── Artifacts ─────────────────────────────────────────────────────────
@@ -413,6 +430,9 @@ class RecallRequest(BaseModel):
             "queries — does not filter results exclusively to this context."
         ),
     )
+    labels: dict[str, Any] | None = Field(
+        None, description="Filter search results by label key-value pairs"
+    )
 
 
 class RecallStats(BaseModel):
@@ -463,6 +483,9 @@ class RememberRequest(BaseModel):
             "assistant content. 'assistant': extracts only assistant "
             "facts (requires agent_id via X-Agent-Id header)."
         ),
+    )
+    labels: dict[str, Any] | None = Field(
+        None, description="Labels to attach to all extracted memories"
     )
 
 

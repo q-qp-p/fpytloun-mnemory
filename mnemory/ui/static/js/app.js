@@ -149,6 +149,7 @@ document.addEventListener('alpine:init', () => {
         ttl_days: meta.ttl_days ?? '',
         event_date: meta.event_date ? meta.event_date.slice(0, 10) : '',
         agent_id: meta.agent_id || '',
+        labels: JSON.stringify(meta.labels || {}, null, 0),
       };
       this.open = true;
     },
@@ -190,6 +191,15 @@ document.addEventListener('alpine:init', () => {
       const origAgent = meta.agent_id || '';
       if (form.agent_id !== origAgent) {
         payload.agent_id = form.agent_id || '';  // '' signals "clear" to the API
+      }
+
+      // Labels: compare JSON
+      try {
+        const newLabels = form.labels ? JSON.parse(form.labels) : {};
+        const oldLabels = meta.labels || {};
+        if (JSON.stringify(newLabels) !== JSON.stringify(oldLabels)) payload.labels = newLabels;
+      } catch (e) {
+        // Invalid JSON — skip labels update
       }
 
       if (Object.keys(payload).length === 0) { this.close(); return; }

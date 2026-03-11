@@ -398,6 +398,33 @@ Use project:<name> for project-scoped memories (e.g., project:myapp).
 If no predefined category fits, omit categories rather than making one up.
 Call list_categories to see the full list with descriptions and counts.
 
+## LABELS
+Labels are optional client-provided key-value metadata on memories.
+Use them for structured context like project, topic, or conversation_id.
+
+### Storing
+Pass labels as a dict to add_memory, add_memories, or remember:
+  add_memory(content="...", labels={"project": "myapp", "topic": "auth"})
+Labels are inherited by ALL facts extracted during infer=True.
+Labels bypass LLM extraction — they are stored exactly as provided.
+
+### Filtering
+Pass labels to search_memories, find_memories, or list_memories:
+  search_memories(query="...", labels={"project": "myapp"})
+Multiple labels use AND logic (all must match).
+List values use any-of matching within a single key.
+
+### Updating
+Pass labels to update_memory to set or merge labels:
+  update_memory(memory_id="...", labels={"topic": "new"})
+Pass an empty dict to clear all labels:
+  update_memory(memory_id="...", labels={})
+
+### Constraints
+- Keys: alphanumeric + underscore, starting with letter or underscore
+- Values: str, int, float, bool, or list[str]
+- Max 20 labels per memory (configurable)
+
 ## SESSION IDENTITY
 user_id and agent_id may be pre-configured at the connection level
 (via API key mapping and X-Agent-Id header). When pre-configured:

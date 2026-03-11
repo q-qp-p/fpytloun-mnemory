@@ -468,6 +468,27 @@ class MemoryConfig:
         default_factory=lambda: _env("FSCK_AUTO_MIN_SEVERITY", "medium")
     )
 
+    # Labels: client-provided key-value metadata on memories.
+    # Max number of label keys per memory.
+    labels_max_fields: int = field(
+        default_factory=lambda: _env_int("LABELS_MAX_FIELDS", 20)
+    )
+    # Max length of a label key (alphanumeric + underscore only).
+    labels_max_key_length: int = field(
+        default_factory=lambda: _env_int("LABELS_MAX_KEY_LENGTH", 64)
+    )
+    # Max length of a string label value.
+    labels_max_value_length: int = field(
+        default_factory=lambda: _env_int("LABELS_MAX_VALUE_LENGTH", 1000)
+    )
+    # Comma-separated list of label keys to index in Qdrant for fast filtering.
+    # Example: LABELS_INDEXES=project,topic,conversation_id
+    labels_indexes: list[str] = field(
+        default_factory=lambda: [
+            s.strip() for s in _env("LABELS_INDEXES", "").split(",") if s.strip()
+        ]
+    )
+
 
 @dataclass
 class Config:

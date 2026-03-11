@@ -190,6 +190,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 | `ttl_days` | int\|None | Original TTL setting in days (None = permanent) |
 | `expires_at` | str\|None | ISO 8601 expiration timestamp (None = never expires) |
 | `decayed_at` | str\|None | When memory entered decayed state (None = active) |
+| `labels` | dict\|None | Client-provided key-value metadata (e.g., project, topic, conversation_id). Bypasses LLM extraction. Filterable in search/list queries. |
 | `last_accessed_at` | str\|None | Last time returned in search |
 | `access_count` | int | Number of times accessed in search |
 

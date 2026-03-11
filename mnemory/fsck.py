@@ -1265,6 +1265,7 @@ class FsckService:
                         "importance",
                         "pinned",
                         "role",
+                        "labels",
                     }
                     clean_meta = {
                         k: v
@@ -1361,6 +1362,7 @@ class FsckService:
                         categories=meta.get("categories"),
                         importance=meta.get("importance"),
                         pinned=meta.get("pinned"),
+                        labels=meta.get("labels"),
                         infer=False,
                     )
                 else:
