@@ -709,6 +709,7 @@ class FsckService:
             json_schema=schema,
             temperature=0.1,
             reasoning_effort=self._reasoning_effort,
+            operation="fsck_security",
         )
 
         try:
@@ -917,6 +918,7 @@ class FsckService:
             json_schema=schema,
             temperature=0.1,
             reasoning_effort=self._reasoning_effort,
+            operation="fsck_dedup",
         )
 
         parsed = parse_json_response(response)
@@ -1090,6 +1092,7 @@ class FsckService:
             json_schema=schema,
             temperature=0.1,
             reasoning_effort=self._reasoning_effort,
+            operation="fsck_quality",
         )
 
         parsed = parse_json_response(response)

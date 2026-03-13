@@ -7,12 +7,22 @@ batch support for efficient multi-text embedding.
 from __future__ import annotations
 
 import logging
+import time
 
 from openai import OpenAI
 
 from mnemory.config import EmbedConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _observe_embedding(method: str, duration: float) -> None:
+    """Record embedding timing in Prometheus (if enabled)."""
+    from mnemory.metrics import get_collector
+
+    collector = get_collector()
+    if collector:
+        collector.observe_embedding_duration("dense", method, duration)
 
 
 class EmbeddingClient:
@@ -40,12 +50,20 @@ class EmbeddingClient:
 
         Returns the embedding vector as a list of floats.
         """
+        t0 = time.monotonic()
         text = text.replace("\n", " ")
         response = self._client.embeddings.create(
             input=[text],
             model=self._model,
             dimensions=self._dims,
         )
+        duration = time.monotonic() - t0
+        logger.debug(
+            "Embedding: method=embed model=%s duration_ms=%d",
+            self._model,
+            int(duration * 1000),
+        )
+        _observe_embedding("embed", duration)
         return response.data[0].embedding
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -63,6 +81,7 @@ class EmbeddingClient:
         if not texts:
             return []
 
+        t0 = time.monotonic()
         # OpenAI supports up to ~2048 inputs per batch call, but we
         # typically have <10 facts per add_memory call.
         cleaned = [t.replace("\n", " ") for t in texts]
@@ -71,6 +90,14 @@ class EmbeddingClient:
             model=self._model,
             dimensions=self._dims,
         )
+        duration = time.monotonic() - t0
+        logger.debug(
+            "Embedding: method=embed_batch model=%s count=%d duration_ms=%d",
+            self._model,
+            len(texts),
+            int(duration * 1000),
+        )
+        _observe_embedding("embed_batch", duration)
         # Response data is sorted by index, but sort explicitly to be safe
         sorted_data = sorted(response.data, key=lambda d: d.index)
         return [d.embedding for d in sorted_data]

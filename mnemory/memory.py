@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -768,6 +769,7 @@ class MemoryService:
                 response_text = self._llm.generate(
                     messages,
                     json_schema=json_schema,
+                    operation="remember_extract",
                 )
             except Exception:
                 logger.exception("Remember extraction LLM call failed")
@@ -1004,6 +1006,7 @@ class MemoryService:
             response_text = self._llm.generate(
                 messages,
                 json_schema=json_schema,
+                operation="remember_dedup",
             )
         except Exception:
             logger.exception("Remember dedup LLM call failed, falling back to ADD-all")
@@ -1114,6 +1117,7 @@ class MemoryService:
             response_text = self._llm.generate(
                 messages,
                 json_schema=json_schema,
+                operation="compact",
             )
             data = parse_json_response(response_text)
             compacted = str(data.get("summary", "")).strip()
@@ -1248,6 +1252,7 @@ class MemoryService:
             response_text = self._llm.generate(
                 messages,
                 json_schema=json_schema,
+                operation="extract",
             )
         except Exception:
             logger.exception("LLM extraction call failed")
@@ -1357,6 +1362,7 @@ class MemoryService:
                 response_text = self._llm.generate(
                     messages,
                     json_schema=schema,
+                    operation="shorten",
                 )
                 shortened, _ = parse_extraction_response(response_text, {})
             except Exception:
@@ -1455,7 +1461,9 @@ class MemoryService:
                 available_categories=available_cats,
             )
             if msgs:
-                response_text = self._llm.generate(msgs, json_schema=schema)
+                response_text = self._llm.generate(
+                    msgs, json_schema=schema, operation="reclassify"
+                )
                 classified = parse_json_response(response_text)
                 mem_type = validate_memory_type(classified.get("memory_type", "fact"))
                 cats = validate_categories(classified.get("categories", []))
@@ -1791,7 +1799,9 @@ class MemoryService:
                     available_categories=available_cats,
                 )
                 if msgs:
-                    response_text = self._llm.generate(msgs, json_schema=schema)
+                    response_text = self._llm.generate(
+                        msgs, json_schema=schema, operation="classify"
+                    )
                     classified = parse_json_response(response_text)
                 else:
                     classified = {}
@@ -2298,6 +2308,8 @@ class MemoryService:
         num_queries = self._config.memory.find_memories_queries
         threshold = self._config.memory.search_score_threshold
 
+        t_start = time.monotonic()
+
         # Fetch project categories for context-aware query generation
         project_cats = self._get_project_categories(user_id)
 
@@ -2307,6 +2319,7 @@ class MemoryService:
         total_searched = 0
 
         # Step 1: Generate diverse search queries from the question
+        t_step = time.monotonic()
         messages, schema = build_query_generation_prompt(
             question,
             num_queries=num_queries,
@@ -2314,7 +2327,9 @@ class MemoryService:
             context=context,
             project_categories=project_cats or None,
         )
-        raw_response = self._find_llm.generate(messages, json_schema=schema)
+        raw_response = self._find_llm.generate(
+            messages, json_schema=schema, operation="query_gen"
+        )
         try:
             data = parse_json_response(raw_response)
             queries = data.get("queries", [])
@@ -2323,7 +2338,7 @@ class MemoryService:
         except (ValueError, KeyError) as e:
             raise ValueError(f"Failed to generate search queries: {e}") from e
 
-        # Extract date range for temporal filtering (if LLM provided one)
+        t_query_gen = time.monotonic() - t_step
         date_range = data.get("date_range")
         date_start: str | None = None
         date_end: str | None = None
@@ -2362,6 +2377,7 @@ class MemoryService:
         )
 
         # Step 2: Batch embed all queries upfront (single API call)
+        t_step = time.monotonic()
         valid_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
         if not valid_queries:
             return {
@@ -2388,7 +2404,10 @@ class MemoryService:
             logger.warning("Sparse batch embedding failed, using dense-only")
             sparse_vectors = [None] * len(valid_queries)
 
+        t_embed = time.monotonic() - t_step
+
         # Step 3: Run all queries through search in parallel, collect results
+        t_step = time.monotonic()
         per_query_limit = limit * 2
         merged_by_id: dict[str, dict] = {}
 
@@ -2434,6 +2453,8 @@ class MemoryService:
 
         merged = list(merged_by_id.values())
 
+        t_search = time.monotonic() - t_step
+
         logger.info(
             "find_memories: %d unique memories from %d queries (searched %d)",
             len(merged),
@@ -2458,6 +2479,17 @@ class MemoryService:
         if len(merged) <= limit:
             merged.sort(key=lambda m: m.get("score", 0), reverse=True)
             self._track_access(merged)
+            t_total = time.monotonic() - t_start
+            logger.info(
+                "find_memories: total=%dms query_gen=%dms embed=%dms "
+                "search=%dms rerank=skipped (%d queries, %d results)",
+                int(t_total * 1000),
+                int(t_query_gen * 1000),
+                int(t_embed * 1000),
+                int(t_search * 1000),
+                len(valid_queries),
+                len(merged),
+            )
             return {
                 "results": merged,
                 "queries": valid_queries,
@@ -2478,8 +2510,11 @@ class MemoryService:
 
         # Step 6: LLM reranking with the original question as context
         # Uses numeric indices instead of UUIDs to reduce output tokens
+        t_step = time.monotonic()
         messages, schema = build_rerank_prompt(question, rerank_candidates, today=today)
-        raw_response = self._find_llm.generate(messages, json_schema=schema)
+        raw_response = self._find_llm.generate(
+            messages, json_schema=schema, operation="rerank"
+        )
         try:
             data = parse_json_response(raw_response)
             scored = data.get("scored", [])
@@ -2511,6 +2546,22 @@ class MemoryService:
         dropped = len(rerank_candidates) - len(reranked)
 
         self._track_access(reranked)
+
+        t_rerank = time.monotonic() - t_step
+        t_total = time.monotonic() - t_start
+        logger.info(
+            "find_memories: total=%dms query_gen=%dms embed=%dms "
+            "search=%dms rerank=%dms (%d queries, %d→%d results)",
+            int(t_total * 1000),
+            int(t_query_gen * 1000),
+            int(t_embed * 1000),
+            int(t_search * 1000),
+            int(t_rerank * 1000),
+            len(valid_queries),
+            len(merged),
+            len(reranked),
+        )
+
         return {
             "results": reranked,
             "queries": valid_queries,
@@ -2613,7 +2664,7 @@ class MemoryService:
             question[:100],
         )
 
-        answer = self._find_llm.generate(messages)
+        answer = self._find_llm.generate(messages, operation="answer")
 
         return {
             "answer": answer,

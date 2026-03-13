@@ -10,11 +10,21 @@ fastembed is a required dependency — hybrid search is always active.
 from __future__ import annotations
 
 import logging
+import time
 
 from fastembed import SparseTextEmbedding
 from qdrant_client.models import SparseVector
 
 logger = logging.getLogger(__name__)
+
+
+def _observe_sparse(method: str, duration: float) -> None:
+    """Record sparse embedding timing in Prometheus (if enabled)."""
+    from mnemory.metrics import get_collector
+
+    collector = get_collector()
+    if collector:
+        collector.observe_embedding_duration("sparse", method, duration)
 
 
 class SparseEmbeddingClient:
@@ -47,7 +57,14 @@ class SparseEmbeddingClient:
 
         Returns a ``qdrant_client.models.SparseVector``.
         """
+        t0 = time.monotonic()
         results = list(self._model.embed([text]))
+        duration = time.monotonic() - t0
+        logger.debug(
+            "Sparse embedding: method=embed duration_ms=%d",
+            int(duration * 1000),
+        )
+        _observe_sparse("embed", duration)
         if not results:
             return None
         return SparseVector(
@@ -64,7 +81,15 @@ class SparseEmbeddingClient:
         if not texts:
             return None
 
+        t0 = time.monotonic()
         results = list(self._model.embed(texts))
+        duration = time.monotonic() - t0
+        logger.debug(
+            "Sparse embedding: method=embed_batch count=%d duration_ms=%d",
+            len(texts),
+            int(duration * 1000),
+        )
+        _observe_sparse("embed_batch", duration)
         return [
             SparseVector(
                 indices=r.indices.tolist(),

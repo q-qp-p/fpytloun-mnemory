@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -62,6 +63,24 @@ def _build_labels_conditions(labels_filter: dict) -> list[FieldCondition]:
                 FieldCondition(key=f"labels.{key}", match=MatchValue(value=value))
             )
     return conditions
+
+
+@contextmanager
+def _qdrant_timer(operation: str):
+    """Context manager that logs and records Qdrant operation timing."""
+    t0 = time.monotonic()
+    yield
+    duration = time.monotonic() - t0
+    logger.debug(
+        "Qdrant: operation=%s duration_ms=%d",
+        operation,
+        int(duration * 1000),
+    )
+    from mnemory.metrics import get_collector
+
+    collector = get_collector()
+    if collector:
+        collector.observe_qdrant_duration(operation, duration)
 
 
 class VectorStore:
@@ -273,12 +292,13 @@ class VectorStore:
         )
 
         with self._write_guard():
-            self._client.upsert(
-                collection_name=self.collection_name,
-                points=[
-                    PointStruct(id=memory_id, vector=point_vector, payload=payload)
-                ],
-            )
+            with _qdrant_timer("insert"):
+                self._client.upsert(
+                    collection_name=self.collection_name,
+                    points=[
+                        PointStruct(id=memory_id, vector=point_vector, payload=payload)
+                    ],
+                )
         return memory_id
 
     def insert_batch(
@@ -327,10 +347,11 @@ class VectorStore:
             )
 
         with self._write_guard():
-            self._client.upsert(
-                collection_name=self.collection_name,
-                points=structs,
-            )
+            with _qdrant_timer("insert_batch"):
+                self._client.upsert(
+                    collection_name=self.collection_name,
+                    points=structs,
+                )
         return ids
 
     def search(
@@ -455,6 +476,7 @@ class VectorStore:
         query_filter = Filter(must=must_conditions)
 
         # 3. Execute search — hybrid or dense-only
+        t0 = time.monotonic()
         result = None
         used_hybrid = False
 
@@ -541,7 +563,22 @@ class VectorStore:
                     with_payload=True,
                 )
 
-        # 4. Convert to memory dicts
+        # 4. Record search timing
+        search_duration = time.monotonic() - t0
+        search_mode = "hybrid" if used_hybrid else "dense"
+        logger.debug(
+            "Qdrant: operation=search mode=%s duration_ms=%d results=%d",
+            search_mode,
+            int(search_duration * 1000),
+            len(result.points),
+        )
+        from mnemory.metrics import get_collector
+
+        collector = get_collector()
+        if collector:
+            collector.observe_qdrant_duration("search", search_duration)
+
+        # 5. Convert to memory dicts
         memories = []
         for point in result.points:
             mem = self._point_to_memory(point)
@@ -630,11 +667,12 @@ class VectorStore:
         Returns the memory dict (in standard format), or None if not found.
         """
         try:
-            result = self._client.retrieve(
-                collection_name=self.collection_name,
-                ids=[memory_id],
-                with_payload=True,
-            )
+            with _qdrant_timer("retrieve"):
+                result = self._client.retrieve(
+                    collection_name=self.collection_name,
+                    ids=[memory_id],
+                    with_payload=True,
+                )
             if result:
                 return self._point_to_memory(result[0])
             return None
@@ -707,7 +745,8 @@ class VectorStore:
             scroll_kwargs["order_by"] = order_by
 
         try:
-            points, _ = self._client.scroll(**scroll_kwargs)
+            with _qdrant_timer("scroll"):
+                points, _ = self._client.scroll(**scroll_kwargs)
         except Exception:
             if order_by is not None:
                 # Fallback: order_by failed (e.g., missing payload index).
@@ -717,7 +756,8 @@ class VectorStore:
                     "falling back to client-side sort"
                 )
                 scroll_kwargs.pop("order_by", None)
-                points, _ = self._client.scroll(**scroll_kwargs)
+                with _qdrant_timer("scroll"):
+                    points, _ = self._client.scroll(**scroll_kwargs)
                 results = [self._point_to_memory(p) for p in points]
                 # Replicate the requested sort order in Python
                 reverse = (
@@ -754,12 +794,13 @@ class VectorStore:
                     stored alongside the dense vector.
         """
         # Fetch existing payload to preserve metadata
-        existing = self._client.retrieve(
-            collection_name=self.collection_name,
-            ids=[memory_id],
-            with_payload=True,
-            with_vectors=False,
-        )
+        with _qdrant_timer("retrieve"):
+            existing = self._client.retrieve(
+                collection_name=self.collection_name,
+                ids=[memory_id],
+                with_payload=True,
+                with_vectors=False,
+            )
         if not existing:
             raise ValueError(f"Memory {memory_id} not found")
 
@@ -778,12 +819,13 @@ class VectorStore:
         )
 
         with self._write_guard():
-            self._client.upsert(
-                collection_name=self.collection_name,
-                points=[
-                    PointStruct(id=memory_id, vector=point_vector, payload=payload)
-                ],
-            )
+            with _qdrant_timer("update"):
+                self._client.upsert(
+                    collection_name=self.collection_name,
+                    points=[
+                        PointStruct(id=memory_id, vector=point_vector, payload=payload)
+                    ],
+                )
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:
         """Update metadata fields on a memory without changing content.
@@ -791,11 +833,12 @@ class VectorStore:
         Uses Qdrant's set_payload for efficient partial updates.
         """
         with self._write_guard():
-            self._client.set_payload(
-                collection_name=self.collection_name,
-                payload=metadata,
-                points=[memory_id],
-            )
+            with _qdrant_timer("set_payload"):
+                self._client.set_payload(
+                    collection_name=self.collection_name,
+                    payload=metadata,
+                    points=[memory_id],
+                )
 
     def batch_update_metadata(self, updates: list[tuple[str, dict]]) -> None:
         """Batch update metadata on multiple memories.
@@ -817,10 +860,11 @@ class VectorStore:
     def delete(self, memory_id: str) -> None:
         """Delete a single memory by ID."""
         with self._write_guard():
-            self._client.delete(
-                collection_name=self.collection_name,
-                points_selector=PointIdsList(points=[memory_id]),
-            )
+            with _qdrant_timer("delete"):
+                self._client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=PointIdsList(points=[memory_id]),
+                )
 
     def delete_all(self, *, user_id: str, agent_id: str | None = None) -> None:
         """Delete all memories for a user/agent scope.
@@ -836,10 +880,11 @@ class VectorStore:
             )
 
         with self._write_guard():
-            self._client.delete(
-                collection_name=self.collection_name,
-                points_selector=Filter(must=must_conditions),
-            )
+            with _qdrant_timer("delete_all"):
+                self._client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=Filter(must=must_conditions),
+                )
 
     def artifact_has_references(
         self,

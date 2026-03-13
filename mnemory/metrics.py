@@ -22,6 +22,7 @@ from prometheus_client import (
     CollectorRegistry,
     Counter,
     Gauge,
+    Histogram,
     generate_latest,
 )
 
@@ -200,6 +201,29 @@ class MetricsCollector:
             registry=self._registry,
         )
 
+        # ── Latency histograms ────────────────────────────────────
+        self._llm_duration = Histogram(
+            "mnemory_llm_duration_seconds",
+            "LLM call duration in seconds",
+            ["operation", "model"],
+            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+            registry=self._registry,
+        )
+        self._embedding_duration = Histogram(
+            "mnemory_embedding_duration_seconds",
+            "Embedding call duration in seconds",
+            ["type", "method"],
+            buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5),
+            registry=self._registry,
+        )
+        self._qdrant_duration = Histogram(
+            "mnemory_qdrant_duration_seconds",
+            "Qdrant operation duration in seconds",
+            ["operation"],
+            buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5),
+            registry=self._registry,
+        )
+
         # ── Auto-fsck last-run timestamp gauge ────────────────────
         self._autofsck_last_run = Gauge(
             "mnemory_autofsck_last_run_timestamp",
@@ -236,6 +260,55 @@ class MetricsCollector:
             user_id=user_id,
             agent_id=agent_id or "",
         ).inc()
+
+    def observe_llm_duration(
+        self,
+        operation: str,
+        model: str,
+        duration: float,
+    ) -> None:
+        """Record an LLM call duration.
+
+        Args:
+            operation: LLM operation name (e.g., "extract", "query_gen",
+                "rerank", "answer", "classify", "dedup", "shorten",
+                "reclassify", "compact", "fsck_security", "fsck_dedup",
+                "fsck_quality").
+            model: Model name (e.g., "gpt-5-mini").
+            duration: Duration in seconds.
+        """
+        self._llm_duration.labels(operation=operation, model=model).observe(duration)
+
+    def observe_embedding_duration(
+        self,
+        embed_type: str,
+        method: str,
+        duration: float,
+    ) -> None:
+        """Record an embedding call duration.
+
+        Args:
+            embed_type: "dense" or "sparse".
+            method: "embed" or "embed_batch".
+            duration: Duration in seconds.
+        """
+        self._embedding_duration.labels(type=embed_type, method=method).observe(
+            duration
+        )
+
+    def observe_qdrant_duration(
+        self,
+        operation: str,
+        duration: float,
+    ) -> None:
+        """Record a Qdrant operation duration.
+
+        Args:
+            operation: Qdrant operation name (e.g., "search", "insert",
+                "update", "delete", "scroll", "retrieve").
+            duration: Duration in seconds.
+        """
+        self._qdrant_duration.labels(operation=operation).observe(duration)
 
     def record_autofsck_run(
         self,

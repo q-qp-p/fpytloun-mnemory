@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from openai import BadRequestError, OpenAI
@@ -47,6 +48,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int = 16384,
         reasoning_effort: str | None = None,
+        operation: str = "unknown",
     ) -> str:
         """Generate a chat completion, returning the content string.
 
@@ -59,11 +61,15 @@ class LLMClient:
             reasoning_effort: Override instance-level reasoning effort for this
                               call only. Pass a value like "medium" or "high"
                               to override, or None to use the instance default.
+            operation: Operation name for logging and metrics (e.g., "extract",
+                       "query_gen", "rerank"). Defaults to "unknown".
 
         Returns:
             The raw content string from the LLM response.
         """
         temp = temperature if temperature is not None else self._temperature
+
+        t0 = time.monotonic()
 
         if json_schema and self._supports_structured is not False:
             try:
@@ -78,6 +84,7 @@ class LLMClient:
                     reasoning_effort=reasoning_effort,
                 )
                 self._supports_structured = True
+                self._log_timing(operation, t0)
                 return result
             except Exception:
                 if self._supports_structured is None:
@@ -91,13 +98,31 @@ class LLMClient:
 
         # JSON mode fallback (or no schema requested)
         response_format = {"type": "json_object"} if json_schema else None
-        return self._call(
+        result = self._call(
             messages,
             response_format=response_format,
             temperature=temp,
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
         )
+        self._log_timing(operation, t0)
+        return result
+
+    def _log_timing(self, operation: str, t0: float) -> None:
+        """Log and record metrics for an LLM call."""
+        duration = time.monotonic() - t0
+        duration_ms = int(duration * 1000)
+        logger.info(
+            "LLM call: operation=%s model=%s duration_ms=%d",
+            operation,
+            self._model,
+            duration_ms,
+        )
+        from mnemory.metrics import get_collector
+
+        collector = get_collector()
+        if collector:
+            collector.observe_llm_duration(operation, self._model, duration)
 
     def _call(
         self,
