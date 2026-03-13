@@ -70,6 +70,14 @@ class Filter:
             default=30,
             description="HTTP request timeout in seconds for mnemory API calls",
         )
+        strip_redundant_mcp_tools: bool = Field(
+            default=True,
+            description=(
+                "Remove mnemory MCP tools that the filter handles automatically "
+                "(initialize_memory, get_core_memories, get_recent_memories) "
+                "from the request to reduce prompt token usage."
+            ),
+        )
 
     class UserValves(BaseModel):
         enabled: bool = Field(
@@ -84,6 +92,14 @@ class Filter:
     # Max tracked sessions before evicting oldest entries.
     # Prevents unbounded memory growth in long-running instances.
     _MAX_SESSIONS = 1000
+
+    # Mnemory MCP tools that the filter handles automatically.
+    # Stripped from tool_ids to save prompt tokens (~800 tokens/request).
+    _MANAGED_TOOL_SUFFIXES = {
+        "initialize_memory",
+        "get_core_memories",
+        "get_recent_memories",
+    }
 
     def __init__(self):
         self.valves = self.Valves()
@@ -128,6 +144,18 @@ class Filter:
         user_valves = __user__.get("valves")
         if user_valves and hasattr(user_valves, "enabled") and not user_valves.enabled:
             return body
+
+        # Strip redundant mnemory MCP tools to save prompt tokens.
+        # The filter handles recall automatically — these tools would
+        # only waste tokens in the tools[] array on every LLM request.
+        if self.valves.strip_redundant_mcp_tools:
+            tool_ids = body.get("tool_ids")
+            if tool_ids:
+                body["tool_ids"] = [
+                    t
+                    for t in tool_ids
+                    if not any(t.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES)
+                ]
 
         chat_id = body.get("chat_id", "")
         session_id = self._sessions.get(chat_id)
@@ -207,8 +235,17 @@ class Filter:
                     parts.append(f"## Recalled Memories\n{memories_text}")
 
         if parts:
+            # Insert before the last user message to preserve the
+            # conversation prefix for LLM prompt caching.  Inserting at
+            # index 0 would put dynamic content before the stable system
+            # prompt, invalidating the cache on every turn.
+            insert_pos = 0
+            for i in range(len(body["messages"]) - 1, -1, -1):
+                if body["messages"][i].get("role") == "user":
+                    insert_pos = i
+                    break
             body["messages"].insert(
-                0,
+                insert_pos,
                 {
                     "role": "system",
                     "content": "\n\n".join(parts),
