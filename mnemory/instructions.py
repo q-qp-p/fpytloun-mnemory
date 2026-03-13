@@ -28,8 +28,8 @@ _PASSIVE_BEHAVIOR = """\
 You have access to mnemory — a persistent memory system that remembers
 information across conversations.
 
-Call get_core_memories at the start of each conversation to load
-essential context about the user and yourself.
+Call initialize_memory(include_instructions=False) at the start of each
+conversation to load essential context about the user and yourself.
 
 Use memory tools when the user asks you to remember or recall something,
 or when personal context would clearly improve your answer. Memories
@@ -47,9 +47,10 @@ long-term memory.
 ## HOW TO USE MEMORY
 
 ### At conversation start
-ALWAYS call get_core_memories to load essential context about the user
-and yourself. Use what you learn to personalize from the very first
-response. Do this before generating any substantive reply.
+ALWAYS call initialize_memory(include_instructions=False) to load
+essential context about the user and yourself. Use what you learn to
+personalize from the very first response. Do this before generating any
+substantive reply.
 
 ### Before responding
 Before any substantive response — answering questions, writing code,
@@ -318,7 +319,8 @@ For detailed content too long for fast memory (research reports, analysis,
 code, data), save it as an artifact attached to a memory. The memory holds
 the searchable summary; the artifact holds the full details. Search results
 show which memories have artifacts — fetch them with get_artifact when
-you need the details.
+you need the details. For binary artifacts (images, PDFs) or large
+artifacts (>1 MB), use get_artifact_url to generate a signed download URL.
 
 ### Memory TTL (Time-To-Live)
 Memories can have a TTL that causes them to decay (soft-expire) after a

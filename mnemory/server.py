@@ -357,29 +357,20 @@ def initialize_memory(
     agent_id: str | None = None,
     recent_days: int = 7,
     mode: str | None = None,
+    include_instructions: bool = True,
 ) -> str:
     """ALWAYS call this at the start of every conversation to initialize memory.
 
-    Returns behavioral instructions for using memory tools effectively,
-    followed by your core memories (pinned facts, identity, recent context).
-
-    This is the recommended entry point for clients that do not inject MCP
-    server instructions into the system prompt (e.g., Open WebUI). If your
-    client DOES inject MCP server instructions (e.g., Claude Code, Cursor),
-    you can call get_core_memories directly instead to avoid redundant
-    instructions.
+    Returns core memories (pinned facts, identity, recent context).
+    Also returns behavioral instructions unless include_instructions=False.
+    This MUST be the first tool called in every session.
 
     Args:
-        user_id: User identifier. Optional if pre-configured via API key mapping.
-        agent_id: Your agent identifier. Optional if pre-configured via
-                  X-Agent-Id header.
-        recent_days: How many days back to include recent context (default 7).
-        mode: Override instruction mode. One of: passive, proactive, personality.
-              If omitted, uses the server's INSTRUCTION_MODE setting.
-              - passive: Use memory when asked or clearly relevant
-              - proactive: Always search, proactively store, memory-first
-              - personality: Proactive + identity development for agents with
-                evolving personality
+        include_instructions: Return instructions in response (default true).
+            Set to false if your client already injects MCP server
+            instructions into the system prompt.
+        recent_days: Days back for recent context (default 7).
+        mode: Instruction mode override: passive, proactive, or personality.
     """
     # Validate mode if provided
     if mode is not None and mode not in VALID_MODES:
@@ -393,8 +384,10 @@ def initialize_memory(
     # Determine effective mode
     effective_mode = mode if mode is not None else _get_config().server.instruction_mode
 
-    # Build instructions
-    instructions = build_instructions(effective_mode)
+    # Build instructions (skip if client already has them via MCP instructions field)
+    instructions = None
+    if include_instructions:
+        instructions = build_instructions(effective_mode)
 
     # Get core memories (fail gracefully)
     core_memories_text = None
@@ -421,7 +414,9 @@ def initialize_memory(
         core_memories_error = "Internal error loading core memories"
 
     # Build response
-    parts = ["## MEMORY INSTRUCTIONS", "", instructions]
+    parts = []
+    if instructions:
+        parts.extend(["## MEMORY INSTRUCTIONS", "", instructions])
 
     if core_memories_text is not None:
         parts.extend(["", "---", "", "## CORE MEMORIES", "", core_memories_text])
@@ -466,71 +461,22 @@ def add_memory(
     Content must be concise (max 1000 chars). For detailed content, store
     a summary here and attach the full content with save_artifact.
 
-    When infer=True and content exceeds the max length, the server
-    automatically extracts concise facts AND preserves the original as
-    an artifact if the content has reference value (e.g., documents,
-    code, specs). When infer=False and content exceeds the max length,
-    the content is auto-saved as an artifact with a truncated memory.
-
     All metadata fields are OPTIONAL — if omitted, the server auto-classifies
     them using an LLM. You can provide any combination of fields; only the
     missing ones will be auto-classified.
 
     Args:
-        content: The memory to store. Keep concise — conclusions, not raw data.
-        user_id: User identifier. Optional if pre-configured via API key mapping.
-        memory_type: One of: preference, fact, episodic, procedural, context.
-                     Optional — auto-classified if omitted.
-        categories: Tags from the PREDEFINED set only. Do NOT invent categories.
-                    Valid: personal, preferences, health, work, technical,
-                    finance, home, vehicles, travel, entertainment, goals,
-                    decisions, project. Use project:<name> for project-specific.
-                    Call list_categories to see the full list.
-                    Optional — auto-classified if omitted.
-        importance: low, normal, high, or critical. Affects search ranking.
-                    Optional — auto-classified if omitted.
-        pinned: If true, this memory loads at every conversation start via
-                get_core_memories. Use for essential facts and identity.
-                Optional — auto-classified if omitted.
-        agent_id: For memories scoped to a specific agent. Set this for:
-                  (1) agent identity/personality (with role="assistant"), or
-                  (2) user preferences specific to this agent (with role="user").
-                  Memories with agent_id are INVISIBLE to other agents.
-                  Use "self" to resolve to your agent_id from the session.
-                  Do NOT set for general user facts shared across all agents.
-                  Optional if pre-configured via X-Agent-Id header.
-        infer: If true (default), the server uses LLM to extract key facts
-               from content and check for duplicates/contradictions with
-               existing memories. If false, content is stored as-is with only
-               an embedding — much faster but skips dedup. Use infer=false
-               when your content is already a clean, concise fact.
-               Note: infer=False is NOT allowed for role="assistant" —
-               agent identity memories must go through fact extraction.
-        role: Who this memory is about. "user" (default) for facts about the
-              user — their preferences, personal info, context. "assistant"
-              for facts about the agent itself — identity, personality,
-              capabilities. When role="assistant", agent_id is required.
-              Use role="assistant" with agent_id="self" for agent identity.
-              Keep role="user" for everything else, including agent-scoped
-              user preferences (e.g., "User wants me to create commit
-              messages" with agent_id="self").
-        ttl_days: Time-to-live in days. After this many days, the memory
-                  decays (soft-expires). Omit to use the default TTL for the
-                  memory type (fact/preference=permanent, episodic=90d,
-                  procedural=60d, context=7d). Pinned memories are exempt
-                  from TTL. Accessed memories have their TTL reset
-                  (reinforcement).
-        event_date: ISO 8601 datetime for when the event occurred (e.g.,
-                    "2023-05-08T13:56:00+02:00" or "2023-05-08"). Used to
-                    anchor relative time references during extraction (e.g.,
-                    "yesterday" resolves to the day before event_date, not
-                    today). Also stored as metadata for temporal queries.
-                    Timezone priority: explicit offset in the string >
-                    X-Timezone header > DEFAULT_TIMEZONE env > server local.
-        labels: Optional key-value labels for client-specific metadata
-                (e.g., project, topic, conversation_id). Keys must be
-                alphanumeric with underscores. Values: str, int, float,
-                bool, or list[str]. Max 20 labels per memory.
+        content: The memory to store (max 1000 chars).
+        memory_type: preference, fact, episodic, procedural, or context.
+        categories: Predefined tags. Call list_categories to see options.
+        importance: low, normal, high, or critical.
+        pinned: Load at every conversation start.
+        agent_id: Scope to agent. Use "self" for yours.
+        infer: Extract facts and dedup (default true). False = store verbatim.
+        role: "user" (default) or "assistant" (requires agent_id).
+        ttl_days: Time-to-live in days. Omit for type defaults.
+        event_date: ISO 8601 datetime of when the event occurred.
+        labels: Key-value metadata for filtering.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -578,29 +524,16 @@ def add_memories(
 ) -> str:
     """Store multiple memories in a single call (batch operation).
 
-    Use this instead of calling add_memory repeatedly when you have several
-    memories to store at once. Saves round-trip latency. Each memory is
-    processed independently — failures on individual items do not block
-    the rest.
+    Each memory is processed independently — failures on individual
+    items do not block the rest.
 
     Args:
-        memories: List of memory objects. Each must have "content" (str).
-                  Optional per-item fields: memory_type, categories,
-                  importance, pinned, role, ttl_days, event_date. Example:
-                  [{"content": "User lives in Prague", "categories": ["personal"]},
-                   {"content": "Started new job", "event_date": "2023-05-08"}]
-        user_id: User identifier (shared for all items). Optional if
-                 pre-configured via API key mapping.
-        agent_id: Agent scope (shared for all items). Same rules as
-                  add_memory — only set for agent-specific memories.
-                  Use "self" to resolve to your agent_id from the session.
-                  Optional if pre-configured via X-Agent-Id header.
-        infer: If true (default), each memory uses LLM fact extraction
-               and dedup. If false, content is stored as-is (faster).
-               Applies to all items in the batch.
-        role: Default role for all items ("user" or "assistant"). Can be
-              overridden per item via the "role" field in each memory object.
-              See add_memory for details on role semantics.
+        memories: List of memory objects, each with "content" (str) and
+                  optional: memory_type, categories, importance, pinned,
+                  role, ttl_days, event_date, labels.
+        agent_id: Scope to agent. Use "self" for yours.
+        infer: Extract facts and dedup (default true). False = store verbatim.
+        role: Default role for all items ("user" or "assistant").
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -704,37 +637,19 @@ def search_memories(
 ) -> str:
     """Search memories by semantic similarity with filtering and importance reranking.
 
-    Call this when you need to recall information about the user — their
-    preferences, past interactions, facts, or project context. Results
-    are ranked by relevance and importance. Memories with artifacts show
-    has_artifacts: true — use get_artifact to fetch details.
-
-    When your session has an agent_id (via X-Agent-Id header), search
-    automatically returns BOTH your agent-specific memories AND shared
-    user memories, merged and deduplicated. You don't need to pass
-    agent_id for this.
+    Results are ranked by relevance and importance. Memories with artifacts
+    show has_artifacts: true — use get_artifact to fetch details.
 
     Args:
         query: What to search for (natural language).
-        user_id: User identifier. Optional if pre-configured via API key mapping.
-        memory_type: Filter by type (preference/fact/episodic/procedural/context).
-        categories: Filter by categories. "project" matches all project:* entries.
-        role: Filter by role — "user" for memories about the user, "assistant"
-              for memories about the agent. Omit to search all roles.
-        limit: Max results to return (default 10).
-        agent_id: Ignored when session agent is set (automatic dual-scope).
-                  Only used as fallback for direct API callers without
-                  X-Agent-Id header.
-        include_decayed: If true, include expired/decayed memories in results.
-                        Useful for browsing historical memories. Default false.
-        date_start: Filter by date range start (YYYY-MM-DD). Matches memories
-                    with event_date >= date_start, or created_at >= date_start
-                    when event_date is not set.
-        date_end: Filter by date range end (YYYY-MM-DD). Matches memories
-                  with event_date <= date_end, or created_at <= date_end
-                  when event_date is not set.
-        labels: Filter by label key-value pairs. All specified labels must
-                match (AND logic). List values use any-of matching.
+        memory_type: Filter: preference, fact, episodic, procedural, context.
+        categories: Filter by categories. "project" matches all project:*.
+        role: Filter: "user" or "assistant". Omit for all.
+        limit: Max results (default 10).
+        include_decayed: Include expired memories (default false).
+        date_start: Filter start date (YYYY-MM-DD).
+        date_end: Filter end date (YYYY-MM-DD).
+        labels: Filter by label key-value pairs (AND logic).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -803,47 +718,20 @@ def find_memories(
 ) -> str:
     """Find memories relevant to a complex question using AI-powered search.
 
-    Unlike search_memories which takes a simple query and does a single
-    vector search, this tool takes a full natural language question,
-    generates multiple targeted searches covering different angles and
-    associations, and uses AI to rank results by relevance to your
-    question. Scores are on the same 0.0-1.0 scale as search_memories.
-
-    Temporal-aware: resolves time references like "last week", "in 2023",
-    "recently" into concrete date ranges for filtering. Uses event_date
-    metadata for temporal scoring during reranking.
-
-    Use this for multi-faceted questions like "What do I think about dogs?
-    Should I buy one?" where a single search query wouldn't capture all
-    relevant memories. The AI follows associations — e.g., for dogs it
-    might also search for pets, partner, house, garden, lifestyle.
-
-    For simple lookups, prefer search_memories (faster, no extra LLM calls).
-
-    This tool makes 2 LLM calls (query generation + reranking) plus
-    multiple vector searches, so it is slower and more expensive than
-    search_memories. Use it when quality matters more than speed.
-
-    The response includes the generated search queries under "queries"
-    for transparency.
+    Generates multiple targeted searches covering different angles and
+    associations, then reranks results by relevance. Temporal-aware.
+    Slower than search_memories (2 extra LLM calls) but higher quality
+    for complex, multi-faceted questions.
 
     Args:
-        question: The user's question in natural language.
-        user_id: User identifier. Optional if pre-configured via API key.
-        memory_type: Filter by type (preference/fact/episodic/procedural/context).
-        categories: Filter by categories. "project" matches all project:* entries.
-        role: Filter by role — "user" or "assistant". Omit for all.
-        limit: Max results to return (default 10).
-        agent_id: Ignored when session agent is set (automatic dual-scope).
-                  Only used as fallback for direct API callers without
-                  X-Agent-Id header.
-        include_decayed: If true, include expired/decayed memories in results.
-                        Useful for browsing historical memories. Default false.
-        context: Optional context hint for query generation (e.g., current
-                 working directory, active project). Generates additional
-                 relevant queries without filtering exclusively to this context.
-        labels: Filter by label key-value pairs. All specified labels must
-                match (AND logic). List values use any-of matching.
+        question: The question in natural language.
+        memory_type: Filter: preference, fact, episodic, procedural, context.
+        categories: Filter by categories. "project" matches all project:*.
+        role: Filter: "user" or "assistant". Omit for all.
+        limit: Max results (default 10).
+        include_decayed: Include expired memories (default false).
+        context: Optional context hint for query generation.
+        labels: Filter by label key-value pairs (AND logic).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -920,34 +808,20 @@ def ask_memories(
 ) -> str:
     """Ask a question and get a human-readable answer based on stored memories.
 
-    Uses find_memories internally to locate relevant memories, then
-    generates a natural language answer using an LLM. Returns a prose
-    answer synthesized from the user's stored memories.
-
-    This is the most expensive operation — 3 LLM calls (query generation
-    + reranking + answer generation) plus multiple vector searches. Use
-    when you need a synthesized, human-readable answer rather than raw
-    memory results.
+    Uses find_memories internally, then generates a natural language answer.
+    Most expensive operation (3 LLM calls). Use when you need a synthesized
+    answer rather than raw memory results.
 
     Args:
-        question: The user's question in natural language.
-        user_id: User identifier. Optional if pre-configured via API key.
-        memory_type: Filter by type (preference/fact/episodic/procedural/context).
-        categories: Filter by categories. "project" matches all project:* entries.
-        role: Filter by role — "user" or "assistant". Omit for all.
-        limit: Max supporting memories to use (default 10).
-        agent_id: Ignored when session agent is set (automatic dual-scope).
-                  Only used as fallback for direct API callers without
-                  X-Agent-Id header.
-        include_decayed: If true, include expired/decayed memories in search.
-                        Default false.
-        context: Optional context hint for query generation (e.g., current
-                 working directory, active project).
-        include_memories: If true, include the supporting memories used to
-                         generate the answer in the response. Default false —
-                         returns only the answer text, queries, and stats.
-        labels: Filter by label key-value pairs. All specified labels must
-                match (AND logic). List values use any-of matching.
+        question: The question in natural language.
+        memory_type: Filter: preference, fact, episodic, procedural, context.
+        categories: Filter by categories. "project" matches all project:*.
+        role: Filter: "user" or "assistant". Omit for all.
+        limit: Max supporting memories (default 10).
+        include_decayed: Include expired memories (default false).
+        context: Optional context hint for query generation.
+        include_memories: Include supporting memories in response (default false).
+        labels: Filter by label key-value pairs (AND logic).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1022,31 +896,13 @@ def get_core_memories(
     agent_id: str | None = None,
     recent_days: int = 7,
 ) -> str:
-    """Load essential context at the start of every conversation.
+    """Load pinned memories and recent context. Equivalent to
+    initialize_memory(include_instructions=False).
 
-    If your client does NOT inject MCP server instructions into the system
-    prompt (e.g., Open WebUI), use initialize_memory instead — it returns
-    both behavioral instructions and core memories in one call.
-
-    If your client DOES inject MCP server instructions (e.g., Claude Code,
-    Cursor), call this tool directly to load memories without redundant
-    instructions.
-
-    Returns pinned memories organized by scope:
-    - Agent Identity: who you are, how you behave (role=assistant, agent-scoped)
-    - Agent Knowledge: things you've learned and researched (role=assistant)
-    - Agent Instructions: user preferences specific to you (role=user, agent-scoped)
-    - User Facts: critical information about the user
-    - User Preferences: how the user likes to interact
-    - Other User Memories: additional user context (episodic, procedural)
-    - Recent Context: recent activity with User/Agent subsections
+    Prefer calling initialize_memory directly.
 
     Args:
-        user_id: User identifier. Optional if pre-configured via API key mapping.
-        agent_id: Your agent identifier (if you have one). Loads agent-specific
-                  identity and knowledge memories.
-                  Optional if pre-configured via X-Agent-Id header.
-        recent_days: How many days back to include recent context (default 7).
+        recent_days: Days back for recent context (default 7).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1086,19 +942,13 @@ def get_recent_memories(
 ) -> str:
     """Get recent memories from the last N days.
 
-    Use this to see recent activity without loading full core memories.
     Returns memories of all types ordered by most recent first.
 
     Args:
-        user_id: User identifier. Optional if pre-configured via API key mapping.
-        agent_id: Agent identifier. Optional if pre-configured via X-Agent-Id header.
         days: How many days back to look (default 7).
-        scope: Which memories to include:
-               - "all": Both user and agent memories (default)
-               - "user": Only shared user memories (no agent_id)
-               - "agent": Only agent-scoped memories (requires agent_id)
+        scope: "all" (default), "user", or "agent".
         limit: Max results per scope (default 25).
-        include_decayed: Include expired/decayed memories (default false).
+        include_decayed: Include expired memories (default false).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1143,28 +993,13 @@ def list_memories(
 ) -> str:
     """List all stored memories for a user, optionally filtered.
 
-    Use this to review what's known about a user, find memories to
-    update or delete, or browse by category/type.
-
-    When your session has an agent_id (via X-Agent-Id header), this
-    automatically returns BOTH your agent-specific memories AND shared
-    user memories, merged and deduplicated. You don't need to pass
-    agent_id for this.
-
     Args:
-        user_id: User identifier. Optional if pre-configured via API key mapping.
-        memory_type: Filter by type (preference/fact/episodic/procedural/context).
+        memory_type: Filter: preference, fact, episodic, procedural, context.
         categories: Filter by categories.
-        role: Filter by role — "user" for memories about the user, "assistant"
-              for memories about the agent. Omit to list all roles.
+        role: Filter: "user" or "assistant". Omit for all.
         limit: Max results (default 50).
-        agent_id: Ignored when session agent is set (automatic dual-scope).
-                  Only used as fallback for direct API callers without
-                  X-Agent-Id header.
-        include_decayed: If true, include expired/decayed memories in results.
-                        Useful for browsing historical memories. Default false.
-        labels: Filter by label key-value pairs. All specified labels must
-                match (AND logic). List values use any-of matching.
+        include_decayed: Include expired memories (default false).
+        labels: Filter by label key-value pairs (AND logic).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1226,23 +1061,16 @@ def update_memory(
 ) -> str:
     """Update an existing memory's content or metadata.
 
-    Use when information has changed (user moved, changed job, updated
-    a preference) or to correct/recategorize a memory.
-
-    You can only update your own agent-scoped memories and shared memories.
-    Updating another agent's memory will be blocked.
-
     Args:
         memory_id: ID of the memory to update.
-        content: New content text (if changing). Max 1000 chars.
-        memory_type: New type (preference/fact/episodic/procedural/context).
+        content: New content text (max 1000 chars).
+        memory_type: New type: preference, fact, episodic, procedural, context.
         categories: New categories (replaces existing).
-        importance: New importance level (low/normal/high/critical).
-        pinned: New pinned state (true/false).
-        ttl_days: New TTL in days. Recalculates expires_at from now and
-                  restores decayed memories. Pass null to make permanent.
-        event_date: New event date (ISO 8601, e.g., "2023-05-08" or
-                    "2023-05-08T13:56:00+02:00"). Pass null to clear.
+        importance: New importance: low, normal, high, critical.
+        pinned: New pinned state.
+        ttl_days: New TTL in days. Restores decayed memories. Null = permanent.
+        event_date: New event date (ISO 8601). Null to clear.
+        labels: New labels (merged with existing). Empty dict to clear.
     """
     try:
         # Verify ownership: must be own agent's memory or shared
@@ -1289,15 +1117,8 @@ def update_memory(
 def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     """Delete a specific memory and all its artifacts.
 
-    Use when information is no longer relevant or the user explicitly
-    asks to forget something.
-
-    You can only delete your own agent-scoped memories and shared memories.
-    Deleting another agent's memory will be blocked.
-
     Args:
         memory_id: ID of the memory to delete.
-        user_id: User identifier. Optional if pre-configured via API key mapping.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1328,17 +1149,8 @@ def delete_memories(
 ) -> str:
     """Delete multiple memories in a single call (batch operation).
 
-    Use this instead of calling delete_memory repeatedly when you need to
-    remove several memories at once. Each deletion is processed independently
-    — failures on individual items do not block the rest.
-
-    You can only delete your own agent-scoped memories and shared memories.
-    Deleting another agent's memory will be blocked.
-
     Args:
         memory_ids: List of memory IDs to delete.
-        user_id: User identifier (shared for all items). Optional if
-                 pre-configured via API key mapping.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1401,15 +1213,12 @@ def delete_memories(
 
 @mcp.tool()
 def delete_all_memories(user_id: str | None = None, agent_id: str | None = None) -> str:
-    """Delete ALL memories for a user. Only use when explicitly requested.
+    """Delete ALL memories for a user. Destructive, cannot be undone.
 
-    This is destructive and cannot be undone.
-    This tool is disabled by default. Set ENABLE_DELETE_ALL=true to enable.
+    Disabled by default. Set ENABLE_DELETE_ALL=true to enable.
 
     Args:
-        user_id: User identifier. Optional if pre-configured via API key mapping.
         agent_id: If set, only delete memories for this agent scope.
-                  Optional if pre-configured via X-Agent-Id header.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1436,12 +1245,7 @@ def list_categories(user_id: str | None = None) -> str:
     """List all available memory categories with descriptions and counts.
 
     Shows predefined categories and any dynamic project:<name> categories.
-    ALWAYS call this before tagging memories with categories. Categories
-    are PREDEFINED — do not use categories not in this list. Use
-    project:<name> for project-specific scoping.
-
-    Args:
-        user_id: User identifier. Optional if pre-configured via API key mapping.
+    Categories are PREDEFINED — do not invent new ones.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1479,25 +1283,13 @@ def save_artifact(
     """Attach an artifact to a memory (slow memory tier).
 
     Use for detailed content too long for fast memory — research reports,
-    analysis, logs, notes, code, data, images, PDFs. The fast memory holds
-    the searchable summary; the artifact holds the full details.
-
-    Note: When using add_memory with long content, artifacts may be created
-    automatically. Use this tool for explicit artifact attachment to an
-    existing memory. Multiple memories can reference the same artifact.
-
-    For text content, pass the content directly. For binary content (images,
-    PDFs), pass base64-encoded content and set the appropriate content_type.
-
-    Max size: 10MB per artifact (configurable via MAX_ARTIFACT_SIZE).
+    analysis, logs, notes, code, data, images, PDFs (max 10MB).
 
     Args:
         memory_id: ID of the parent fast memory.
         content: Text content or base64-encoded binary content.
-        user_id: User identifier. Optional if pre-configured via API key mapping.
         filename: Name for the artifact (default: note.md).
-        content_type: MIME type (default: text/markdown). Use appropriate
-                      type for binary content (image/png, application/pdf, etc.).
+        content_type: MIME type (default: text/markdown).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1534,25 +1326,14 @@ def get_artifact(
 ) -> str:
     """Retrieve artifact content.
 
-    Text artifacts support pagination via offset/limit parameters.
-    Binary artifacts (images, PDFs, etc.) return the full content as a
-    single base64-encoded string — offset and limit are ignored.
-
-    **Binary size limit:** Binary artifacts larger than 1 MB cannot be
-    returned inline via this tool. For large binary artifacts, use
-    ``get_artifact_url`` to generate a signed download URL instead.
-
-    Response includes total_size (characters for text, bytes for binary),
-    is_text (true/false), and has_more (always false for binary).
+    Text artifacts support pagination. Binary artifacts >1MB require
+    get_artifact_url instead.
 
     Args:
-        memory_id: ID of any memory that references this artifact.
-                   Multiple memories may reference the same artifact —
-                   any of them can be used here.
+        memory_id: ID of the parent memory.
         artifact_id: ID of the artifact to retrieve.
-        user_id: User identifier. Optional if pre-configured via API key mapping.
-        offset: Character offset for text content (default 0, ignored for binary).
-        limit: Max characters to return for text (default 5000, ignored for binary).
+        offset: Character offset for text (default 0).
+        limit: Max characters for text (default 5000).
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1607,11 +1388,8 @@ def get_artifact(
 def list_artifacts(memory_id: str, user_id: str | None = None) -> str:
     """List all artifacts attached to a memory.
 
-    Returns id, filename, content_type, size, and created_at for each.
-
     Args:
         memory_id: ID of the parent fast memory.
-        user_id: User identifier. Optional if pre-configured via API key mapping.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1643,7 +1421,6 @@ def delete_artifact(
     Args:
         memory_id: ID of the parent fast memory.
         artifact_id: ID of the artifact to delete.
-        user_id: User identifier. Optional if pre-configured via API key mapping.
     """
     try:
         uid = _resolve_user_id(user_id)
@@ -1673,26 +1450,13 @@ def get_artifact_url(
 ) -> str:
     """Generate a short-lived signed URL for direct artifact download.
 
-    Returns a URL that can be opened in a browser, embedded in
-    ``<img src="...">``, or used for direct file download — without
-    requiring API key headers.
-
-    The URL contains a cryptographic token scoped to this specific
-    artifact and user. It expires after ``ttl`` seconds (default 1 hour,
-    max 24 hours).
-
-    Use this instead of ``get_artifact`` when:
-    - The artifact is binary (image, PDF) and you want to display it
-    - The artifact is large (>1 MB) and ``get_artifact`` returns a
-      guidance message instead of content
-    - You need a URL the user can open directly in their browser
+    Use instead of get_artifact for binary artifacts (images, PDFs),
+    large artifacts (>1MB), or when a direct browser URL is needed.
 
     Args:
-        memory_id: ID of the memory the artifact is attached to.
+        memory_id: ID of the parent memory.
         artifact_id: ID of the artifact.
-        user_id: User identifier. Optional if pre-configured via API key mapping.
-        ttl: Token lifetime in seconds (default: server configured,
-             typically 3600). Maximum: server configured, typically 86400.
+        ttl: URL lifetime in seconds (default ~3600, max ~86400).
     """
     try:
         from mnemory.tokens import generate_download_token
