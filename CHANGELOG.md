@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-03-14
+
+### Client-Provided Labels
+
+- **Labels metadata on memories**: Memories now support optional key-value labels (e.g., `project`, `topic`, `conversation_id`) that bypass LLM extraction and are stored exactly as provided. Labels are inherited by all facts extracted during `infer=True`. Pass `labels` to `add_memory`, `add_memories`, `remember`, and `update_memory`. Filter by labels in `search_memories`, `find_memories`, `ask_memories`, and `list_memories` with AND logic (all must match). List values use any-of matching within a single key ([`18d18b1`](https://github.com/fpytloun/mnemory/commit/18d18b1), [`fa7e566`](https://github.com/fpytloun/mnemory/commit/fa7e566))
+- **Labels in REST API**: All REST endpoints (add, search, find, ask, list, update, remember, recall) accept and return labels. Pydantic schemas updated ([`18d18b1`](https://github.com/fpytloun/mnemory/commit/18d18b1), [`fa7e566`](https://github.com/fpytloun/mnemory/commit/fa7e566))
+- **Labels in UI**: Management UI supports labels input (JSON), display as badges, client-side filtering, and edit modal support ([`18d18b1`](https://github.com/fpytloun/mnemory/commit/18d18b1))
+- **Labels validation**: Keys must be alphanumeric + underscore, starting with letter or underscore. Values can be str, int, float, bool, or list[str]. Max 20 labels per memory (configurable). Reserved keys (memory_type, user_id, etc.) are rejected ([`fa7e566`](https://github.com/fpytloun/mnemory/commit/fa7e566))
+- **Labels config**: New env vars `LABELS_MAX_FIELDS` (default 20), `LABELS_MAX_KEY_LENGTH` (default 64), `LABELS_MAX_VALUE_LENGTH` (default 256), `LABELS_INDEXES` (optional Qdrant payload indexes for label keys) ([`fa7e566`](https://github.com/fpytloun/mnemory/commit/fa7e566))
+
+### Prometheus Timing Instrumentation
+
+- **LLM, embedding, and Qdrant latency histograms**: 3 new Prometheus histograms (`mnemory_llm_duration_seconds`, `mnemory_embedding_duration_seconds`, `mnemory_qdrant_duration_seconds`) with operation labels. All 13 LLM call sites, embedding operations, sparse embedding, and all Qdrant vector operations are instrumented ([`937d112`](https://github.com/fpytloun/mnemory/commit/937d112))
+- **find_memories pipeline timing**: Per-step timing breakdown (query_gen, embed, search, rerank) logged at INFO level ([`937d112`](https://github.com/fpytloun/mnemory/commit/937d112))
+- **Grafana dashboard**: 6 new latency panels (LLM p95 by operation, call rate, embedding p95, Qdrant p95, LLM p50 vs p95 by model) ([`937d112`](https://github.com/fpytloun/mnemory/commit/937d112))
+
+### Token Usage Optimization
+
+- **Compact MCP tool docstrings**: Reduced tool description overhead from ~5,500 to ~1,500 tokens per request by moving detailed parameter guidance from docstrings to server instructions. Estimated savings: ~4,000 prompt tokens per LLM request ([`79818c6`](https://github.com/fpytloun/mnemory/commit/79818c6))
+- **`include_instructions` flag on `initialize_memory`**: Set to `false` when the client already has instructions via MCP instructions field, avoiding duplicate instructions in context ([`79818c6`](https://github.com/fpytloun/mnemory/commit/79818c6))
+- **OpenWebUI filter: strip redundant MCP tools**: Filter now strips `initialize_memory`, `get_core_memories`, `get_recent_memories` from tool_ids (saving ~800 tokens) and injects memory context before the last user message for better prompt caching ([`41f7e8f`](https://github.com/fpytloun/mnemory/commit/41f7e8f))
+
+### Bug Fixes
+
+- **Sub-agent memories now visible in MCP search tools**: The `search_memories`, `find_memories`, `ask_memories`, and `list_memories` MCP tools silently ignored the `agent_id` tool parameter when `X-Agent-Id` header was set, making sub-agent memories (e.g., `openwebui:miroslav`) invisible in search results. Now properly resolves the `agent_id` parameter, honoring sub-agent scope while blocking cross-agent access ([`3a7de1f`](https://github.com/fpytloun/mnemory/commit/3a7de1f))
+
+### Performance
+
+- **Eliminated redundant embedding API call in dual-scope search**: `search_memories_dual_scope()` now pre-computes the dense embedding once and reuses it across both sub-searches, halving embedding latency for dual-scope searches ([`3a7de1f`](https://github.com/fpytloun/mnemory/commit/3a7de1f))
+
+### Observability
+
+- **Granular search mode tracking**: Vector store tracks `hybrid`, `dense-formula`, and `dense-simple` modes, logged at INFO level with duration and result count ([`3a7de1f`](https://github.com/fpytloun/mnemory/commit/3a7de1f))
+- **Search summary logging**: Both search methods log mode, threshold, result count, and filtered count at INFO level ([`3a7de1f`](https://github.com/fpytloun/mnemory/commit/3a7de1f))
+- **Warnings for dense-only fallback**: WARNING-level logs when sparse vector is unavailable or hybrid search fails ([`3a7de1f`](https://github.com/fpytloun/mnemory/commit/3a7de1f))
+
+### Documentation
+
+- **Corrected RRF score range**: Qdrant's default RRF k=1 produces scores ~0.1-1.0, not ~0.01-0.03 as previously documented for k=60 ([`3a7de1f`](https://github.com/fpytloun/mnemory/commit/3a7de1f))
+
 ## [1.7.0] — 2026-03-05
 
 ### Secure Artifact Download Tokens
