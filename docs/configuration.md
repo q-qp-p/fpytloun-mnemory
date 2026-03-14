@@ -78,7 +78,7 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `TTL_CONTEXT` | `7` | Default TTL in days for `context` memories |
 | `TRACK_MEMORY_ACCESS` | `true` | Update last_accessed_at and reset TTL on search/recall |
 | `SEARCH_SCORE_THRESHOLD` | `0.30` | Minimum score for dense-only search results (0.0-1.0). Only used as fallback when hybrid search fails at query time |
-| `SEARCH_SCORE_THRESHOLD_HYBRID` | `0.0` | Minimum score for hybrid (RRF) search results. RRF scores are much smaller (~0.01-0.03) than cosine similarity. Default 0.0 disables threshold filtering |
+| `SEARCH_SCORE_THRESHOLD_HYBRID` | `0.0` | Minimum score for hybrid (RRF) search results. RRF score range depends on Qdrant's k constant (default k=1 gives ~0.1-1.0, similar to cosine; k=60 gives ~0.01-0.03). Default 0.0 disables threshold filtering |
 | `DEDUP_SIMILARITY_THRESHOLD` | `0.4` | Minimum similarity for deduplication matching during memory ingestion |
 | `SEARCH_SIMILARITY_WEIGHT` | `0.9` | Weight for cosine similarity in search ranking (remainder goes to importance). Default 0.9 = 90% similarity, 10% importance |
 | `SEARCH_SPARSE_MODEL` | `Qdrant/bm25` | BM25 sparse embedding model for hybrid search. Default is recommended |

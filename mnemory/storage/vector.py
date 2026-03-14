@@ -416,8 +416,10 @@ class VectorStore:
         Returns:
             Dict with "results" key containing list of memory dicts.
             Each result has a "score" field. In hybrid mode, scores are
-            RRF-fused (range ~0.01-0.03); in dense-only mode, scores
-            are cosine similarity weighted by importance (range 0-1).
+            RRF-fused (range depends on the server's k constant — with
+            Qdrant's default k=1, scores are ~0.1-1.0; with k=60, scores
+            are ~0.01-0.03). In dense-only mode, scores are cosine
+            similarity weighted by importance (range 0-1).
         """
         from qdrant_client.models import (
             DatetimeRange,
@@ -479,6 +481,7 @@ class VectorStore:
         t0 = time.monotonic()
         result = None
         used_hybrid = False
+        search_mode = "dense-simple"  # track granular mode for diagnostics
 
         if query_sparse_vector is not None:
             # Hybrid search: dense + sparse → RRF fusion.
@@ -506,12 +509,19 @@ class VectorStore:
                     with_payload=True,
                 )
                 used_hybrid = True
+                search_mode = "hybrid"
             except Exception:
                 logger.warning(
-                    "Hybrid search failed, falling back to dense-only search",
+                    "Hybrid search failed (sparse vector was available), "
+                    "falling back to dense-only search",
                     exc_info=True,
                 )
                 # Fall through to dense-only path
+        else:
+            logger.warning(
+                "Sparse vector not available for search — using dense-only mode. "
+                "Check that fastembed is installed and the BM25 model is loaded."
+            )
 
         if result is None:
             # Dense-only path with FormulaQuery importance reranking
@@ -551,6 +561,7 @@ class VectorStore:
                     limit=limit,
                     with_payload=True,
                 )
+                search_mode = "dense-formula"
             except Exception:
                 logger.warning(
                     "Formula-based reranking failed, falling back to simple search"
@@ -562,12 +573,12 @@ class VectorStore:
                     limit=limit,
                     with_payload=True,
                 )
+                search_mode = "dense-simple"
 
         # 4. Record search timing
         search_duration = time.monotonic() - t0
-        search_mode = "hybrid" if used_hybrid else "dense"
-        logger.debug(
-            "Qdrant: operation=search mode=%s duration_ms=%d results=%d",
+        logger.info(
+            "Search: mode=%s duration_ms=%d results=%d",
             search_mode,
             int(search_duration * 1000),
             len(result.points),
@@ -585,7 +596,11 @@ class VectorStore:
             mem["score"] = point.score
             memories.append(mem)
 
-        return {"results": memories, "used_hybrid": used_hybrid}
+        return {
+            "results": memories,
+            "used_hybrid": used_hybrid,
+            "search_mode": search_mode,
+        }
 
     def search_similar(
         self,

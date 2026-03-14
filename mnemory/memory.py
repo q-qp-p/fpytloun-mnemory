@@ -1953,9 +1953,19 @@ class MemoryService:
         Returns None on failure so callers fall back to dense-only mode.
         """
         try:
-            return self._sparse.embed(text)
+            result = self._sparse.embed(text)
+            if result is None:
+                logger.warning(
+                    "Sparse embedding returned None for query (len=%d) "
+                    "— search will use dense-only mode",
+                    len(text),
+                )
+            return result
         except Exception:
-            logger.warning("Sparse embedding failed, using dense-only", exc_info=True)
+            logger.warning(
+                "Sparse embedding failed — search will use dense-only mode",
+                exc_info=True,
+            )
             return None
 
     # ── Search Memories ───────────────────────────────────────────────
@@ -2038,6 +2048,7 @@ class MemoryService:
 
         memories = result.get("results", [])
         used_hybrid = result.get("used_hybrid", False)
+        search_mode = result.get("search_mode", "unknown")
 
         # In hybrid mode, apply importance boost in Python (FormulaQuery
         # is not used with RRF fusion). In dense-only mode, FormulaQuery
@@ -2045,14 +2056,24 @@ class MemoryService:
         if used_hybrid:
             memories = self._importance_boost(memories)
 
-        # Score threshold: use hybrid threshold for RRF scores (which are
-        # much smaller than cosine similarity), dense threshold otherwise
+        # Score threshold: use hybrid threshold for RRF scores, dense
+        # threshold otherwise. Note: with Qdrant's default k=1, RRF scores
+        # are in a similar range (~0.1-1.0) to cosine similarity.
         threshold = (
             self._config.memory.search_score_threshold_hybrid
             if used_hybrid
             else self._config.memory.search_score_threshold
         )
+        pre_threshold_count = len(memories)
         memories = [m for m in memories if m.get("score", 0) >= threshold]
+
+        logger.info(
+            "search_memories: mode=%s threshold=%.4f results=%d (filtered %d below threshold)",
+            search_mode,
+            threshold,
+            len(memories),
+            pre_threshold_count - len(memories),
+        )
 
         # Post-filtering for decayed memories (when include_decayed=True,
         # the search doesn't filter them, so we need to mark them)
@@ -2114,6 +2135,11 @@ class MemoryService:
         if categories:
             expanded_categories = self._expand_category_filter(categories, user_id)
 
+        # Pre-compute dense embedding once for both sub-searches to avoid
+        # redundant embedding API calls.
+        if query_vector is None:
+            query_vector = self.vector.embedding.embed(query)
+
         search_kwargs: dict[str, Any] = {
             "filters": filters if filters else None,
             "categories": expanded_categories,
@@ -2169,6 +2195,11 @@ class MemoryService:
         used_hybrid = agent_result.get("used_hybrid", False) or shared_result.get(
             "used_hybrid", False
         )
+        agent_mode = agent_result.get("search_mode", "unknown")
+        shared_mode = shared_result.get("search_mode", "unknown")
+        search_mode = (
+            agent_mode if agent_mode == shared_mode else f"{agent_mode}+{shared_mode}"
+        )
 
         # In hybrid mode, apply importance boost in Python (FormulaQuery
         # is not used with RRF fusion). In dense-only mode, FormulaQuery
@@ -2176,15 +2207,28 @@ class MemoryService:
         if used_hybrid:
             memories = self._importance_boost(memories)
 
-        # Score threshold: use hybrid threshold for RRF scores
+        # Score threshold: use hybrid threshold for RRF scores (with
+        # Qdrant's default k=1, these are in a similar range to cosine)
         threshold = (
             self._config.memory.search_score_threshold_hybrid
             if used_hybrid
             else self._config.memory.search_score_threshold
         )
+        pre_threshold_count = len(memories)
         memories = [m for m in memories if m.get("score", 0) >= threshold]
 
         memories = memories[:limit]
+
+        logger.info(
+            "search_memories_dual_scope: mode=%s (agent=%s shared=%s) "
+            "threshold=%.4f results=%d (filtered %d below threshold)",
+            search_mode,
+            agent_mode,
+            shared_mode,
+            threshold,
+            len(memories),
+            pre_threshold_count - len(memories),
+        )
 
         # Lazily mark decayed_at on expired memories found via include_decayed
         if include_decayed:

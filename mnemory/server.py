@@ -660,11 +660,17 @@ def search_memories(
 
         # When session has agent_id, always use dual-scope to return
         # both agent-specific and shared user memories.
+        # Honor explicit agent_id from tool param (e.g. sub-agent scope).
         if session_aid:
+            effective_aid = (
+                (_resolve_agent_id(agent_id) or session_aid)
+                if agent_id
+                else session_aid
+            )
             results = _get_service().search_memories_dual_scope(
                 query,
                 user_id=uid,
-                session_agent_id=session_aid,
+                session_agent_id=effective_aid,
                 memory_type=memory_type,
                 categories=categories,
                 role=role,
@@ -743,10 +749,15 @@ def find_memories(
         session_tz = _get_session_timezone()
 
         if session_aid:
+            effective_aid = (
+                (_resolve_agent_id(agent_id) or session_aid)
+                if agent_id
+                else session_aid
+            )
             result = _get_service().find_memories(
                 question,
                 user_id=uid,
-                session_agent_id=session_aid,
+                session_agent_id=effective_aid,
                 memory_type=memory_type,
                 categories=categories,
                 role=role,
@@ -833,10 +844,15 @@ def ask_memories(
         session_tz = _get_session_timezone()
 
         if session_aid:
+            effective_aid = (
+                (_resolve_agent_id(agent_id) or session_aid)
+                if agent_id
+                else session_aid
+            )
             result = _get_service().answer_question(
                 question,
                 user_id=uid,
-                session_agent_id=session_aid,
+                session_agent_id=effective_aid,
                 memory_type=memory_type,
                 categories=categories,
                 role=role,
@@ -1010,10 +1026,16 @@ def list_memories(
 
         # When session has agent_id, always use dual-scope to return
         # both agent-specific and shared user memories.
+        # Honor explicit agent_id from tool param (e.g. sub-agent scope).
         if session_aid:
+            effective_aid = (
+                (_resolve_agent_id(agent_id) or session_aid)
+                if agent_id
+                else session_aid
+            )
             results = _get_service().list_memories_dual_scope(
                 user_id=uid,
-                session_agent_id=session_aid,
+                session_agent_id=effective_aid,
                 memory_type=memory_type,
                 categories=categories,
                 role=role,

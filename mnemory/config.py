@@ -340,9 +340,10 @@ class MemoryConfig:
     )
 
     # Score threshold for hybrid (RRF) search results.
-    # RRF scores are much smaller than cosine similarity (~0.01-0.03
-    # range with default k=60). Default 0.0 disables threshold filtering
-    # for hybrid search to avoid accidentally filtering all results.
+    # RRF score range depends on the Qdrant server's k constant:
+    # with Qdrant's default k=1, scores are ~0.1-1.0 (similar to cosine);
+    # with k=60, scores are ~0.01-0.03. Default 0.0 disables threshold
+    # filtering for hybrid search.
     search_score_threshold_hybrid: float = field(
         default_factory=lambda: _env_float("SEARCH_SCORE_THRESHOLD_HYBRID", 0.0)
     )
