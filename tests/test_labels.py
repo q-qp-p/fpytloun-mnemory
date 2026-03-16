@@ -1,5 +1,6 @@
 """Tests for the labels feature — custom metadata on memories."""
 
+import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
@@ -788,9 +789,11 @@ class TestLabelsMCPTools:
                 patch("mnemory.server._get_service", return_value=mock_service),
                 patch("mnemory.server.get_collector", return_value=None),
             ):
-                add_memory_tool(
-                    content="test",
-                    labels={"project": "myapp"},
+                asyncio.run(
+                    add_memory_tool(
+                        content="test",
+                        labels={"project": "myapp"},
+                    )
                 )
             _, kwargs = mock_service.add_memory.call_args
             assert kwargs["labels"] == {"project": "myapp"}
@@ -810,7 +813,7 @@ class TestLabelsMCPTools:
                 patch("mnemory.server._get_service", return_value=mock_service),
                 patch("mnemory.server.get_collector", return_value=None),
             ):
-                add_memory_tool(content="test")
+                asyncio.run(add_memory_tool(content="test"))
             _, kwargs = mock_service.add_memory.call_args
             assert kwargs["labels"] is None
         finally:
@@ -827,9 +830,11 @@ class TestLabelsMCPTools:
                 patch("mnemory.server._get_service", return_value=mock_service),
                 patch("mnemory.server.get_collector", return_value=None),
             ):
-                search_tool(
-                    query="test",
-                    labels={"project": "myapp"},
+                asyncio.run(
+                    search_tool(
+                        query="test",
+                        labels={"project": "myapp"},
+                    )
                 )
             _, kwargs = mock_service.search_memories.call_args
             assert kwargs["labels"] == {"project": "myapp"}
@@ -851,9 +856,11 @@ class TestLabelsMCPTools:
                 patch("mnemory.server._get_service", return_value=mock_service),
                 patch("mnemory.server.get_collector", return_value=None),
             ):
-                update_tool(
-                    memory_id="mem-1",
-                    labels={"project": "updated"},
+                asyncio.run(
+                    update_tool(
+                        memory_id="mem-1",
+                        labels={"project": "updated"},
+                    )
                 )
             _, kwargs = mock_service.update_memory.call_args
             assert kwargs["labels"] == {"project": "updated"}
@@ -875,7 +882,7 @@ class TestLabelsMCPTools:
                 patch("mnemory.server._get_service", return_value=mock_service),
                 patch("mnemory.server.get_collector", return_value=None),
             ):
-                update_tool(memory_id="mem-1", content="new text")
+                asyncio.run(update_tool(memory_id="mem-1", content="new text"))
             _, kwargs = mock_service.update_memory.call_args
             # labels=None is not passed when not provided
             assert "labels" not in kwargs

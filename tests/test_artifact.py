@@ -1,5 +1,6 @@
 """Tests for artifact storage — path validation, filesystem backend, and store."""
 
+import asyncio
 import base64
 
 import pytest
@@ -629,7 +630,7 @@ class TestMCPBinaryInlineCap:
 
             from mnemory.server import get_artifact
 
-            result_str = get_artifact("mem-1", "art-1", user_id="user1")
+            result_str = asyncio.run(get_artifact("mem-1", "art-1", user_id="user1"))
             result = json.loads(result_str)
 
         assert result["error"] is True
@@ -659,7 +660,7 @@ class TestMCPBinaryInlineCap:
 
             from mnemory.server import get_artifact
 
-            result_str = get_artifact("mem-1", "art-1", user_id="user1")
+            result_str = asyncio.run(get_artifact("mem-1", "art-1", user_id="user1"))
             result = json.loads(result_str)
 
         assert "error" not in result
@@ -687,7 +688,7 @@ class TestMCPBinaryInlineCap:
 
             from mnemory.server import get_artifact
 
-            result_str = get_artifact("mem-1", "art-1", user_id="user1")
+            result_str = asyncio.run(get_artifact("mem-1", "art-1", user_id="user1"))
             result = json.loads(result_str)
 
         assert "error" not in result

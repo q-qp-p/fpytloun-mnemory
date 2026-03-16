@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -676,7 +677,7 @@ class TestAddMemoriesTool:
                 "results": [{"id": "mem-1", "event": "ADD"}]
             }
             with patch("mnemory.server._get_service", return_value=mock_service):
-                raw = add_memories(memories=memories, infer=infer)
+                raw = asyncio.run(add_memories(memories=memories, infer=infer))
             return json.loads(raw), mock_service
         finally:
             _session_user_id.reset(uid_token)

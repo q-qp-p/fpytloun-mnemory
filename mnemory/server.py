@@ -1,10 +1,10 @@
 """MCP server for mnemory.
 
-Exposes 17 tools over Streamable HTTP for memory management:
+Exposes 19 tools over Streamable HTTP for memory management:
 - initialize_memory (session init with instructions + core memories)
-- add_memory, add_memories, search_memories, find_memories
+- add_memory, add_memories, search_memories, find_memories, ask_memories
 - get_core_memories, get_recent_memories
-- list_memories, update_memory, delete_memory, delete_all_memories
+- list_memories, update_memory, delete_memory, delete_memories, delete_all_memories
 - list_categories
 - save_artifact, get_artifact, get_artifact_url, list_artifacts, delete_artifact
 
@@ -16,6 +16,7 @@ unauthenticated health/metrics access.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import hmac
@@ -24,6 +25,8 @@ import logging
 import os
 import re
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -72,6 +75,7 @@ _session_user_bound: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 _config = None
 _service = None
+_service_lock = threading.Lock()
 
 
 def _get_config():
@@ -83,14 +87,19 @@ def _get_config():
 
 def _get_service():
     global _service
-    if _service is None:
-        from mnemory.api import _session_store
+    if _service is not None:
+        return _service
+    # Thread-safe lazy initialization — prevents double-init when
+    # multiple asyncio.to_thread() calls race during startup.
+    with _service_lock:
+        if _service is None:
+            from mnemory.api import _session_store
 
-        _service = MemoryService(_get_config(), session_store=_session_store)
+            _service = MemoryService(_get_config(), session_store=_session_store)
 
-        # Run data migrations after service init (collection exists).
-        # Migrations run synchronously before the server accepts requests.
-        _run_migrations(_service)
+            # Run data migrations after service init (collection exists).
+            # Migrations run synchronously before the server accepts requests.
+            _run_migrations(_service)
     return _service
 
 
@@ -352,7 +361,7 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def initialize_memory(
+async def initialize_memory(
     user_id: str | None = None,
     agent_id: str | None = None,
     recent_days: int = 7,
@@ -389,7 +398,9 @@ def initialize_memory(
     if include_instructions:
         instructions = build_instructions(effective_mode)
 
-    # Get core memories (fail gracefully)
+    # Get core memories (fail gracefully).
+    # ContextVars are resolved eagerly for clarity; asyncio.to_thread()
+    # copies context automatically via copy_context().
     core_memories_text = None
     core_memories_error = None
     try:
@@ -398,7 +409,9 @@ def initialize_memory(
         collector = get_collector()
         if collector:
             collector.record_operation("initialize_memory", uid, aid)
-        core_result = _get_service().get_core_memories(
+        service = _get_service()
+        core_result = await asyncio.to_thread(
+            service.get_core_memories,
             user_id=uid,
             agent_id=aid,
             recent_days=recent_days,
@@ -439,7 +452,7 @@ def initialize_memory(
 
 
 @mcp.tool()
-def add_memory(
+async def add_memory(
     content: str,
     user_id: str | None = None,
     memory_type: str | None = None,
@@ -481,10 +494,13 @@ def add_memory(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id(agent_id)
+        tz = _get_session_timezone()
         collector = get_collector()
         if collector:
             collector.record_operation("add_memory", uid, aid)
-        result = _get_service().add_memory(
+        service = _get_service()
+        result = await asyncio.to_thread(
+            service.add_memory,
             content,
             user_id=uid,
             agent_id=aid,
@@ -497,7 +513,7 @@ def add_memory(
             ttl_days=ttl_days,
             event_date=event_date,
             labels=labels,
-            session_timezone=_get_session_timezone(),
+            session_timezone=tz,
         )
         return json.dumps(result, default=str)
     except ValueError as e:
@@ -515,7 +531,7 @@ MAX_BATCH_SIZE = 20
 
 
 @mcp.tool()
-def add_memories(
+async def add_memories(
     memories: list[dict],
     user_id: str | None = None,
     agent_id: str | None = None,
@@ -541,6 +557,7 @@ def add_memories(
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
 
+    tz = _get_session_timezone()
     collector = get_collector()
     if collector:
         collector.record_operation("add_memories", uid, aid)
@@ -557,54 +574,62 @@ def add_memories(
         )
 
     service = _get_service()
-    results = []
-    errors = []
 
-    for i, mem in enumerate(memories):
-        if not isinstance(mem, dict) or "content" not in mem:
-            errors.append(
-                {
-                    "index": i,
-                    "error": True,
-                    "message": "Each memory must be an object with a 'content' field",
-                }
-            )
-            continue
+    # Run the entire batch loop in a thread to avoid blocking the event
+    # loop during sequential LLM + embedding + Qdrant calls per item.
+    def _process_batch():
+        results = []
+        errors = []
 
-        try:
-            item_role = mem.get("role", role)
-            item_labels = mem.get("labels")
-            result = service.add_memory(
-                mem["content"],
-                user_id=uid,
-                agent_id=aid,
-                memory_type=mem.get("memory_type"),
-                categories=mem.get("categories"),
-                importance=mem.get("importance"),
-                pinned=mem.get("pinned"),
-                infer=infer,
-                role=item_role,
-                ttl_days=mem.get("ttl_days"),
-                event_date=mem.get("event_date"),
-                labels=item_labels,
-                session_timezone=_get_session_timezone(),
-            )
-            # Check for error returned by add_memory (e.g., content too long)
-            if result.get("error"):
-                errors.append({"index": i, **result})
-            else:
-                results.append({"index": i, **result})
-        except ValueError as e:
-            errors.append({"index": i, "error": True, "message": str(e)})
-        except Exception:
-            logger.exception("Error in add_memories item %d", i)
-            errors.append(
-                {
-                    "index": i,
-                    "error": True,
-                    "message": f"Internal error processing item {i}",
-                }
-            )
+        for i, mem in enumerate(memories):
+            if not isinstance(mem, dict) or "content" not in mem:
+                errors.append(
+                    {
+                        "index": i,
+                        "error": True,
+                        "message": "Each memory must be an object with a 'content' field",
+                    }
+                )
+                continue
+
+            try:
+                item_role = mem.get("role", role)
+                item_labels = mem.get("labels")
+                result = service.add_memory(
+                    mem["content"],
+                    user_id=uid,
+                    agent_id=aid,
+                    memory_type=mem.get("memory_type"),
+                    categories=mem.get("categories"),
+                    importance=mem.get("importance"),
+                    pinned=mem.get("pinned"),
+                    infer=infer,
+                    role=item_role,
+                    ttl_days=mem.get("ttl_days"),
+                    event_date=mem.get("event_date"),
+                    labels=item_labels,
+                    session_timezone=tz,
+                )
+                # Check for error returned by add_memory (e.g., content too long)
+                if result.get("error"):
+                    errors.append({"index": i, **result})
+                else:
+                    results.append({"index": i, **result})
+            except ValueError as e:
+                errors.append({"index": i, "error": True, "message": str(e)})
+            except Exception:
+                logger.exception("Error in add_memories item %d", i)
+                errors.append(
+                    {
+                        "index": i,
+                        "error": True,
+                        "message": f"Internal error processing item {i}",
+                    }
+                )
+
+        return results, errors
+
+    results, errors = await asyncio.to_thread(_process_batch)
 
     return json.dumps(
         {
@@ -622,7 +647,7 @@ def add_memories(
 
 
 @mcp.tool()
-def search_memories(
+async def search_memories(
     query: str,
     user_id: str | None = None,
     memory_type: str | None = None,
@@ -658,6 +683,8 @@ def search_memories(
         if collector:
             collector.record_operation("search_memories", uid, session_aid)
 
+        service = _get_service()
+
         # When session has agent_id, always use dual-scope to return
         # both agent-specific and shared user memories.
         # Honor explicit agent_id from tool param (e.g. sub-agent scope).
@@ -667,7 +694,8 @@ def search_memories(
                 if agent_id
                 else session_aid
             )
-            results = _get_service().search_memories_dual_scope(
+            results = await asyncio.to_thread(
+                service.search_memories_dual_scope,
                 query,
                 user_id=uid,
                 session_agent_id=effective_aid,
@@ -683,7 +711,8 @@ def search_memories(
         else:
             # No session agent — use param for backward compat
             aid = _resolve_agent_id(agent_id)
-            results = _get_service().search_memories(
+            results = await asyncio.to_thread(
+                service.search_memories,
                 query,
                 user_id=uid,
                 agent_id=aid,
@@ -710,7 +739,7 @@ def search_memories(
 
 
 @mcp.tool()
-def find_memories(
+async def find_memories(
     question: str,
     user_id: str | None = None,
     memory_type: str | None = None,
@@ -747,6 +776,7 @@ def find_memories(
             collector.record_operation("find_memories", uid, session_aid)
 
         session_tz = _get_session_timezone()
+        service = _get_service()
 
         if session_aid:
             effective_aid = (
@@ -754,7 +784,8 @@ def find_memories(
                 if agent_id
                 else session_aid
             )
-            result = _get_service().find_memories(
+            result = await asyncio.to_thread(
+                service.find_memories,
                 question,
                 user_id=uid,
                 session_agent_id=effective_aid,
@@ -769,7 +800,8 @@ def find_memories(
             )
         else:
             aid = _resolve_agent_id(agent_id)
-            result = _get_service().find_memories(
+            result = await asyncio.to_thread(
+                service.find_memories,
                 question,
                 user_id=uid,
                 agent_id=aid,
@@ -804,7 +836,7 @@ def find_memories(
 
 
 @mcp.tool()
-def ask_memories(
+async def ask_memories(
     question: str,
     user_id: str | None = None,
     memory_type: str | None = None,
@@ -842,6 +874,7 @@ def ask_memories(
             collector.record_operation("ask_memories", uid, session_aid)
 
         session_tz = _get_session_timezone()
+        service = _get_service()
 
         if session_aid:
             effective_aid = (
@@ -849,7 +882,8 @@ def ask_memories(
                 if agent_id
                 else session_aid
             )
-            result = _get_service().answer_question(
+            result = await asyncio.to_thread(
+                service.answer_question,
                 question,
                 user_id=uid,
                 session_agent_id=effective_aid,
@@ -864,7 +898,8 @@ def ask_memories(
             )
         else:
             aid = _resolve_agent_id(agent_id)
-            result = _get_service().answer_question(
+            result = await asyncio.to_thread(
+                service.answer_question,
                 question,
                 user_id=uid,
                 agent_id=aid,
@@ -907,7 +942,7 @@ def ask_memories(
 
 
 @mcp.tool()
-def get_core_memories(
+async def get_core_memories(
     user_id: str | None = None,
     agent_id: str | None = None,
     recent_days: int = 7,
@@ -926,15 +961,14 @@ def get_core_memories(
         collector = get_collector()
         if collector:
             collector.record_operation("get_core_memories", uid, aid)
-        return (
-            _get_service()
-            .get_core_memories(
-                user_id=uid,
-                agent_id=aid,
-                recent_days=recent_days,
-            )
-            .text
+        service = _get_service()
+        core_result = await asyncio.to_thread(
+            service.get_core_memories,
+            user_id=uid,
+            agent_id=aid,
+            recent_days=recent_days,
         )
+        return core_result.text
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
     except Exception:
@@ -948,7 +982,7 @@ def get_core_memories(
 
 
 @mcp.tool()
-def get_recent_memories(
+async def get_recent_memories(
     user_id: str | None = None,
     agent_id: str | None = None,
     days: int = 7,
@@ -976,7 +1010,9 @@ def get_recent_memories(
         collector = get_collector()
         if collector:
             collector.record_operation("get_recent_memories", uid, aid)
-        return _get_service().get_recent_memories(
+        service = _get_service()
+        return await asyncio.to_thread(
+            service.get_recent_memories,
             user_id=uid,
             agent_id=aid,
             days=days,
@@ -997,7 +1033,7 @@ def get_recent_memories(
 
 
 @mcp.tool()
-def list_memories(
+async def list_memories(
     user_id: str | None = None,
     memory_type: str | None = None,
     categories: list[str] | None = None,
@@ -1024,6 +1060,8 @@ def list_memories(
         if collector:
             collector.record_operation("list_memories", uid, session_aid)
 
+        service = _get_service()
+
         # When session has agent_id, always use dual-scope to return
         # both agent-specific and shared user memories.
         # Honor explicit agent_id from tool param (e.g. sub-agent scope).
@@ -1033,7 +1071,8 @@ def list_memories(
                 if agent_id
                 else session_aid
             )
-            results = _get_service().list_memories_dual_scope(
+            results = await asyncio.to_thread(
+                service.list_memories_dual_scope,
                 user_id=uid,
                 session_agent_id=effective_aid,
                 memory_type=memory_type,
@@ -1046,7 +1085,8 @@ def list_memories(
         else:
             # No session agent — use param for backward compat
             aid = _resolve_agent_id(agent_id)
-            results = _get_service().list_memories(
+            results = await asyncio.to_thread(
+                service.list_memories,
                 user_id=uid,
                 agent_id=aid,
                 memory_type=memory_type,
@@ -1070,7 +1110,7 @@ def list_memories(
 
 
 @mcp.tool()
-def update_memory(
+async def update_memory(
     memory_id: str,
     content: str | None = None,
     memory_type: str | None = None,
@@ -1097,17 +1137,16 @@ def update_memory(
     try:
         # Verify ownership: must be own agent's memory or shared
         session_aid = _get_session_agent_id()
+        session_uid = _session_user_id.get()
         collector = get_collector()
         if collector:
-            collector.record_operation(
-                "update_memory", _session_user_id.get() or "", session_aid
-            )
-        _get_service().verify_memory_access(memory_id, session_agent_id=session_aid)
+            collector.record_operation("update_memory", session_uid or "", session_aid)
+        service = _get_service()
 
         # Build kwargs, using sentinel for ttl_days to distinguish
         # "not provided" from "explicitly set to None"
         kwargs: dict = {
-            "user_id": _session_user_id.get(),
+            "user_id": session_uid,
             "content": content,
             "memory_type": memory_type,
             "categories": categories,
@@ -1121,7 +1160,13 @@ def update_memory(
         if labels is not None:
             kwargs["labels"] = labels
 
-        result = _get_service().update_memory(memory_id, **kwargs)
+        # Verify + update in a single thread call to avoid TOCTOU race
+        # (ownership could change between two separate awaits).
+        def _verify_and_update():
+            service.verify_memory_access(memory_id, session_agent_id=session_aid)
+            return service.update_memory(memory_id, **kwargs)
+
+        result = await asyncio.to_thread(_verify_and_update)
         return json.dumps(result, default=str)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -1136,7 +1181,7 @@ def update_memory(
 
 
 @mcp.tool()
-def delete_memory(memory_id: str, user_id: str | None = None) -> str:
+async def delete_memory(memory_id: str, user_id: str | None = None) -> str:
     """Delete a specific memory and all its artifacts.
 
     Args:
@@ -1149,8 +1194,15 @@ def delete_memory(memory_id: str, user_id: str | None = None) -> str:
         collector = get_collector()
         if collector:
             collector.record_operation("delete_memory", uid, session_aid)
-        _get_service().verify_memory_access(memory_id, session_agent_id=session_aid)
-        result = _get_service().delete_memory(memory_id, user_id=uid)
+        service = _get_service()
+
+        # Verify + delete in a single thread call to avoid TOCTOU race
+        # (ownership could change between two separate awaits).
+        def _verify_and_delete():
+            service.verify_memory_access(memory_id, session_agent_id=session_aid)
+            return service.delete_memory(memory_id, user_id=uid)
+
+        result = await asyncio.to_thread(_verify_and_delete)
         return json.dumps(result)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -1165,7 +1217,7 @@ def delete_memory(memory_id: str, user_id: str | None = None) -> str:
 
 
 @mcp.tool()
-def delete_memories(
+async def delete_memories(
     memory_ids: list[str],
     user_id: str | None = None,
 ) -> str:
@@ -1198,25 +1250,31 @@ def delete_memories(
         )
 
     service = _get_service()
-    results = []
-    errors = []
 
-    for i, mid in enumerate(memory_ids):
-        try:
-            service.verify_memory_access(mid, session_agent_id=session_aid)
-            result = service.delete_memory(mid, user_id=uid)
-            results.append({"index": i, **result})
-        except ValueError as e:
-            errors.append({"index": i, "error": True, "message": str(e)})
-        except Exception:
-            logger.exception("Error in delete_memories item %d", i)
-            errors.append(
-                {
-                    "index": i,
-                    "error": True,
-                    "message": f"Internal error processing item {i}",
-                }
-            )
+    def _process_batch():
+        results = []
+        errors = []
+
+        for i, mid in enumerate(memory_ids):
+            try:
+                service.verify_memory_access(mid, session_agent_id=session_aid)
+                result = service.delete_memory(mid, user_id=uid)
+                results.append({"index": i, **result})
+            except ValueError as e:
+                errors.append({"index": i, "error": True, "message": str(e)})
+            except Exception:
+                logger.exception("Error in delete_memories item %d", i)
+                errors.append(
+                    {
+                        "index": i,
+                        "error": True,
+                        "message": f"Internal error processing item {i}",
+                    }
+                )
+
+        return results, errors
+
+    results, errors = await asyncio.to_thread(_process_batch)
 
     return json.dumps(
         {
@@ -1234,7 +1292,9 @@ def delete_memories(
 
 
 @mcp.tool()
-def delete_all_memories(user_id: str | None = None, agent_id: str | None = None) -> str:
+async def delete_all_memories(
+    user_id: str | None = None, agent_id: str | None = None
+) -> str:
     """Delete ALL memories for a user. Destructive, cannot be undone.
 
     Disabled by default. Set ENABLE_DELETE_ALL=true to enable.
@@ -1248,7 +1308,10 @@ def delete_all_memories(user_id: str | None = None, agent_id: str | None = None)
         collector = get_collector()
         if collector:
             collector.record_operation("delete_all", uid, aid)
-        result = _get_service().delete_all_memories(user_id=uid, agent_id=aid)
+        service = _get_service()
+        result = await asyncio.to_thread(
+            service.delete_all_memories, user_id=uid, agent_id=aid
+        )
         return json.dumps(result)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -1263,7 +1326,7 @@ def delete_all_memories(user_id: str | None = None, agent_id: str | None = None)
 
 
 @mcp.tool()
-def list_categories(user_id: str | None = None) -> str:
+async def list_categories(user_id: str | None = None) -> str:
     """List all available memory categories with descriptions and counts.
 
     Shows predefined categories and any dynamic project:<name> categories.
@@ -1274,7 +1337,8 @@ def list_categories(user_id: str | None = None) -> str:
         collector = get_collector()
         if collector:
             collector.record_operation("list_categories", uid)
-        result = _get_service().list_categories(user_id=uid)
+        service = _get_service()
+        result = await asyncio.to_thread(service.list_categories, user_id=uid)
         lines = []
         for cat in result["categories"]:
             count = cat["count"]
@@ -1295,7 +1359,7 @@ def list_categories(user_id: str | None = None) -> str:
 
 
 @mcp.tool()
-def save_artifact(
+async def save_artifact(
     memory_id: str,
     content: str,
     user_id: str | None = None,
@@ -1318,7 +1382,9 @@ def save_artifact(
         collector = get_collector()
         if collector:
             collector.record_operation("save_artifact", uid)
-        result = _get_service().save_artifact(
+        service = _get_service()
+        result = await asyncio.to_thread(
+            service.save_artifact,
             memory_id,
             user_id=uid,
             content=content,
@@ -1339,7 +1405,7 @@ def save_artifact(
 
 
 @mcp.tool()
-def get_artifact(
+async def get_artifact(
     memory_id: str,
     artifact_id: str,
     user_id: str | None = None,
@@ -1362,7 +1428,9 @@ def get_artifact(
         collector = get_collector()
         if collector:
             collector.record_operation("get_artifact", uid)
-        result = _get_service().get_artifact(
+        service = _get_service()
+        result = await asyncio.to_thread(
+            service.get_artifact,
             memory_id,
             artifact_id,
             user_id=uid,
@@ -1407,7 +1475,7 @@ def get_artifact(
 
 
 @mcp.tool()
-def list_artifacts(memory_id: str, user_id: str | None = None) -> str:
+async def list_artifacts(memory_id: str, user_id: str | None = None) -> str:
     """List all artifacts attached to a memory.
 
     Args:
@@ -1418,7 +1486,10 @@ def list_artifacts(memory_id: str, user_id: str | None = None) -> str:
         collector = get_collector()
         if collector:
             collector.record_operation("list_artifacts", uid)
-        artifacts = _get_service().list_artifacts(memory_id, user_id=uid)
+        service = _get_service()
+        artifacts = await asyncio.to_thread(
+            service.list_artifacts, memory_id, user_id=uid
+        )
         if not artifacts:
             return json.dumps({"artifacts": [], "message": "No artifacts found."})
         return json.dumps({"artifacts": artifacts})
@@ -1435,7 +1506,7 @@ def list_artifacts(memory_id: str, user_id: str | None = None) -> str:
 
 
 @mcp.tool()
-def delete_artifact(
+async def delete_artifact(
     memory_id: str, artifact_id: str, user_id: str | None = None
 ) -> str:
     """Delete an artifact from a memory.
@@ -1449,7 +1520,10 @@ def delete_artifact(
         collector = get_collector()
         if collector:
             collector.record_operation("delete_artifact", uid)
-        result = _get_service().delete_artifact(memory_id, artifact_id, user_id=uid)
+        service = _get_service()
+        result = await asyncio.to_thread(
+            service.delete_artifact, memory_id, artifact_id, user_id=uid
+        )
         return json.dumps(result)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -1464,7 +1538,7 @@ def delete_artifact(
 
 
 @mcp.tool()
-def get_artifact_url(
+async def get_artifact_url(
     memory_id: str,
     artifact_id: str,
     user_id: str | None = None,
@@ -1497,7 +1571,9 @@ def get_artifact_url(
 
         # Verify the artifact exists and user has access before generating a token.
         service = _get_service()
-        artifacts = service.list_artifacts(memory_id, user_id=uid)
+        artifacts = await asyncio.to_thread(
+            service.list_artifacts, memory_id, user_id=uid
+        )
         if not any(a["id"] == artifact_id for a in artifacts):
             return json.dumps(
                 {"error": True, "message": "Artifact not found or access denied"}
@@ -1863,6 +1939,16 @@ async def lifespan(app):
         except Exception:
             pass  # Tool may not exist if already removed
 
+    # Set up a bounded thread pool for MCP tool execution.
+    # MCP tools are async but offload blocking I/O (LLM calls, embeddings,
+    # Qdrant queries) to threads via asyncio.to_thread(). This pool limits
+    # concurrent blocking operations to prevent thread exhaustion.
+    pool_size = cfg.server.thread_pool_size
+    executor = ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="mcp-tool")
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(executor)
+    logger.info("Thread pool: max_workers=%d", pool_size)
+
     # Eagerly initialize the service so startup failures are caught early
     service = _get_service()
 
@@ -1911,10 +1997,11 @@ async def lifespan(app):
     )
     _maintenance_service = maintenance
 
-    # Wire maintenance service to metrics collector for schedule info
+    # Wire maintenance service and thread pool to metrics collector
     collector = get_collector()
     if collector is not None:
         collector.set_maintenance_service(maintenance)
+        collector.set_thread_pool(executor)
 
     await maintenance.start()
 
@@ -1927,6 +2014,10 @@ async def lifespan(app):
     _session_store.close()
     if _fsck_service is not None:
         await _fsck_service._store.stop_cleanup_task()
+    # wait=False: Kubernetes provides a grace period via SIGTERM→SIGKILL.
+    # Waiting here could stall pod termination for 30+ seconds if an LLM
+    # call is in flight.
+    executor.shutdown(wait=False)
     logger.info("mnemory shutting down")
 
 

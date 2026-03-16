@@ -232,6 +232,21 @@ class MetricsCollector:
             registry=self._registry,
         )
 
+        # ── Thread pool gauges ────────────────────────────────────
+        self._thread_pool_size = Gauge(
+            "mnemory_thread_pool_max_workers",
+            "Maximum number of threads in the MCP tool thread pool",
+            registry=self._registry,
+        )
+        self._thread_pool_threads = Gauge(
+            "mnemory_thread_pool_threads",
+            "Number of spawned threads in the MCP tool thread pool (idle + busy)",
+            registry=self._registry,
+        )
+
+        # Reference to the thread pool executor (set during startup)
+        self._thread_pool: Any = None
+
     # ── Public API ────────────────────────────────────────────────
 
     def set_maintenance_service(self, maintenance: Any) -> None:
@@ -241,6 +256,15 @@ class MetricsCollector:
         MaintenanceService are created.
         """
         self._maintenance = maintenance
+
+    def set_thread_pool(self, executor: Any) -> None:
+        """Set a reference to the MCP tool thread pool for metrics.
+
+        Called once during startup after the ThreadPoolExecutor is created.
+        """
+        self._thread_pool = executor
+        if hasattr(executor, "_max_workers"):
+            self._thread_pool_size.set(executor._max_workers)
 
     def record_operation(
         self,
@@ -339,10 +363,19 @@ class MetricsCollector:
         aggregates by dimensions, and updates gauge values. Results
         are cached for ``metrics_cache_ttl`` seconds.
 
-        Also updates the active sessions gauge (always fresh).
+        Also updates the active sessions gauge and thread pool gauge
+        (always fresh).
         """
         # Active sessions — always fresh (cheap)
         self._active_sessions.set(self._session_store.active_count)
+
+        # Thread pool spawned threads — always fresh (cheap).
+        # ThreadPoolExecutor._threads is the set of all spawned worker
+        # threads (idle + busy). This is the best approximation without
+        # instrumenting each task submission.
+        if self._thread_pool is not None:
+            spawned = len(getattr(self._thread_pool, "_threads", set()))
+            self._thread_pool_threads.set(spawned)
 
         # Check cache
         now = time.monotonic()

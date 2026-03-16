@@ -208,6 +208,18 @@ class ServerConfig:
         default_factory=lambda: _env_int("METRICS_CACHE_TTL", 60)
     )
 
+    # Thread pool size for MCP tool execution.
+    # MCP tool functions are async but offload blocking work (LLM calls,
+    # embeddings, Qdrant queries) to a thread pool via asyncio.to_thread().
+    # This controls the max concurrent blocking operations.
+    # Default: min(32, os.cpu_count() + 4) — same as Python's default.
+    thread_pool_size: int = field(
+        default_factory=lambda: _env_int(
+            "MCP_THREAD_POOL_SIZE",
+            min(32, (os.cpu_count() or 1) + 4),
+        )
+    )
+
     # Download token settings for artifact raw access
     download_token_ttl: int = field(
         default_factory=lambda: _env_int("DOWNLOAD_TOKEN_TTL", 3600)
