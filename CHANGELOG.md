@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [1.8.1] — 2026-03-16
+
+### Bug Fixes
+
+- **MCP tools no longer block the event loop**: All 19 MCP tool functions converted from synchronous to `async def` with `asyncio.to_thread()`. Previously, blocking LLM calls (28–40s) ran directly on the asyncio event loop, preventing `/health` from responding and causing Kubernetes liveness probe failures. The server now remains responsive during all MCP operations ([`80db248`](https://github.com/fpytloun/mnemory/commit/80db248))
+- **TOCTOU race in `update_memory` and `delete_memory`**: Access control check (`verify_memory_access`) and the mutating operation are now executed atomically in a single thread call, eliminating a race window introduced by the async conversion ([`80db248`](https://github.com/fpytloun/mnemory/commit/80db248))
+
+### Performance
+
+- **Bounded thread pool for MCP tool execution**: A configurable `ThreadPoolExecutor` (env var `MCP_THREAD_POOL_SIZE`, default `min(32, cpu_count + 4)`) is set as the event loop's default executor. Multiple MCP tool calls can now execute concurrently instead of serializing on the event loop ([`80db248`](https://github.com/fpytloun/mnemory/commit/80db248))
+- **Thread-safe service initialization**: `_get_service()` uses double-checked locking to prevent race conditions when multiple `asyncio.to_thread()` calls trigger lazy initialization concurrently ([`80db248`](https://github.com/fpytloun/mnemory/commit/80db248))
+
+### Observability
+
+- **Thread pool Prometheus metrics**: Two new gauges — `mnemory_thread_pool_max_workers` (configured pool size) and `mnemory_thread_pool_threads` (spawned thread count) — for monitoring thread pool utilization ([`80db248`](https://github.com/fpytloun/mnemory/commit/80db248))
+
 ## [1.8.0] — 2026-03-14
 
 ### Client-Provided Labels
