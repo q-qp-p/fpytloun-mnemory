@@ -105,6 +105,11 @@ class Filter:
         self.valves = self.Valves()
         # Track which chats have been initialized (chat_id -> session_id)
         self._sessions: dict[str, str] = {}
+        # Pending session from first message when chat_id is not yet available.
+        # Open WebUI may not provide chat_id on the first message of a new
+        # chat (chat not yet saved to DB). This slot holds the server-side
+        # session_id until the real chat_id arrives on the second message.
+        self._pending_session_id: str | None = None
 
     async def _post(self, path: str, payload: dict, user: dict) -> dict | None:
         """Make a POST request to mnemory REST API."""
@@ -157,9 +162,29 @@ class Filter:
                     if not any(t.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES)
                 ]
 
-        chat_id = body.get("chat_id", "")
-        session_id = self._sessions.get(chat_id)
-        is_first = session_id is None
+        chat_id = body.get("chat_id") or ""
+
+        # Look up or adopt server-side session for dedup tracking.
+        # Open WebUI may not provide chat_id on the first message of a
+        # new chat (chat not yet saved to DB).  When the real chat_id
+        # arrives on the second message, adopt the pending session so
+        # known_ids for dedup are preserved across the transition.
+        if chat_id:
+            session_id = self._sessions.get(chat_id)
+            if session_id is None and self._pending_session_id:
+                session_id = self._pending_session_id
+                self._sessions[chat_id] = session_id
+                self._pending_session_id = None
+        else:
+            session_id = self._pending_session_id
+
+        # Determine first turn from conversation history, not session
+        # tracking.  Session-based detection is unreliable because
+        # chat_id may be absent on the first message, causing the
+        # empty-key entry in _sessions to collide across different chats.
+        messages = body.get("messages", [])
+        user_msg_count = sum(1 for m in messages if m.get("role") == "user")
+        is_first = user_msg_count <= 1
 
         # In first_only mode, skip recall on subsequent messages entirely
         if not is_first and self.valves.recall_mode == "first_only":
@@ -211,12 +236,16 @@ class Filter:
         result = await self._post("/api/recall", payload, __user__)
 
         if result and result.get("session_id"):
-            self._sessions[chat_id] = result["session_id"]
-            # Evict oldest entries if over limit to prevent unbounded growth
-            if len(self._sessions) > self._MAX_SESSIONS:
-                excess = len(self._sessions) - self._MAX_SESSIONS
-                for key in list(self._sessions)[:excess]:
-                    del self._sessions[key]
+            if chat_id:
+                self._sessions[chat_id] = result["session_id"]
+                self._pending_session_id = None
+                # Evict oldest entries if over limit to prevent unbounded growth
+                if len(self._sessions) > self._MAX_SESSIONS:
+                    excess = len(self._sessions) - self._MAX_SESSIONS
+                    for key in list(self._sessions)[:excess]:
+                        del self._sessions[key]
+            else:
+                self._pending_session_id = result["session_id"]
 
         # Build injection text
         parts = []
