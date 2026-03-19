@@ -136,7 +136,15 @@ def recall(
     # Build instructions if requested
     if req.include_instructions:
         try:
-            if req.managed:
+            if req.managed and req.instruction_mode:
+                # Managed + explicit mode: compose managed recall/storage
+                # with the specified mode's behavioral guidance.
+                from mnemory.instructions import build_instructions
+
+                response.instructions = build_instructions(
+                    req.instruction_mode, managed=True
+                )
+            elif req.managed:
                 from mnemory.instructions import build_managed_instructions
 
                 response.instructions = build_managed_instructions()

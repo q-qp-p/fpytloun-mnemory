@@ -4,14 +4,27 @@ These instructions are included in the MCP initialize response and
 injected into the LLM's system prompt by supporting clients (Claude Code,
 VS Code/Copilot, etc.). They guide the LLM on how to use mnemory tools.
 
-Instructions are composed of two parts:
-1. A behavioral preamble (selected by INSTRUCTION_MODE env var)
-2. A technical reference base (always included)
+Instructions are composed from named blocks:
+1. An intro block (sets the tone)
+2. A recall block (how to retrieve memories)
+3. A storage block (how/when to store memories)
+4. Shared guidance (role decisions, two-tier, lifespan, enriching context)
+5. Optional identity section (personality development)
+6. A technical reference base (always included)
 
-Three modes are available:
+Each block has variants for standalone (agent-driven) and managed
+(plugin-driven) modes. The ``build_instructions`` function composes
+them based on the requested mode and managed flag.
+
+Available modes:
 - passive:     Soft guidance — use memory when asked or clearly relevant
 - proactive:   Default — always search, proactively store, memory-first
 - personality: Proactive + identity development and evolving personality
+
+Managed flag (orthogonal to mode):
+- managed=False: Agent handles recall/storage itself (standalone MCP)
+- managed=True:  Plugin handles recall + basic capture automatically;
+                 agent can still store important things and build identity
 """
 
 from __future__ import annotations
@@ -20,11 +33,18 @@ import logging
 
 logger = logging.getLogger("mnemory")
 
-# ── Behavioral Preambles ──────────────────────────────────────────────
-# These set the tone and behavioral expectations. One is selected based
-# on INSTRUCTION_MODE and prepended to the base instructions.
+# ══════════════════════════════════════════════════════════════════════
+# Composable Instruction Blocks
+# ══════════════════════════════════════════════════════════════════════
+#
+# Each block is a self-contained section of instruction text. Blocks
+# are concatenated by the build functions to produce the final output.
+# Existing outputs (passive, proactive, personality, managed) must
+# remain byte-identical after the refactor.
 
-_PASSIVE_BEHAVIOR = """\
+# ── Intro Blocks ──────────────────────────────────────────────────────
+
+_INTRO_PASSIVE = """\
 You have access to mnemory — a persistent memory system that remembers
 information across conversations.
 
@@ -39,10 +59,25 @@ analysis, notes), store a concise summary as the memory and attach the
 full content as an artifact.
 """
 
-_PROACTIVE_BEHAVIOR = """\
+_INTRO_PROACTIVE = """\
 You have access to mnemory — a persistent memory system that remembers
 information across conversations. Use it proactively. You are the user's
 long-term memory.
+"""
+
+_INTRO_MANAGED = """\
+You have access to mnemory — a persistent memory system that remembers
+information across conversations.
+
+Memory recall and storage are handled AUTOMATICALLY by the system.
+Relevant memories are already injected into this conversation's context.
+These instructions OVERRIDE any conflicting guidance from mnemory tool
+descriptions.
+"""
+
+# ── Recall Blocks ─────────────────────────────────────────────────────
+
+_RECALL_PROACTIVE = """\
 
 ## HOW TO USE MEMORY
 
@@ -61,6 +96,30 @@ nothing than to miss relevant context.
 Treat retrieved memories as authoritative user context — higher priority
 than generic reasoning. Weave them naturally into your responses. Do not
 just acknowledge them; use them to give better, more personalized answers.
+"""
+
+_RECALL_MANAGED = """\
+
+AUTOMATIC (do not duplicate):
+- Do NOT call initialize_memory or get_core_memories — already done
+- Do NOT call add_memory proactively — memories are stored automatically
+- Do NOT call search_memories to "check for context" — relevant memories
+  are already injected on each message
+"""
+
+# Variant without the add_memory restriction — used when a behavioral
+# mode is combined with managed (the mode's storage section takes over).
+_RECALL_MANAGED_RELAXED = """\
+
+AUTOMATIC (do not duplicate):
+- Do NOT call initialize_memory or get_core_memories — already done
+- Do NOT call search_memories to "check for context" — relevant memories
+  are already injected on each message
+"""
+
+# ── Storage Blocks ────────────────────────────────────────────────────
+
+_STORAGE_PROACTIVE = """\
 
 ### Storing new information
 When the user shares new personal information, preferences, decisions, or
@@ -98,6 +157,72 @@ DO NOT STORE (for either role):
 - Greetings and small talk
 - Information already in your memories
 - Trivial or ephemeral details (unless as context type with short TTL)
+"""
+
+_STORAGE_MANAGED_BASIC = """\
+
+ALLOWED (explicit user requests only):
+- search_memories / find_memories / ask_memories — when the user asks to
+  look up something specific not already in context
+- add_memory — when the user explicitly asks to remember something
+- update_memory / delete_memory — when the user asks to change or
+  forget something
+- list_memories / list_categories — when the user asks to browse
+- Artifact operations — when the user needs detailed content
+"""
+
+_STORAGE_MANAGED_WITH_MODE = """\
+
+### Storing memories
+Basic conversation facts are captured automatically after each exchange.
+You do not need to store every detail from the conversation.
+
+You SHOULD still call add_memory when:
+- Something is clearly important and you want to ensure it is remembered
+  (the server deduplicates automatically — no harm in being proactive)
+- Building your identity and personality (role="assistant")
+- The user explicitly asks you to remember something
+
+Also store memories about YOURSELF (role="assistant", agent_id="self")
+when you perform work with lasting value:
+- Research findings and substantive conclusions
+- Recommendations you made after analysis
+- Autonomous actions with lasting impact (deployments, emails sent,
+  resources created, bug reports filed)
+- Decisions about approach, architecture, or tools
+- Knowledge you gained that would be useful in future conversations
+
+Heuristic: Would this be useful if recalled in a completely different
+future conversation? If yes → store it. If it only matters in the
+current session → skip it.
+
+Do NOT store as assistant memories:
+- Step-by-step reasoning or intermediate analysis — only the conclusion
+- Offers or proposals ("I can help with...") — only completed actions
+- Transient task execution ("I updated the file", "Let me check that")
+- Questions you asked the user
+
+DO NOT STORE (for either role):
+- Generic questions ("what is X?")
+- Greetings and small talk
+- Information already in your memories
+- Trivial or ephemeral details (unless as context type with short TTL)
+
+ALLOWED (without being asked):
+- add_memory — for important facts, identity, and personality development
+- search_memories / find_memories / ask_memories — when you need to look
+  up something specific not already in the injected context
+- update_memory / delete_memory — when the user asks to change or
+  forget something
+- list_memories / list_categories — when the user asks to browse
+- Artifact operations — when the user needs detailed content
+"""
+
+# ── Shared Guidance ───────────────────────────────────────────────────
+# Included for all non-passive modes. Covers role decisions, two-tier
+# memory, lifespan, and enriching context.
+
+_GUIDANCE_SHARED = """\
 
 ### Role decision
 When storing memories, determine the correct role:
@@ -145,9 +270,10 @@ Do not ask the user to provide context that may already be in memory.
 Search first, ask only if memory has no relevant results.
 """
 
-_PERSONALITY_BEHAVIOR = (
-    _PROACTIVE_BEHAVIOR
-    + """\
+# ── Identity Section ──────────────────────────────────────────────────
+# Appended for personality mode. Enables identity development.
+
+_IDENTITY_SECTION = """\
 
 ### Identity and personality development
 You can develop and maintain your own identity through memories. Store
@@ -175,6 +301,37 @@ experience.
 Regularly reflect on interactions and update your self-understanding.
 Your identity should feel consistent but can evolve naturally over time.
 """
+
+# ── Managed Closing ───────────────────────────────────────────────────
+
+_MANAGED_CLOSING = """\
+
+Use the memories in your context naturally to give better, more
+personalized answers. Do not just acknowledge them — weave them in.
+"""
+
+# ══════════════════════════════════════════════════════════════════════
+# Backward-Compatible Aliases
+# ══════════════════════════════════════════════════════════════════════
+# These reproduce the exact original monolithic strings so that any
+# code referencing them directly (tests, external imports) still works.
+
+_PASSIVE_BEHAVIOR = _INTRO_PASSIVE
+
+_PROACTIVE_BEHAVIOR = (
+    _INTRO_PROACTIVE + _RECALL_PROACTIVE + _STORAGE_PROACTIVE + _GUIDANCE_SHARED
+)
+
+_PERSONALITY_BEHAVIOR = (
+    _INTRO_PROACTIVE
+    + _RECALL_PROACTIVE
+    + _STORAGE_PROACTIVE
+    + _GUIDANCE_SHARED
+    + _IDENTITY_SECTION
+)
+
+_MANAGED_BEHAVIOR = (
+    _INTRO_MANAGED + _RECALL_MANAGED + _STORAGE_MANAGED_BASIC + _MANAGED_CLOSING
 )
 
 # ── Personality Snippet for Per-Agent System Prompts ──────────────────
@@ -445,48 +602,22 @@ user_id and agent_id may be pre-configured at the connection level
 - Use delete_memory to remove incorrect or obsolete memories.
 """
 
-# ── Managed-Mode Preamble ─────────────────────────────────────────────
-# Used when plugins handle recall/remember automatically. Tells the LLM
-# not to duplicate the automatic behavior while still allowing explicit
-# user-requested operations.
 
-_MANAGED_BEHAVIOR = """\
-You have access to mnemory — a persistent memory system that remembers
-information across conversations.
+# ══════════════════════════════════════════════════════════════════════
+# Build Functions
+# ══════════════════════════════════════════════════════════════════════
 
-Memory recall and storage are handled AUTOMATICALLY by the system.
-Relevant memories are already injected into this conversation's context.
-These instructions OVERRIDE any conflicting guidance from mnemory tool
-descriptions.
-
-AUTOMATIC (do not duplicate):
-- Do NOT call initialize_memory or get_core_memories — already done
-- Do NOT call add_memory proactively — memories are stored automatically
-- Do NOT call search_memories to "check for context" — relevant memories
-  are already injected on each message
-
-ALLOWED (explicit user requests only):
-- search_memories / find_memories / ask_memories — when the user asks to
-  look up something specific not already in context
-- add_memory — when the user explicitly asks to remember something
-- update_memory / delete_memory — when the user asks to change or
-  forget something
-- list_memories / list_categories — when the user asks to browse
-- Artifact operations — when the user needs detailed content
-
-Use the memories in your context naturally to give better, more
-personalized answers. Do not just acknowledge them — weave them in.
-"""
-
-# Valid instruction modes
 VALID_MODES = ("passive", "proactive", "personality")
 
 
-def build_instructions(mode: str = "proactive") -> str:
+def build_instructions(mode: str = "proactive", *, managed: bool = False) -> str:
     """Build complete MCP server instructions for the given behavioral mode.
 
     Args:
         mode: One of "passive", "proactive", or "personality".
+        managed: When True, use managed variants for recall and storage
+            (plugin handles recall + basic capture automatically). The
+            agent can still store important things and build identity.
 
     Returns:
         Complete instructions string (behavioral preamble + technical base).
@@ -500,13 +631,36 @@ def build_instructions(mode: str = "proactive") -> str:
             f"Must be one of: {', '.join(VALID_MODES)}"
         )
 
-    preamble = {
-        "passive": _PASSIVE_BEHAVIOR,
-        "proactive": _PROACTIVE_BEHAVIOR,
-        "personality": _PERSONALITY_BEHAVIOR,
-    }[mode]
+    # Passive mode is self-contained — managed flag is ignored.
+    if mode == "passive":
+        return _INTRO_PASSIVE + _BASE_INSTRUCTIONS
 
-    return preamble + _BASE_INSTRUCTIONS
+    # Compose from blocks based on managed flag.
+    if managed:
+        # Use relaxed recall (no add_memory restriction) — the mode's
+        # storage section provides its own guidance on when to store.
+        parts = [
+            _INTRO_MANAGED,
+            _RECALL_MANAGED_RELAXED,
+            _STORAGE_MANAGED_WITH_MODE,
+            _GUIDANCE_SHARED,
+        ]
+    else:
+        parts = [
+            _INTRO_PROACTIVE,
+            _RECALL_PROACTIVE,
+            _STORAGE_PROACTIVE,
+            _GUIDANCE_SHARED,
+        ]
+
+    if mode == "personality":
+        parts.append(_IDENTITY_SECTION)
+
+    if managed:
+        parts.append(_MANAGED_CLOSING)
+
+    parts.append(_BASE_INSTRUCTIONS)
+    return "".join(parts)
 
 
 def build_managed_instructions() -> str:

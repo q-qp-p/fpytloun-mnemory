@@ -45,6 +45,66 @@ class TestManagedInstructions:
         with pytest.raises(ValueError, match="Invalid INSTRUCTION_MODE"):
             build_instructions("invalid")
 
+    def test_build_instructions_managed_personality(self):
+        """Managed + personality should combine managed recall with personality guidance."""
+        text = build_instructions("personality", managed=True)
+        # Should have managed intro and recall
+        assert "handled AUTOMATICALLY" in text
+        assert "Do NOT call initialize_memory" in text
+        # Should NOT have restrictive add_memory prohibition
+        assert "Do NOT call add_memory proactively" not in text
+        # Should have relaxed storage guidance
+        assert "Basic conversation facts are captured automatically" in text
+        assert "You SHOULD still call add_memory" in text
+        # Should have personality identity section
+        assert "Identity and personality development" in text
+        # Should have shared guidance
+        assert "Role decision" in text
+        assert "Two-tier memory" in text
+        assert "Memory lifespan" in text
+        # Should have base reference
+        assert "TOOL REFERENCE" in text
+        # Should have managed closing
+        assert "Use the memories in your context naturally" in text
+        # Should NOT have proactive recall instructions
+        assert "ALWAYS call initialize_memory" not in text
+
+    def test_build_instructions_managed_proactive(self):
+        """Managed + proactive should combine managed recall with proactive storage."""
+        text = build_instructions("proactive", managed=True)
+        assert "handled AUTOMATICALLY" in text
+        assert "Do NOT call add_memory proactively" not in text
+        assert "You SHOULD still call add_memory" in text
+        # Should NOT have identity section
+        assert "Identity and personality development" not in text
+        assert "TOOL REFERENCE" in text
+
+    def test_build_instructions_managed_passive(self):
+        """Managed + passive should be same as plain passive (managed ignored)."""
+        managed = build_instructions("passive", managed=True)
+        plain = build_instructions("passive")
+        assert managed == plain
+
+    def test_backward_compat_existing_modes(self):
+        """Existing mode outputs must be byte-identical after refactor."""
+        import hashlib
+
+        expected = {
+            "passive": (10766, "f568399d14fcd59f"),
+            "proactive": (14773, "80ed0dcb7cbcfbb3"),
+            "personality": (15918, "196478fc710270aa"),
+        }
+        for mode, (exp_len, exp_hash) in expected.items():
+            text = build_instructions(mode)
+            h = hashlib.sha256(text.encode()).hexdigest()[:16]
+            assert len(text) == exp_len, f"{mode}: length {len(text)} != {exp_len}"
+            assert h == exp_hash, f"{mode}: hash {h} != {exp_hash}"
+
+        managed = build_managed_instructions()
+        h = hashlib.sha256(managed.encode()).hexdigest()[:16]
+        assert len(managed) == 11323, f"managed: length {len(managed)} != 11323"
+        assert h == "14672ad55f8f2c74", f"managed: hash {h} != 14672ad55f8f2c74"
+
 
 class TestRecallScoreThreshold:
     """Test score threshold filtering in recall endpoint."""
