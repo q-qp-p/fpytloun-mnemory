@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.8.2] — 2026-03-20
+
+### OpenWebUI Filter
+
+- **Fixed prompt cache invalidation**: Recalled memories are now appended after the last user message instead of inserted before it. The previous insertion strategy shifted the cached prefix boundary on every turn, causing OpenAI prompt cache misses (~10% hit rate). The new append strategy preserves the entire conversation history as a stable prefix, restoring cache hit rates to ~70% — matching the behavior without the filter. Measured savings: ~60% reduction in input token cost per request ([`41dc285`](https://github.com/fpytloun/mnemory/commit/41dc285))
+- **First-turn initialization**: Filter now correctly loads instructions and core memories on the first message of a conversation, using the `/api/recall` endpoint with `include_instructions=True` and `managed=True` ([`78c638b`](https://github.com/fpytloun/mnemory/commit/78c638b))
+
+### Instructions
+
+- **Composable instruction blocks with managed mode**: Refactored instruction system into composable blocks (`_INTRO_*`, `_RECALL_*`, `_STORAGE_*`, `_GUIDANCE_*`) that can be combined per mode. New `managed` flag for plugin/filter clients that handle recall and storage automatically — produces minimal instructions telling the LLM not to duplicate automatic operations. Supports `managed=True` with optional `instruction_mode` override for personality/proactive guidance within managed contexts ([`75dec50`](https://github.com/fpytloun/mnemory/commit/75dec50))
+
 ## [1.8.1] — 2026-03-16
 
 ### Bug Fixes
