@@ -264,17 +264,14 @@ class Filter:
                     parts.append(f"## Recalled Memories\n{memories_text}")
 
         if parts:
-            # Insert before the last user message to preserve the
-            # conversation prefix for LLM prompt caching.  Inserting at
-            # index 0 would put dynamic content before the stable system
-            # prompt, invalidating the cache on every turn.
-            insert_pos = 0
-            for i in range(len(body["messages"]) - 1, -1, -1):
-                if body["messages"][i].get("role") == "user":
-                    insert_pos = i
-                    break
-            body["messages"].insert(
-                insert_pos,
+            # Append after the last user message to preserve the
+            # conversation prefix for LLM prompt caching.  The entire
+            # conversation history (system prompt, prior user/assistant
+            # exchanges, and the current user message) forms a stable,
+            # append-only prefix that OpenAI can cache across turns.
+            # Inserting *before* the last user message would shift the
+            # cached prefix boundary on every turn, breaking the cache.
+            body["messages"].append(
                 {
                     "role": "system",
                     "content": "\n\n".join(parts),
