@@ -407,7 +407,10 @@ document.addEventListener('alpine:init', () => {
         const data = await MnemoryAPI.get(`/sessions/${sessionId}`);
         this.session = data;
       } catch (err) {
-        Alpine.store('notify').error(`Failed to load session: ${err.message}`);
+        const msg = err.message?.includes('404') || err.message?.includes('not found')
+          ? 'Session summary not found — it may predate the session persistence feature'
+          : `Failed to load session: ${err.message}`;
+        Alpine.store('notify').error(msg);
         this.open = false;
       } finally {
         this.loading = false;
