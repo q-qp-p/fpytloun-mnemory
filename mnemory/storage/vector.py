@@ -1530,6 +1530,9 @@ class SessionSummaryStore:
         sessions = []
         for point in result[0]:
             payload = dict(point.payload or {})
+            # Skip entries with missing session_id (corrupted/legacy data)
+            if not payload.get("session_id"):
+                continue
             updated_at_str = payload.get("updated_at", "")
             if updated_at_str:
                 try:
@@ -1609,7 +1612,15 @@ class SessionSummaryStore:
             with_payload=True,
         )
 
-        sessions = [dict(p.payload or {}) for p in result[0]]
+        sessions = []
+        for p in result[0]:
+            payload = dict(p.payload or {})
+            # Skip entries with missing session_id (corrupted/legacy data)
+            if not payload.get("session_id"):
+                continue
+            # Include the Qdrant point ID for reference
+            payload["_point_id"] = str(p.id)
+            sessions.append(payload)
         # Sort by updated_at descending
         sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
         return sessions
