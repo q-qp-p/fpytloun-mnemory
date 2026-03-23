@@ -50,7 +50,7 @@ export const MnemoryPlugin: Plugin = async ({ client, worktree, directory }) => 
     process.env.MNEMORY_SCORE_THRESHOLD || "0.5",
   )
   const includeAssistant =
-    (process.env.MNEMORY_INCLUDE_ASSISTANT || "false").toLowerCase() === "true"
+    (process.env.MNEMORY_INCLUDE_ASSISTANT || "true").toLowerCase() === "true"
 
   // ── State ────────────────────────────────────────────────────────
   // Track mnemory session per OpenCode session.

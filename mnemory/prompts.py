@@ -1824,6 +1824,16 @@ Focus on OUTCOMES, not process. Write "Decided to use X" not "Discussed X".
 Preserve substantive assistant recommendations — these are valuable for
 future context even if the user hasn't explicitly confirmed them yet.
 
+If the assistant performed substantive work (implemented code, designed a
+system, researched a topic, deployed something, made a recommendation),
+capture it: "Assistant implemented X", "Assistant designed Y". Assistant
+contributions are as important as user decisions.
+
+For trivial exchanges (greetings, status checks, acknowledgements, short
+nudges with no new information), write a minimal summary like "Brief
+status check" or "No new substantive information". Do NOT inflate trivial
+exchanges into "User asked..." statements.
+
 This summary will be used as context for processing future exchanges
 in the same conversation, and as a source for memory consolidation.
 
@@ -2160,6 +2170,16 @@ The summary should capture:
 Focus on OUTCOMES, not process. Write "Decided to use X" not "Discussed X".
 Preserve substantive assistant recommendations — these are valuable for
 future context even if the user hasn't explicitly confirmed them yet.
+
+If the assistant performed substantive work (implemented code, designed a
+system, researched a topic, deployed something, made a recommendation),
+capture it: "Assistant implemented X", "Assistant designed Y". Assistant
+contributions are as important as user decisions.
+
+For trivial exchanges (greetings, status checks, acknowledgements, short
+nudges with no new information), write a minimal summary like "Brief
+status check" or "No new substantive information". Do NOT inflate trivial
+exchanges into "User asked..." statements.
 
 This summary will be used as context for processing future exchanges
 in the same conversation, and as a source for memory consolidation.
@@ -2519,6 +2539,16 @@ The summary should capture:
 Focus on OUTCOMES, not process. Write "Decided to use X" not "Discussed X".
 Preserve substantive assistant recommendations — these are valuable for
 future context even if the user hasn't explicitly confirmed them yet.
+
+If the assistant performed substantive work (implemented code, designed a
+system, researched a topic, deployed something, made a recommendation),
+capture it: "Assistant implemented X", "Assistant designed Y". Assistant
+contributions are as important as user decisions.
+
+For trivial exchanges (greetings, status checks, acknowledgements, short
+nudges with no new information), write a minimal summary like "Brief
+status check" or "No new substantive information". Do NOT inflate trivial
+exchanges into "User asked..." statements.
 
 This summary will be used as context for processing future exchanges
 in the same conversation, and as a source for memory consolidation.
@@ -3359,6 +3389,7 @@ CRITICAL: Preserve the following in order of priority:
 - Conclusions reached and decisions made
 - Accepted recommendations and their reasoning
 - Constraints and requirements agreed upon
+- What the assistant did or concluded (implementations, designs, recommendations)
 - What artifacts were produced and what they contain
 - Named entities (people, projects, tools, places)
 - Current state — what is resolved and what remains open
@@ -3367,8 +3398,13 @@ Do NOT preserve:
 - Turn-by-turn conversational flow or chronology
 - Intermediate reasoning steps (keep only final conclusions)
 - Resolved objections (keep only the resolution)
-- "User said/asked/thinks" framing — rewrite as outcomes where possible
 - Assistant reasoning process or exploration steps without conclusions
+
+Rewrite "User asked/said" patterns aggressively:
+- If the ask led to a decision or action, write the outcome instead
+- If the ask was a status check or nudge with no outcome, drop it entirely
+- "User asked to implement X" → "X was implemented" or drop if covered
+- "User said ok" / "User asked for status" → drop entirely
 
 Compress by focusing on OUTCOMES and DECISIONS, not on the conversation
 process. Write in terms of what was concluded, not who said what.
