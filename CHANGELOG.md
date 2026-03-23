@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.8.3] — 2026-03-23
+
 ### Bug Fixes
 
 - **Reject unsupported categories in `add_memory`**: User-provided categories are now validated immediately against the predefined set before entering the LLM pipeline. Previously, invalid categories (e.g., "professional", "coding") were silently downgraded to an empty list via the `_validate_metadata()` fallback, making those memories invisible in the UI's category filters. Now returns a clear error listing valid categories, matching the existing behavior of `update_memory()`. LLM-extracted categories are also filtered against the predefined set during parsing, preventing hallucinated categories from entering the pipeline and reducing unnecessary LLM retry calls.
