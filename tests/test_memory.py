@@ -725,6 +725,116 @@ class TestBatchAdd:
         service.artifact.save.assert_called_once()
 
 
+# ── Category validation in add_memory ──────────────────────────────────
+
+
+class TestAddMemoryCategoryValidation:
+    """Test that add_memory rejects invalid user-provided categories."""
+
+    def test_rejects_invalid_categories_infer_false(self):
+        """Invalid categories should raise ValueError with infer=False."""
+        service = _make_service()
+        with pytest.raises(ValueError, match="Unknown category 'professional'"):
+            service.add_memory(
+                content="test",
+                user_id="filip",
+                categories=["professional"],
+                infer=False,
+            )
+
+    def test_rejects_invalid_categories_infer_true(self):
+        """Invalid categories should raise ValueError with infer=True."""
+        service = _make_service()
+        with pytest.raises(ValueError, match="Unknown category 'coding'"):
+            service.add_memory(
+                content="test",
+                user_id="filip",
+                categories=["coding"],
+                infer=True,
+            )
+
+    def test_accepts_valid_categories_infer_false(self):
+        """Valid predefined categories should pass through."""
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        result = service.add_memory(
+            content="test",
+            user_id="filip",
+            categories=["work", "technical"],
+            memory_type="fact",
+            importance="normal",
+            pinned=False,
+            infer=False,
+        )
+
+        assert result.get("error") is not True
+        _, kwargs = service.vector.insert.call_args
+        assert kwargs["metadata"]["categories"] == ["work", "technical"]
+
+    def test_accepts_project_subcategory(self):
+        """Dynamic project:<name> categories should pass through."""
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        result = service.add_memory(
+            content="test",
+            user_id="filip",
+            categories=["project:myapp"],
+            memory_type="fact",
+            importance="normal",
+            pinned=False,
+            infer=False,
+        )
+
+        assert result.get("error") is not True
+        _, kwargs = service.vector.insert.call_args
+        assert kwargs["metadata"]["categories"] == ["project:myapp"]
+
+    def test_none_categories_not_validated(self):
+        """None categories (auto-classify) should not trigger validation."""
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        # Should not raise — None means auto-classify
+        result = service.add_memory(
+            content="test",
+            user_id="filip",
+            categories=None,
+            infer=False,
+        )
+
+        assert result.get("error") is not True
+
+    def test_empty_categories_accepted(self):
+        """Empty list should be accepted without error."""
+        service = _make_service()
+        service.vector.insert.return_value = "mem-1"
+
+        result = service.add_memory(
+            content="test",
+            user_id="filip",
+            categories=[],
+            memory_type="fact",
+            importance="normal",
+            pinned=False,
+            infer=False,
+        )
+
+        assert result.get("error") is not True
+
+    def test_rejects_various_invalid_category_names(self):
+        """Different invalid category names should all be rejected."""
+        service = _make_service()
+        with pytest.raises(ValueError, match="Unknown category 'lifestyle'"):
+            service.add_memory(
+                content="test",
+                user_id="filip",
+                categories=["lifestyle"],
+                infer=False,
+            )
+
+
 # ── Classification in infer=False path ─────────────────────────────────
 
 

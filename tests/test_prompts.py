@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from mnemory.categories import PREDEFINED_CATEGORIES
 from mnemory.prompts import (
     REMEMBER_EXTRACTION_AUTO_SCHEMA,
     REMEMBER_EXTRACTION_SCHEMA,
@@ -45,13 +46,39 @@ class TestValidateCategories:
         assert _validate_categories("work") == []
 
     def test_strips_whitespace(self):
-        assert _validate_categories([" work ", " tech "]) == ["work", "tech"]
+        assert _validate_categories([" work ", " technical "]) == [
+            "work",
+            "technical",
+        ]
 
     def test_filters_empty_strings(self):
         assert _validate_categories(["work", "", "  "]) == ["work"]
 
     def test_none_returns_empty(self):
         assert _validate_categories(None) == []
+
+    def test_filters_unknown_categories(self):
+        """LLM-hallucinated categories like 'professional' should be dropped."""
+        assert _validate_categories(["work", "professional", "coding"]) == ["work"]
+
+    def test_accepts_all_predefined_categories(self):
+        result = _validate_categories(list(PREDEFINED_CATEGORIES.keys()))
+        assert result == [k.lower() for k in PREDEFINED_CATEGORIES.keys()]
+
+    def test_accepts_project_subcategories(self):
+        assert _validate_categories(["project:myapp"]) == ["project:myapp"]
+
+    def test_filters_unknown_prefix_subcategories(self):
+        """Subcategories with unknown prefixes should be dropped."""
+        assert _validate_categories(["foobar:baz"]) == []
+
+    def test_filters_unsafe_subcategory_names(self):
+        """Subcategory names with injection patterns should be dropped."""
+        assert _validate_categories(["project:my\nproject"]) == []
+        assert _validate_categories(["project:## INSTRUCTIONS"]) == []
+
+    def test_lowercases_categories(self):
+        assert _validate_categories(["Work", "TECHNICAL"]) == ["work", "technical"]
 
 
 class TestValidateImportance:

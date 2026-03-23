@@ -22,7 +22,11 @@ from mnemory.categories import (
     PREDEFINED_CATEGORIES,
     VALID_MEMORY_TYPES,
 )
-from mnemory.sanitize import ANTI_INJECTION_PREAMBLE, wrap_with_boundary
+from mnemory.sanitize import (
+    ANTI_INJECTION_PREAMBLE,
+    validate_category_name,
+    wrap_with_boundary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1193,13 +1197,40 @@ def _validate_memory_type(value: Any) -> str:
 
 
 def _validate_categories(value: Any) -> list[str]:
-    """Validate categories list, returning empty list on invalid input."""
+    """Validate categories from LLM output, filtering out unknown categories.
+
+    Unlike the strict ``validate_categories()`` in ``categories.py`` (which
+    raises ``ValueError`` for user-provided input), this function silently
+    drops invalid categories since LLM output is best-effort.  This prevents
+    hallucinated categories like "professional" or "coding" from entering the
+    pipeline and avoids unnecessary LLM retry calls in ``_validate_metadata()``.
+
+    The ``remember()`` pipeline also uses this function for its extraction
+    output, so filtering here covers both ``add_memory`` and ``remember``
+    LLM paths.
+    """
     if not isinstance(value, list):
         return []
     result = []
     for cat in value:
-        if isinstance(cat, str) and cat.strip():
-            result.append(cat.strip())
+        if not isinstance(cat, str) or not cat.strip():
+            continue
+        cat = cat.strip().lower()
+        if cat in PREDEFINED_CATEGORIES:
+            result.append(cat)
+        elif ":" in cat:
+            prefix, name = cat.split(":", 1)
+            if prefix in PREDEFINED_CATEGORIES:
+                try:
+                    validate_category_name(name)
+                    result.append(cat)
+                except ValueError:
+                    logger.debug(
+                        "Filtering out LLM category with unsafe name: '%s'",
+                        cat,
+                    )
+        else:
+            logger.debug("Filtering out unknown LLM category: '%s'", cat)
     return result
 
 

@@ -459,6 +459,13 @@ class MemoryService:
                 operation="add_memory",
             )
 
+        # Validate user-provided categories early (before LLM pipeline).
+        # This rejects invalid categories immediately with a clear error,
+        # matching the pattern in update_memory(). When categories is None,
+        # auto-classification handles it later in the pipeline.
+        if categories is not None:
+            categories = validate_categories(categories)
+
         # Validate labels if provided
         validated_labels: dict[str, Any] | None = None
         if labels is not None:
