@@ -25,6 +25,15 @@ Both MCP and REST share the same `MemoryService` backend and authentication midd
 | `/api/memories/{id}/artifacts/{aid}` | DELETE | Delete artifact |
 | `/api/categories` | GET | List categories |
 
+## Session Summaries
+
+Persistent session summaries from the remember endpoint, used by the consolidation service.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/sessions` | GET | List session summaries (optional `consolidation_state` filter) |
+| `/api/sessions/{id}` | GET | Get a single session summary |
+
 ## Memory Check (fsck)
 
 Built-in memory consistency checker. Runs a three-phase pipeline to detect quality issues and suggest fixes:

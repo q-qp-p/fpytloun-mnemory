@@ -106,6 +106,12 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `LABELS_MAX_KEY_LENGTH` | `64` | Max length of a label key (alphanumeric + underscore only) |
 | `LABELS_MAX_VALUE_LENGTH` | `1000` | Max length of a string label value |
 | `LABELS_INDEXES` | | Comma-separated list of label keys to index in Qdrant for fast filtering (e.g., `project,topic,conversation_id`). Only needed for remote Qdrant with large datasets |
+| `CONSOLIDATION_IDLE_THRESHOLD` | `3600` | Seconds before a session is eligible for within-session consolidation (1 hour) |
+| `CONSOLIDATION_MAX_RAW_PER_USER` | `500` | Max raw memories to process per user during cross-session consolidation |
+| `CONSOLIDATION_MAX_CLUSTERS` | `20` | Max clusters to evaluate during cross-session consolidation |
+| `CONSOLIDATION_RAW_RETENTION_DAYS` | `30` | Days to retain superseded raw memories before garbage collection. Artifact-bearing memories are always retained |
+| `RECALL_RAW_PENALTY` | `0.05` | Score penalty for raw-layer memories in search results |
+| `RECALL_SUPERSEDED_PENALTY` | `0.15` | Score penalty for superseded raw memories in search results |
 
 ## Instruction Modes
 

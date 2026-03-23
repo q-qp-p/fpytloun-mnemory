@@ -19,7 +19,7 @@ mnemory exposes 17 tools via the [Model Context Protocol](https://modelcontextpr
 | `ask_memories` | Ask a question and get a human-readable answer synthesized from relevant memories. Uses `find_memories` internally, then generates a natural language answer. Most expensive (3 LLM calls). |
 | `get_core_memories` | Load pinned + recent context at conversation start. Use for clients that inject MCP server instructions (e.g., Claude Code). |
 | `get_recent_memories` | Get recent activity from the last N days with scope filter (user/agent/all) |
-| `list_memories` | List all/filtered memories (supports `labels` filter) |
+| `list_memories` | List all/filtered memories (supports `labels` and `memory_layer` filters) |
 | `update_memory` | Update content or metadata of existing memory (including `event_date` and `labels`) |
 | `delete_memory` | Delete a memory and its artifacts |
 | `delete_all_memories` | Delete all memories in scope |

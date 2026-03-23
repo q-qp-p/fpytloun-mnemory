@@ -76,6 +76,44 @@ Memories can have a TTL that causes them to decay (soft-expire) after a set numb
 
 **Existing memories:** No migration needed. Memories without TTL fields are treated as permanent.
 
+## Memory Layer
+
+Memories have a `memory_layer` field that controls their role in the two-layer system:
+
+| Layer | Source | Purpose | Recall Priority |
+|---|---|---|---|
+| `raw` | `remember` endpoint | Provisional evidence from conversation extraction | Lower (penalized in ranking) |
+| `consolidated` | `add_memory`, consolidation service | Durable canonical knowledge | Higher (baseline) |
+
+**Backward compatibility:** Memories without a `memory_layer` field are treated as `consolidated`.
+
+### Related metadata fields
+
+| Field | Type | Description |
+|---|---|---|
+| `memory_layer` | `"raw"` or `"consolidated"` | Which layer this memory belongs to |
+| `superseded_by` | `str` or `null` | ID of the consolidated memory that replaced this raw memory |
+| `derived_from` | `list[str]` or `null` | IDs of source raw memories (on consolidated memories from consolidation) |
+
+### Dedup isolation
+
+The `remember` pipeline only deduplicates against other raw memories — it never modifies consolidated memories. This prevents noisy raw extraction from overwriting high-quality consolidated content.
+
+### Consolidation
+
+A background consolidation service synthesizes durable knowledge from raw memories and their session summaries:
+
+1. **Within-session**: After a session goes idle, reads the session summary + raw memories, LLM synthesizes consolidated memories
+2. **Cross-session**: During auto-fsck, clusters related raw memories across sessions and merges repeated patterns
+3. **Garbage collection**: Old superseded raw memories without artifacts are deleted after a configurable retention period
+
+### Recall ranking
+
+Search results are scored with layer-aware penalties:
+- Consolidated (or absent `memory_layer`): baseline score
+- Raw, not superseded: small penalty (`RECALL_RAW_PENALTY`, default 0.05)
+- Raw, superseded: larger penalty (`RECALL_SUPERSEDED_PENALTY`, default 0.15)
+
 ## Role
 
 The `role` parameter controls who the memory is about:

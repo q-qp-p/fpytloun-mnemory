@@ -2015,7 +2015,7 @@ async def lifespan(app):
         config=cfg,
         vector=service.vector,
         llm=service._llm,
-        embedding=service._embedding,
+        embedding=service.vector.embedding,
         memory_service=service,
         session_summary_store=service._session_summary_store,
         collector=get_collector(),

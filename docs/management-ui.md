@@ -46,6 +46,7 @@ mnemory includes a built-in management UI at `/ui` on the main server port. No e
 - **Browse** — List all memories with server-side sorting (newest/oldest via Qdrant `order_by`). Full filter bar: memory type, role, agent ID, categories multi-select, "has artifacts" toggle, include decayed. Add Memory button with modal form. Inline expand with edit modal (content, type, categories, importance, pinned, TTL), delete with confirmation, and artifact management (upload, view with pagination, delete)
 - **Graph** — D3.js force-directed visualization of memory relationships (shared categories = edges, node size = importance, color = memory type). Type filter checkboxes, node limit slider, click-to-select detail panel
 - **Check** — Memory consistency checker (fsck). Run a three-phase scan (security, duplicates, quality), review issues grouped by type with full reasoning and affected memory cards, select and apply fixes. Parallel LLM evaluation with live progress tracking
+- **Sessions** — Browse persistent session summaries from the remember endpoint. Filter by consolidation state (idle, consolidating, consolidated, failed). Expandable cards with full summary, metadata, and linked memory IDs
 
 ## Access
 

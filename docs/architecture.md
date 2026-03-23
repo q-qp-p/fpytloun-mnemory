@@ -18,6 +18,7 @@
 |  FastAPI (/api/)                  MCP (/mcp)                    |
 |  +- POST /api/recall              16 MCP tools                  |
 |  +- POST /api/remember                                          |
+|  +- GET  /api/sessions                                          |
 |  +- POST /api/memories            OpenAPI spec at /api/docs     |
 |  +- POST /api/memories/search                                   |
 |  +- POST /api/memories/find                                     |
@@ -100,6 +101,39 @@ With `infer=false`, the LLM call is skipped — the content is embedded and stor
 7. Each section is capped at `CORE_MAX_PER_SECTION` memories (default 25). Pinned memories are included first, then top-N fills up to the limit.
 8. If output exceeds `MAX_CORE_CONTEXT_LENGTH`, recent context entries are trimmed one by one (least important first). Main sections are never truncated.
 9. Returns structured text injected into conversation context
+
+### Two-Layer Memory System
+
+Memories have a `memory_layer` field that distinguishes provisional evidence from durable knowledge:
+
+- **Raw** (`memory_layer=raw`): Created by the `remember` endpoint. Provisional, granular, may contain noise. Immediately available for recall and context compaction.
+- **Consolidated** (`memory_layer=consolidated`): Created by `add_memory` (manual/MCP), the consolidation service, or pre-existing memories. Durable, canonical knowledge. Preferred in recall ranking.
+
+**Why two layers?** The single extraction call in `remember` cannot perfectly distinguish durable knowledge from conversational noise. Instead of trying to make extraction perfect, the system accepts imperfect raw extraction and adds a background consolidation layer that synthesizes durable knowledge from raw memories + their session summaries.
+
+**Session summaries** are persisted in a separate `_mnemory_sessions` Qdrant collection. Updated on every `remember` call, they capture the narrative arc of conversations — what was discussed, concluded, decided. The consolidation service uses these summaries alongside raw memories to reconstruct conclusions that no single raw memory captured.
+
+**Consolidation flow:**
+
+1. `remember` writes raw memories + updates session summary in `_mnemory_sessions`
+2. After a session goes idle (configurable threshold), the consolidation service:
+   - Reads the session summary + linked raw memories
+   - LLM synthesizes durable knowledge (decisions, preferences, facts, actions)
+   - Stores consolidated memories with `derived_from` links to source raw memories
+   - Marks raw memories as superseded (except those with artifacts)
+3. Recall ranking boosts consolidated memories and penalizes raw/superseded ones
+4. During auto-fsck, old superseded raw memories without artifacts are garbage-collected
+
+**Extraction model:** The extraction prompt uses a 6-category model to guide what to extract:
+
+| Category | What to look for | Memory type |
+|---|---|---|
+| Topic | What the user is working on | `context` |
+| Exploration | What was investigated, with outcome | `episodic` |
+| Decision | Conclusions, agreements, rejected approaches | `fact` or `episodic` |
+| Fact | Stable biographical info or project state | `fact` or `context` |
+| Action | What was actually done (code, deployments, etc.) | `episodic` |
+| Preference/Workflow | Likes, dislikes, habits, procedures | `preference` or `procedural` |
 
 ### Artifacts
 
