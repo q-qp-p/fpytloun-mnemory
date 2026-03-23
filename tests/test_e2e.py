@@ -2583,3 +2583,428 @@ class TestCoreMemoriesNoTruncation:
         finally:
             memory_service._config.memory.core_max_per_section = original
             memory_service._core_cache.clear()
+
+
+# ── Two-layer memory system ─────────────────────────────────────────
+
+
+class TestMemoryLayer:
+    """Verify the two-layer memory system: raw (remember) vs consolidated (add_memory).
+
+    Phase 1 of the remember pipeline redesign introduces memory_layer metadata:
+    - remember() writes memory_layer=raw
+    - add_memory() writes memory_layer=consolidated
+    - remember dedup must NOT touch consolidated memories (C1 fix)
+    """
+
+    USER = "e2e_memory_layer"
+
+    def test_remember_writes_raw_layer(self, memory_service: MemoryService) -> None:
+        """Memories created by remember() should have memory_layer=raw."""
+        user = f"{self.USER}_raw"
+        conversation = (
+            "User: My name is Viktor and I live in Bratislava.\n"
+            "Assistant: Nice to meet you, Viktor!"
+        )
+        result = memory_service.remember(
+            content=conversation,
+            user_id=user,
+            role="user",
+        )
+        mems = _results(result)
+        _assert_count_between(mems, 1, 4)
+
+        time.sleep(0.5)
+
+        listed = memory_service.list_memories(user_id=user)
+        assert len(listed) >= 1, f"Expected at least 1 memory, got: {_texts(listed)}"
+        for m in listed:
+            meta = m.get("metadata") or {}
+            layer = meta.get("memory_layer", "")
+            assert layer == "raw", (
+                f"Expected memory_layer='raw' for remember-created memory, "
+                f"got '{layer}' for: {_mem_text(m)}"
+            )
+
+    def test_add_memory_writes_consolidated_layer(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Memories created by add_memory(infer=False) should have memory_layer=consolidated."""
+        user = f"{self.USER}_consolidated_direct"
+        result = memory_service.add_memory(
+            "Viktor drives a Skoda Octavia",
+            user_id=user,
+            infer=False,
+            memory_type="fact",
+            categories=["personal"],
+            importance="normal",
+            pinned=False,
+        )
+        mems = _results(result)
+        assert len(mems) == 1
+
+        time.sleep(0.3)
+
+        listed = memory_service.list_memories(user_id=user)
+        assert len(listed) == 1
+        meta = listed[0].get("metadata") or {}
+        layer = meta.get("memory_layer", "")
+        assert layer == "consolidated", (
+            f"Expected memory_layer='consolidated' for add_memory, got '{layer}'"
+        )
+
+    def test_add_memory_infer_writes_consolidated_layer(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Memories created by add_memory(infer=True) should have memory_layer=consolidated."""
+        user = f"{self.USER}_consolidated_infer"
+        result = memory_service.add_memory(
+            "My favorite programming language is Rust and I use NixOS.",
+            user_id=user,
+            infer=True,
+        )
+        mems = _results(result)
+        _assert_count_between(mems, 1, 4)
+
+        time.sleep(0.5)
+
+        listed = memory_service.list_memories(user_id=user)
+        assert len(listed) >= 1
+        for m in listed:
+            meta = m.get("metadata") or {}
+            layer = meta.get("memory_layer", "")
+            assert layer == "consolidated", (
+                f"Expected memory_layer='consolidated' for add_memory(infer=True), "
+                f"got '{layer}' for: {_mem_text(m)}"
+            )
+
+    def test_remember_dedup_does_not_touch_consolidated(
+        self, memory_service: MemoryService
+    ) -> None:
+        """C1 fix: remember dedup must not UPDATE consolidated memories.
+
+        Scenario:
+        1. Store a consolidated memory via add_memory
+        2. Call remember() with similar content
+        3. The consolidated memory must remain unchanged
+        """
+        user = f"{self.USER}_c1_fix"
+
+        # 1. Store a consolidated memory
+        result = memory_service.add_memory(
+            "User lives in Bratislava and works as a data engineer",
+            user_id=user,
+            infer=False,
+            memory_type="fact",
+            categories=["personal"],
+            importance="normal",
+            pinned=False,
+        )
+        consolidated_id = _results(result)[0]["id"]
+        time.sleep(0.5)
+
+        # 2. Call remember() with overlapping content
+        memory_service.remember(
+            content=(
+                "User: I live in Bratislava, I'm a data engineer.\nAssistant: Got it!"
+            ),
+            user_id=user,
+            role="user",
+        )
+        time.sleep(0.5)
+
+        # 3. Verify the consolidated memory is unchanged
+        listed = memory_service.list_memories(user_id=user)
+        consolidated_mem = None
+        for m in listed:
+            if m.get("id") == consolidated_id:
+                consolidated_mem = m
+                break
+
+        assert consolidated_mem is not None, (
+            f"Consolidated memory {consolidated_id} should still exist. "
+            f"All memories: {_texts(listed)}"
+        )
+        # The text should be exactly what we stored
+        assert _mem_text(consolidated_mem).lower() == (
+            "user lives in bratislava and works as a data engineer"
+        ), (
+            f"Consolidated memory should be unchanged, "
+            f"got: {_mem_text(consolidated_mem)}"
+        )
+        # It should still be consolidated layer
+        meta = consolidated_mem.get("metadata") or {}
+        assert meta.get("memory_layer") == "consolidated", (
+            f"Consolidated memory layer should remain 'consolidated', "
+            f"got: {meta.get('memory_layer')}"
+        )
+
+    def test_remember_dedup_works_within_raw_layer(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Dedup should still work between raw memories from remember().
+
+        Two remember calls with similar content should dedup (UPDATE or SKIP),
+        not create duplicates.
+        """
+        user = f"{self.USER}_raw_dedup"
+
+        # First remember call
+        memory_service.remember(
+            content=(
+                "User: I really enjoy swimming in the ocean.\n"
+                "Assistant: That sounds refreshing!"
+            ),
+            user_id=user,
+            role="user",
+        )
+        time.sleep(0.5)
+
+        listed_before = memory_service.list_memories(user_id=user)
+        count_before = len(listed_before)
+        assert count_before >= 1, (
+            f"Expected at least 1 memory after first remember, "
+            f"got: {_texts(listed_before)}"
+        )
+
+        # Second remember call with very similar content
+        memory_service.remember(
+            content=(
+                "User: I love swimming in the ocean, it's my favorite activity.\n"
+                "Assistant: Ocean swimming is great!"
+            ),
+            user_id=user,
+            role="user",
+        )
+        time.sleep(0.5)
+
+        listed_after = memory_service.list_memories(user_id=user)
+        count_after = len(listed_after)
+
+        # Should NOT have doubled — dedup should have caught the similarity.
+        # Allow some tolerance: the LLM might extract slightly different facts,
+        # but the count should not be 2x the original.
+        assert count_after <= count_before + 1, (
+            f"Expected dedup to prevent duplicates within raw layer. "
+            f"Before: {count_before}, After: {count_after}. "
+            f"Memories: {_texts(listed_after)}"
+        )
+
+
+class TestSessionSummaryPersistence:
+    """Verify that session summaries are persisted to _mnemory_sessions.
+
+    The remember pipeline should upsert session summaries to the Qdrant
+    _mnemory_sessions collection after each call, making them available
+    for the future consolidation service.
+    """
+
+    USER = "e2e_session_summary"
+
+    def test_session_summary_persisted_after_remember(
+        self, memory_service: MemoryService
+    ) -> None:
+        """After remember() with session_id, the session summary should be
+        persisted in _mnemory_sessions."""
+        user = f"{self.USER}_persist"
+
+        # Need a session store for session context to work
+        from mnemory.session import SessionStore
+
+        original_store = memory_service._session_store
+        memory_service._session_store = SessionStore()
+        try:
+            # Create the session (generates its own ID)
+            session = memory_service._session_store.create(user_id=user)
+            session_id = session.session_id
+
+            memory_service.remember(
+                content=(
+                    "User: I'm building a new microservice for payment processing.\n"
+                    "Assistant: I'll help you design the payment service architecture."
+                ),
+                user_id=user,
+                role="user",
+                session_id=session_id,
+            )
+            time.sleep(0.5)
+
+            # Check the persistent session summary
+            summary = memory_service._session_summary_store.get(session_id)
+            assert summary is not None, (
+                "Session summary should be persisted after remember()"
+            )
+            assert summary.get("user_id") == user
+            assert summary.get("session_id") == session_id
+            assert summary.get("summary"), "Summary should not be empty"
+            assert summary.get("turn_count", 0) >= 1
+            assert summary.get("consolidation_state") == "idle"
+        finally:
+            memory_service._session_store = original_store
+
+    def test_session_summary_updated_on_subsequent_remember(
+        self, memory_service: MemoryService
+    ) -> None:
+        """Multiple remember() calls with the same session_id should update
+        the session summary (increment turn_count, extend memory_ids)."""
+        user = f"{self.USER}_update"
+
+        from mnemory.session import SessionStore
+
+        original_store = memory_service._session_store
+        memory_service._session_store = SessionStore()
+        try:
+            session = memory_service._session_store.create(user_id=user)
+            session_id = session.session_id
+
+            # First remember call
+            memory_service.remember(
+                content=(
+                    "User: I need help with Kubernetes deployment.\n"
+                    "Assistant: I'll help you set up the deployment manifests."
+                ),
+                user_id=user,
+                role="user",
+                session_id=session_id,
+            )
+            time.sleep(0.5)
+
+            summary1 = memory_service._session_summary_store.get(session_id)
+            assert summary1 is not None
+            turn1 = summary1.get("turn_count", 0)
+            ids1 = summary1.get("memory_ids", [])
+
+            # Second remember call
+            memory_service.remember(
+                content=(
+                    "User: Let's use Argo Rollouts for canary deployments.\n"
+                    "Assistant: Good choice, I'll configure the rollout strategy."
+                ),
+                user_id=user,
+                role="user",
+                session_id=session_id,
+            )
+            time.sleep(0.5)
+
+            summary2 = memory_service._session_summary_store.get(session_id)
+            assert summary2 is not None
+            turn2 = summary2.get("turn_count", 0)
+            ids2 = summary2.get("memory_ids", [])
+
+            assert turn2 > turn1, f"Turn count should increase: {turn1} -> {turn2}"
+            assert len(ids2) >= len(ids1), (
+                f"Memory IDs should grow: {len(ids1)} -> {len(ids2)}"
+            )
+            assert summary2.get("summary"), "Summary should not be empty"
+        finally:
+            memory_service._session_store = original_store
+
+    def test_remember_without_session_id_no_crash(
+        self, memory_service: MemoryService
+    ) -> None:
+        """remember() without session_id should work fine (no session summary persisted)."""
+        user = f"{self.USER}_no_session"
+        result = memory_service.remember(
+            content=(
+                "User: I enjoy reading science fiction novels.\n"
+                "Assistant: Any favorites?"
+            ),
+            user_id=user,
+            role="user",
+            # No session_id
+        )
+        # Should not crash and should still extract memories
+        mems = _results(result)
+        _assert_count_between(mems, 0, 3)
+
+
+class TestExtractionCategories:
+    """Verify the 6-category extraction model produces well-classified memories.
+
+    The extraction prompt now guides the LLM to look for: Topic, Exploration,
+    Decision, Fact, Action, Preference/Workflow.
+    """
+
+    USER = "e2e_extraction_categories"
+
+    def test_decision_extraction(self, memory_service: MemoryService) -> None:
+        """A clear decision should be extracted with high importance."""
+        user = f"{self.USER}_decision"
+        result = memory_service.remember(
+            content=(
+                "User: We've decided to use PostgreSQL instead of MySQL "
+                "for the billing service.\n"
+                "Assistant: Good choice. PostgreSQL has better JSON support "
+                "and more advanced indexing."
+            ),
+            user_id=user,
+            role="user",
+        )
+        mems = _results(result)
+        _assert_count_between(mems, 1, 3)
+        combined = _all_text(mems)
+        assert "postgresql" in combined or "postgres" in combined, (
+            f"Expected PostgreSQL decision to be extracted: {_texts(mems)}"
+        )
+
+        time.sleep(0.5)
+
+        listed = memory_service.list_memories(user_id=user)
+        # At least one memory should mention the decision
+        _assert_any_contains(listed, "postgresql")
+        # Check that the decision has high importance
+        for m in listed:
+            if "postgresql" in _mem_text(m).lower():
+                meta = m.get("metadata") or {}
+                imp = meta.get("importance", "normal")
+                assert imp in ("high", "critical"), (
+                    f"Decision should have high/critical importance, "
+                    f"got '{imp}' for: {_mem_text(m)}"
+                )
+                break
+
+    def test_action_extraction_auto_mode(self, memory_service: MemoryService) -> None:
+        """An assistant action should be extracted in auto mode with agent_id."""
+        user = f"{self.USER}_action"
+        agent = "e2e-extraction-agent"
+        result = memory_service.remember(
+            content=(
+                "User: Deploy the lab-junction service to production.\n"
+                "Assistant: Done. I deployed lab-junction to the production "
+                "Kubernetes cluster and verified the health checks pass."
+            ),
+            user_id=user,
+            agent_id=agent,
+            # role=None (auto mode)
+        )
+        mems = _results(result)
+        _assert_count_between(mems, 1, 4)
+
+        time.sleep(0.5)
+
+        # Check for assistant-role memories about the deployment
+        all_mems = memory_service.list_memories(user_id=user, agent_id=agent)
+        combined = _all_text(all_mems)
+        assert "deploy" in combined or "lab-junction" in combined, (
+            f"Expected deployment action to be extracted: {_texts(all_mems)}"
+        )
+
+    def test_topic_extraction(self, memory_service: MemoryService) -> None:
+        """The main topic of a conversation should be captured."""
+        user = f"{self.USER}_topic"
+        result = memory_service.remember(
+            content=(
+                "User: I'm working on redesigning the authentication system "
+                "for our main web application.\n"
+                "Assistant: I'll help you plan the auth redesign. What's the "
+                "current setup?"
+            ),
+            user_id=user,
+            role="user",
+        )
+        mems = _results(result)
+        _assert_count_between(mems, 1, 3)
+        combined = _all_text(mems)
+        assert "auth" in combined or "authentication" in combined, (
+            f"Expected topic about authentication to be extracted: {_texts(mems)}"
+        )

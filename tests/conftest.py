@@ -67,4 +67,16 @@ def memory_service(tmp_path_factory: pytest.TempPathFactory) -> MemoryService:
     )
     config.validate()
 
-    return MemoryService(config)
+    service = MemoryService(config)
+
+    # Run data migrations (creates _mnemory_sessions collection, indexes, etc.)
+    from mnemory.migration import MigrationRunner, get_migrations
+
+    sparse_client = getattr(service.vector, "_sparse", None)
+    runner = MigrationRunner(
+        service.vector._client,
+        get_migrations(config.vector.collection_name, sparse_client),
+    )
+    runner.run_pending()
+
+    return service
