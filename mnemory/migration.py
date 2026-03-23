@@ -848,6 +848,97 @@ class AddSparseVectorsMigration(Migration):
             offset = next_offset
 
 
+# ── Migration 002: Create _mnemory_sessions collection ───────────────
+
+SESSIONS_COLLECTION = "_mnemory_sessions"
+
+
+class CreateSessionsCollectionMigration(Migration):
+    """Create the _mnemory_sessions collection for persistent session summaries.
+
+    Used by the two-layer memory system to persist conversation summaries
+    beyond session expiry. The consolidation service uses these summaries
+    alongside raw memories to synthesize durable knowledge.
+
+    Uses a 1-dim dummy vector (like _mnemory_meta) since this collection
+    stores metadata, not searchable vectors. A real summary embedding
+    may be added later by the consolidation service.
+    """
+
+    id = "002_create_sessions_collection"
+    description = "Create _mnemory_sessions collection for persistent session summaries"
+
+    def run(
+        self,
+        client: QdrantClient,
+        *,
+        progress: dict[str, Any] | None,
+        state_callback: Callable[[dict[str, Any]], None],
+        state: dict[str, Any],
+    ) -> None:
+        existing = [c.name for c in client.get_collections().collections]
+        if SESSIONS_COLLECTION in existing:
+            logger.info("Collection '%s' already exists, skipping", SESSIONS_COLLECTION)
+            return
+
+        client.create_collection(
+            collection_name=SESSIONS_COLLECTION,
+            vectors_config=VectorParams(size=1, distance=Distance.COSINE),
+        )
+        logger.info("Created collection '%s'", SESSIONS_COLLECTION)
+
+        # Create payload indexes for efficient filtering
+        # user_id: required for all queries (isolation)
+        # consolidation_state: for finding pending sessions
+        for field in ("user_id", "consolidation_state"):
+            try:
+                client.create_payload_index(
+                    collection_name=SESSIONS_COLLECTION,
+                    field_name=field,
+                    field_schema="keyword",
+                )
+            except Exception:
+                pass  # Index may already exist
+
+
+# ── Migration 003: Add memory_layer index ────────────────────────────
+
+
+class AddMemoryLayerIndexMigration(Migration):
+    """Add memory_layer keyword index to the main memory collection.
+
+    Supports filtering by memory layer (raw vs consolidated) in search
+    and dedup operations. The index is created idempotently.
+    """
+
+    id = "003_add_memory_layer_index"
+    description = "Add memory_layer keyword index for two-layer memory system"
+
+    def __init__(self, collection_name: str):
+        self._collection_name = collection_name
+
+    def run(
+        self,
+        client: QdrantClient,
+        *,
+        progress: dict[str, Any] | None,
+        state_callback: Callable[[dict[str, Any]], None],
+        state: dict[str, Any],
+    ) -> None:
+        # Create keyword index for memory_layer field
+        try:
+            client.create_payload_index(
+                collection_name=self._collection_name,
+                field_name="memory_layer",
+                field_schema="keyword",
+            )
+            logger.info("Created memory_layer index on '%s'", self._collection_name)
+        except Exception:
+            logger.debug(
+                "memory_layer index may already exist on '%s'", self._collection_name
+            )
+
+
 # ── Migration registry ───────────────────────────────────────────────
 
 
@@ -862,4 +953,6 @@ def get_migrations(
     """
     return [
         AddSparseVectorsMigration(collection_name, sparse_client),
+        CreateSessionsCollectionMigration(),
+        AddMemoryLayerIndexMigration(collection_name),
     ]

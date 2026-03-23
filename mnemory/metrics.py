@@ -201,6 +201,32 @@ class MetricsCollector:
             registry=self._registry,
         )
 
+        # ── Remember quality counters (in-memory) ─────────────────
+        self._remember_extracted = Counter(
+            "mnemory_remember_facts_extracted_total",
+            "Total facts extracted by remember pipeline (pre-dedup)",
+            ["user_id"],
+            registry=self._registry,
+        )
+        self._remember_stored = Counter(
+            "mnemory_remember_facts_stored_total",
+            "Total facts stored by remember pipeline (post-dedup)",
+            ["user_id"],
+            registry=self._registry,
+        )
+        self._remember_dedup_decisions = Counter(
+            "mnemory_remember_dedup_decisions_total",
+            "Remember dedup decisions by action type",
+            ["user_id", "action"],
+            registry=self._registry,
+        )
+        self._remember_empty = Counter(
+            "mnemory_remember_empty_extractions_total",
+            "Remember calls that produced zero extracted facts",
+            ["user_id"],
+            registry=self._registry,
+        )
+
         # ── Latency histograms ────────────────────────────────────
         self._llm_duration = Histogram(
             "mnemory_llm_duration_seconds",
@@ -355,6 +381,32 @@ class MetricsCollector:
         self._autofsck_fixes_applied.labels(user_id=user_id).inc(fixes_applied)
         self._autofsck_fixes_failed.labels(user_id=user_id).inc(fixes_failed)
         self._autofsck_last_run.labels(user_id=user_id).set(time.time())
+
+    def record_remember_extraction(
+        self,
+        *,
+        user_id: str,
+        facts_extracted: int,
+        facts_stored: int,
+        dedup_actions: dict[str, int] | None = None,
+    ) -> None:
+        """Record remember pipeline quality metrics.
+
+        Args:
+            user_id: User who triggered the remember call.
+            facts_extracted: Number of facts extracted by Stage 1 (pre-dedup).
+            facts_stored: Number of facts actually stored after Stage 2.
+            dedup_actions: Optional dict of action -> count (add, update, delete, skip).
+        """
+        self._remember_extracted.labels(user_id=user_id).inc(facts_extracted)
+        self._remember_stored.labels(user_id=user_id).inc(facts_stored)
+        if facts_extracted == 0:
+            self._remember_empty.labels(user_id=user_id).inc()
+        if dedup_actions:
+            for action, count in dedup_actions.items():
+                self._remember_dedup_decisions.labels(
+                    user_id=user_id, action=action.lower()
+                ).inc(count)
 
     def collect_gauges(self) -> None:
         """Refresh gauge values from Qdrant (with caching).

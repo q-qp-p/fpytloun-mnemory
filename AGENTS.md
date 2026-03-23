@@ -32,12 +32,13 @@ mnemory/
 │   ├── memories.py        # Memory CRUD + artifact + category REST endpoints
 │   ├── recall.py          # POST /api/recall — combined initialize + search
 │   ├── remember.py        # POST /api/remember — fire-and-forget memory storage
+│   ├── sessions.py        # GET /api/sessions — session summary endpoints for UI
 │   └── ui.py              # GET /api/whoami + GET /api/stats — management UI endpoints
 ├── ui/
 │   ├── __init__.py        # Package marker
 │   ├── tailwind.config.js # Tailwind CSS config with brand colors
 │   ├── src/input.css      # Tailwind directives + component classes
-│   └── static/            # Pre-built UI assets (HTML, JS modules: api/app/metrics/search/memories/graph, CSS, vendored libs)
+│   └── static/            # Pre-built UI assets (HTML, JS modules: api/app/metrics/search/memories/sessions/graph, CSS, vendored libs)
 └── storage/
     ├── vector.py          # Direct Qdrant vector store (insert, search, update, delete)
     ├── artifact.py        # Artifact store abstraction (S3 and filesystem backends)
@@ -193,6 +194,9 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 | `labels` | dict\|None | Client-provided key-value metadata (e.g., project, topic, conversation_id). Bypasses LLM extraction. Filterable in search/list queries. |
 | `last_accessed_at` | str\|None | Last time returned in search |
 | `access_count` | int | Number of times accessed in search |
+| `memory_layer` | str | "raw" (from remember) or "consolidated" (from add_memory, consolidation, or pre-existing). Controls recall ranking and dedup scope. Absent = treated as "consolidated" for backward compatibility. |
+| `superseded_by` | str\|None | ID of the consolidated memory that replaced this raw memory (None = not superseded). Set by the consolidation service. |
+| `derived_from` | list[str]\|None | IDs of source raw memories (on consolidated memories produced by consolidation). |
 
 ### Adding a new MCP tool
 
@@ -234,5 +238,7 @@ Migrations run automatically on startup before the server accepts requests. Stat
 - **Role parameter**: The `role` parameter controls which extraction prompt is used. On `add_memory`, it defaults to `"user"`. On `remember()`, it defaults to `None` (auto mode). When `role="assistant"`, content is passed to the agent-specific extraction prompt (`_AGENT_SYSTEM_PROMPT` in `prompts.py`), focusing on the assistant's identity, personality, and capabilities. When `role="user"`, the user extraction prompt is used. When `role=None` (auto mode, `remember` only), the auto extraction prompt (`_AUTO_REMEMBER_EXTRACTION_SYSTEM_PROMPT`) extracts facts from all participants, attributing each fact to the correct role via a per-fact `role` field in the LLM output. Assistant facts are silently dropped if `agent_id` is not set. The `role` is stored in metadata for filtering in search/list and for section organization in `get_core_memories`. Requires `agent_id` when set to `"assistant"`.
 
 - **Sub-agents**: Agent IDs support colon-separated namespacing (e.g., `openwebui:bob`). The session validation in `_resolve_agent_id()` allows any `agent_id` that starts with `session_agent_id + ":"`. Sub-agents are fully independent — no memory inheritance from the parent. The `_is_sub_agent()` helper in `server.py` encapsulates the prefix check. `verify_memory_access()` in `memory.py` also allows access to sub-agent memories from the parent session.
+
+- **Two-layer memory system**: Memories have a `memory_layer` field: `raw` (provisional evidence from `remember` endpoint) or `consolidated` (durable knowledge from `add_memory`, consolidation, or pre-existing memories). The `remember` endpoint writes `memory_layer=raw` and its dedup only searches against other raw memories (never modifies consolidated). Session summaries are persisted in the `_mnemory_sessions` Qdrant collection for use by the future consolidation service. The extraction prompt uses a 6-category model (Topic, Exploration, Decision, Fact, Action, Preference/Workflow) to guide what to extract.
 
 - **Session timezone**: The `X-Timezone` HTTP header sets a per-session timezone (IANA name like `Europe/Prague`). Stored in `_session_timezone` ContextVar, accessed via `_get_session_timezone()`. Used by `add_memory()` and `find_memories()` — overrides `DEFAULT_TIMEZONE` env var for naive `event_date` parsing and for computing "today's date" in temporal query generation. Priority chain: explicit tz in event_date string > `X-Timezone` header > `DEFAULT_TIMEZONE` env > server local timezone.

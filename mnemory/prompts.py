@@ -1717,6 +1717,30 @@ You are a memory extraction system. Your job is to:
   unique — if two pieces of information overlap, merge them into
   a single fact.
 
+### Extraction Categories (what to look for)
+
+Use these categories to guide what you extract:
+
+1. **Topic** — What the user is working on or discussing.
+   memory_type=context. Example: "User is redesigning the mnemory
+   remember endpoint"
+
+2. **Decision** — Conclusions, agreements, accepted or rejected
+   approaches. memory_type=fact (permanent) or episodic (time-bound),
+   importance=high. Example: "User decided to use PostgreSQL for the
+   billing service"
+
+3. **Fact** — Stable biographical info (memory_type=fact) or current
+   project state (memory_type=context). Example: "User has over 14
+   years of experience in DevOps"
+
+4. **Action** — What the user actually did. memory_type=episodic.
+   Example: "User deployed the lab-junction service to production"
+
+5. **Preference/Workflow** — Likes, dislikes, habits, standard
+   procedures. memory_type=preference or procedural.
+   Example: "User prefers Conventional Commits for git messages"
+
 ## Classification Rules
 
 For each extracted fact, classify:
@@ -1790,12 +1814,18 @@ For each extracted fact, classify:
 
 Generate a brief 1-3 sentence summary of this conversation exchange.
 The summary should capture:
-- The main topic or intent of the exchange
-- Any key decisions or outcomes
+- The main topic or problem being discussed
+- Any conclusions, decisions, or accepted recommendations
+- What was explored and the outcome (accepted, rejected, deferred)
+- What the assistant actually did (implemented, deployed, analyzed)
 - Enough context to understand pronoun references in future exchanges
 
+Focus on OUTCOMES, not process. Write "Decided to use X" not "Discussed X".
+Preserve substantive assistant recommendations — these are valuable for
+future context even if the user hasn't explicitly confirmed them yet.
+
 This summary will be used as context for processing future exchanges
-in the same conversation.
+in the same conversation, and as a source for memory consolidation.
 
 ## Artifact Decision
 
@@ -2121,12 +2151,18 @@ For each extracted fact, classify:
 
 Generate a brief 1-3 sentence summary of this conversation exchange.
 The summary should capture:
-- The main topic or intent of the exchange
-- Any key decisions or outcomes made by the assistant
+- The main topic or problem being discussed
+- Any conclusions, decisions, or accepted recommendations
+- What was explored and the outcome (accepted, rejected, deferred)
+- What the assistant actually did (implemented, deployed, analyzed)
 - Enough context to understand pronoun references in future exchanges
 
+Focus on OUTCOMES, not process. Write "Decided to use X" not "Discussed X".
+Preserve substantive assistant recommendations — these are valuable for
+future context even if the user hasn't explicitly confirmed them yet.
+
 This summary will be used as context for processing future exchanges
-in the same conversation.
+in the same conversation, and as a source for memory consolidation.
 
 ## Artifact Decision
 
@@ -2342,6 +2378,48 @@ current session, do not extract it. A substantive recommendation
 offer to perform an action ("Assistant offered to look into Redis
 options") — extract recommendations, skip offers.
 
+### Extraction Categories (what to look for)
+
+Use these categories to guide what you extract. Each maps to standard
+memory types:
+
+1. **Topic** — What the user is working on or discussing. Use
+   memory_type=context, role=user. Example: "User is redesigning the
+   mnemory remember endpoint to improve memory quality"
+
+2. **Exploration** — What was investigated or analyzed, WITH its outcome.
+   Use memory_type=episodic, role=assistant. Only extract if there is a
+   conclusion or finding. Example: "Assistant explored multiple approaches
+   to remember quality and identified consolidation as the key missing
+   concept"
+
+3. **Decision** — Conclusions, agreements, accepted or rejected approaches.
+   Use memory_type=fact (permanent) or memory_type=episodic (time-bound),
+   role=user, importance=high. Example: "User decided to use a two-layer
+   memory system for mnemory"
+
+4. **Fact** — Stable biographical info (memory_type=fact, permanent) or
+   current project state (memory_type=context, short-term). Role=user.
+   Example: "User has over 14 years of experience in DevOps"
+
+5. **Action** — What was actually done — code implemented, emails sent,
+   deployments made. Use memory_type=episodic, role=user or assistant.
+   Example: "Assistant implemented the two-layer memory migration for
+   mnemory"
+
+6. **Preference/Workflow** — Likes, dislikes, habits, standard procedures.
+   Use memory_type=preference or procedural, role=user.
+   Example: "User prefers Conventional Commits for git messages"
+
+**Key rules:**
+- Assistant memories MUST have an outcome or record an action to be
+  valuable. "Assistant explored X and concluded Y" is valuable.
+  "Assistant explored X" alone is noise.
+- Decisions that are likely permanent should be memory_type=fact with
+  importance=high. Time-bound decisions should be memory_type=episodic.
+- A decision from an assistant recommendation accepted by the user
+  is role=user (it's the user's decision now).
+
 ### Subject and style
 
 - Identify the subject of each fact from the content itself:
@@ -2431,8 +2509,19 @@ For each extracted fact, classify:
 ## Exchange Summary
 
 Generate a brief 1-3 sentence summary of this conversation exchange.
-The summary should capture the main topic, key decisions or outcomes,
-and enough context to understand pronoun references in future exchanges.
+The summary should capture:
+- The main topic or problem being discussed
+- Any conclusions, decisions, or accepted recommendations
+- What was explored and the outcome (accepted, rejected, deferred)
+- What the assistant actually did (implemented, deployed, analyzed)
+- Enough context to understand pronoun references in future exchanges
+
+Focus on OUTCOMES, not process. Write "Decided to use X" not "Discussed X".
+Preserve substantive assistant recommendations — these are valuable for
+future context even if the user hasn't explicitly confirmed them yet.
+
+This summary will be used as context for processing future exchanges
+in the same conversation, and as a source for memory consolidation.
 
 ## Artifact Decision
 
@@ -3264,15 +3353,25 @@ _SUMMARY_COMPACTION_PROMPT = """\
 
 Condense the following conversation summary into a shorter version.
 
-CRITICAL: Preserve ALL of the following:
-- The user's original motivation/intent for the conversation
-- All key decisions and outcomes
-- All named entities (people, projects, tools, places)
-- Important context needed to understand future exchanges
-- Chronological flow of the conversation
+CRITICAL: Preserve the following in order of priority:
+- The original problem or topic that started the conversation
+- Main topics explored and their outcomes (accepted, rejected, deferred)
+- Conclusions reached and decisions made
+- Accepted recommendations and their reasoning
+- Constraints and requirements agreed upon
+- What artifacts were produced and what they contain
+- Named entities (people, projects, tools, places)
+- Current state — what is resolved and what remains open
 
-Do NOT lose any important information. Compress by removing redundancy
-and verbose phrasing, not by dropping content.
+Do NOT preserve:
+- Turn-by-turn conversational flow or chronology
+- Intermediate reasoning steps (keep only final conclusions)
+- Resolved objections (keep only the resolution)
+- "User said/asked/thinks" framing — rewrite as outcomes where possible
+- Assistant reasoning process or exploration steps without conclusions
+
+Compress by focusing on OUTCOMES and DECISIONS, not on the conversation
+process. Write in terms of what was concluded, not who said what.
 
 Return ONLY the condensed summary text. No explanation, no markdown."""
 

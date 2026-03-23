@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -610,6 +610,7 @@ class VectorStore:
         agent_id: str | None = None,
         shared_only: bool = False,
         limit: int = 5,
+        exclude_layers: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Search for similar existing memories using a pre-computed vector.
 
@@ -625,6 +626,9 @@ class VectorStore:
                 without any agent_id (shared user memories only). Used by
                 dual-scope dedup to search shared memories separately.
             limit: Maximum results.
+            exclude_layers: Optional list of memory_layer values to exclude
+                from results (e.g., ["consolidated"] to exclude consolidated
+                memories during remember dedup).
 
         Returns simple dicts with "id" and "text" keys.
         """
@@ -657,10 +661,31 @@ class VectorStore:
         )
         must_conditions.append(ttl_filter)
 
+        # Exclude memories by layer (e.g., exclude consolidated from remember dedup)
+        must_not_conditions: list = []
+        if exclude_layers:
+            for layer in exclude_layers:
+                must_not_conditions.append(
+                    FieldCondition(key="memory_layer", match=MatchValue(value=layer))
+                )
+            # Backward compat: memories without memory_layer field are treated
+            # as "consolidated". Qdrant must_not with MatchValue only matches
+            # points where the field EXISTS and equals the value — field-absent
+            # points pass through. We need to also exclude those.
+            if "consolidated" in exclude_layers:
+                must_not_conditions.append(
+                    IsEmptyCondition(is_empty=PayloadField(key="memory_layer"))
+                )
+
+        query_filter = Filter(
+            must=must_conditions,
+            must_not=must_not_conditions if must_not_conditions else None,
+        )
+
         result = self._client.query_points(
             collection_name=self.collection_name,
             query=vector,
-            query_filter=Filter(must=must_conditions),
+            query_filter=query_filter,
             limit=limit,
             with_payload=True,
         )
@@ -1344,3 +1369,235 @@ class VectorStore:
         if metadata:
             memory["metadata"] = metadata
         return memory
+
+
+class SessionSummaryStore:
+    """Persistent session summary storage in Qdrant.
+
+    Stores conversation summaries in the _mnemory_sessions collection,
+    separate from the main memory collection. Used by the consolidation
+    service to synthesize durable knowledge from raw memories.
+
+    Session summaries are updated on every remember call and persist
+    beyond session expiry. The consolidation service reads these
+    summaries alongside linked raw memories.
+    """
+
+    COLLECTION = "_mnemory_sessions"
+
+    def __init__(self, client: QdrantClient):
+        self._client = client
+
+    def upsert(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        agent_id: str | None = None,
+        summary: str,
+        new_memory_ids: list[str] | None = None,
+    ) -> None:
+        """Create or update a session summary.
+
+        If the session already exists, updates summary, increments turn_count,
+        and appends new memory IDs. If new, creates with initial values.
+
+        Args:
+            session_id: Session ID (used as Qdrant point ID).
+            user_id: User scope.
+            agent_id: Optional agent scope.
+            summary: Current conversation summary text.
+            new_memory_ids: IDs of raw memories created in this remember call.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Try to read existing
+        existing = self.get(session_id)
+
+        if existing:
+            # Update existing
+            memory_ids = existing.get("memory_ids", [])
+            if new_memory_ids:
+                memory_ids.extend(new_memory_ids)
+            turn_count = existing.get("turn_count", 0) + 1
+
+            payload = {
+                "session_id": session_id,
+                "user_id": user_id,
+                "summary": summary,
+                "turn_count": turn_count,
+                "memory_ids": memory_ids,
+                "updated_at": now,
+                "created_at": existing.get("created_at", now),
+                "consolidation_state": existing.get("consolidation_state", "idle"),
+            }
+            if agent_id:
+                payload["agent_id"] = agent_id
+            elif existing.get("agent_id"):
+                payload["agent_id"] = existing["agent_id"]
+        else:
+            # Create new
+            payload = {
+                "session_id": session_id,
+                "user_id": user_id,
+                "summary": summary,
+                "turn_count": 1,
+                "memory_ids": new_memory_ids or [],
+                "created_at": now,
+                "updated_at": now,
+                "consolidation_state": "idle",
+            }
+            if agent_id:
+                payload["agent_id"] = agent_id
+
+        self._client.upsert(
+            collection_name=self.COLLECTION,
+            points=[
+                PointStruct(
+                    id=session_id,
+                    vector=[0.0],  # dummy vector
+                    payload=payload,
+                )
+            ],
+        )
+
+    def get(self, session_id: str) -> dict | None:
+        """Get a session summary by ID.
+
+        Returns the session dict, or None if not found.
+        """
+        try:
+            result = self._client.retrieve(
+                collection_name=self.COLLECTION,
+                ids=[session_id],
+                with_payload=True,
+            )
+            if result:
+                return dict(result[0].payload or {})
+        except Exception:
+            logger.debug("Session summary %s not found", session_id)
+        return None
+
+    def find_pending(
+        self,
+        user_id: str,
+        idle_threshold_seconds: int = 3600,
+    ) -> list[dict]:
+        """Find sessions awaiting consolidation.
+
+        Returns sessions where:
+        - consolidation_state = "idle"
+        - updated_at is older than idle_threshold_seconds
+        - user_id matches
+
+        Args:
+            user_id: Filter by user.
+            idle_threshold_seconds: Minimum idle time before eligible.
+
+        Returns:
+            List of session dicts.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=idle_threshold_seconds)
+
+        result = self._client.scroll(
+            collection_name=self.COLLECTION,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(
+                        key="consolidation_state",
+                        match=MatchValue(value="idle"),
+                    ),
+                ]
+            ),
+            limit=100,
+            with_payload=True,
+        )
+
+        # Filter by updated_at in Python (simpler than datetime range on string field)
+        sessions = []
+        for point in result[0]:
+            payload = dict(point.payload or {})
+            updated_at_str = payload.get("updated_at", "")
+            if updated_at_str:
+                try:
+                    updated_at = datetime.fromisoformat(updated_at_str)
+                    if updated_at.tzinfo is None:
+                        updated_at = updated_at.replace(tzinfo=timezone.utc)
+                    if updated_at < cutoff:
+                        # Only include sessions that have at least one memory
+                        if payload.get("memory_ids"):
+                            sessions.append(payload)
+                except (ValueError, TypeError):
+                    pass
+
+        return sessions
+
+    def update_consolidation_state(
+        self,
+        session_id: str,
+        state: str,
+        *,
+        consolidated_memory_ids: list[str] | None = None,
+    ) -> None:
+        """Update the consolidation state of a session.
+
+        Args:
+            session_id: Session to update.
+            state: New state ("idle", "consolidating", "consolidated", "failed").
+            consolidated_memory_ids: IDs of produced consolidated memories
+                (set when transitioning to "consolidated").
+        """
+        payload_update: dict[str, Any] = {
+            "consolidation_state": state,
+        }
+        if state == "consolidated":
+            payload_update["consolidated_at"] = datetime.now(timezone.utc).isoformat()
+        if consolidated_memory_ids is not None:
+            payload_update["consolidated_memory_ids"] = consolidated_memory_ids
+
+        self._client.set_payload(
+            collection_name=self.COLLECTION,
+            payload=payload_update,
+            points=[session_id],
+        )
+
+    def list_for_user(
+        self,
+        user_id: str,
+        *,
+        limit: int = 50,
+        consolidation_state: str | None = None,
+    ) -> list[dict]:
+        """List session summaries for a user.
+
+        Args:
+            user_id: Filter by user.
+            limit: Maximum results.
+            consolidation_state: Optional filter by state.
+
+        Returns:
+            List of session dicts, ordered by updated_at descending.
+        """
+        must_conditions = [
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        ]
+        if consolidation_state:
+            must_conditions.append(
+                FieldCondition(
+                    key="consolidation_state",
+                    match=MatchValue(value=consolidation_state),
+                )
+            )
+
+        result = self._client.scroll(
+            collection_name=self.COLLECTION,
+            scroll_filter=Filter(must=must_conditions),
+            limit=limit,
+            with_payload=True,
+        )
+
+        sessions = [dict(p.payload or {}) for p in result[0]]
+        # Sort by updated_at descending
+        sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+        return sessions

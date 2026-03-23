@@ -119,6 +119,7 @@ _RESERVED_LABEL_KEYS = frozenset(
         "run_id",
         "actor_id",
         "labels",
+        "memory_layer",
     }
 )
 
@@ -353,6 +354,11 @@ class MemoryService:
         # When set, remember() uses session context for better extraction
         # and dedup. When None, remember() falls back to stateless mode.
         self._session_store = session_store
+
+        # Persistent session summary store (for consolidation)
+        from mnemory.storage.vector import SessionSummaryStore
+
+        self._session_summary_store = SessionSummaryStore(self.vector._client)
 
         # Per-user lock for serializing concurrent remember calls.
         # Prevents race conditions where two calls search before either
@@ -710,6 +716,32 @@ class MemoryService:
             extracted_texts = [f["text"] for f in facts]
         self._update_session_context(session_id, extracted_texts, summary)
 
+        # 4b. Persist session summary to _mnemory_sessions (for consolidation)
+        if session_id and self._session_store:
+            try:
+                ctx = self._session_store.get_remember_context(session_id)
+                current_summary = ctx.get("conversation_summary", "") if ctx else ""
+                # Collect IDs of memories that were actually stored (ADD/UPDATE)
+                stored_ids = [
+                    r["id"]
+                    for r in results
+                    if r.get("event") in ("ADD", "UPDATE") and r.get("id")
+                ]
+                if current_summary or stored_ids:
+                    self._session_summary_store.upsert(
+                        session_id=session_id,
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        summary=current_summary,
+                        new_memory_ids=stored_ids,
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to persist session summary for %s",
+                    session_id,
+                    exc_info=True,
+                )
+
         # 5. Auto-artifact
         artifact_threshold = self._config.memory.remember_artifact_threshold
         response: dict[str, Any] = {"results": results}
@@ -880,11 +912,13 @@ class MemoryService:
             # When agent_id is set, the dual-scope search below also checks
             # shared memories, so both user and assistant facts are deduped
             # against the full visible set (agent-scoped + shared).
+            # Exclude consolidated memories — remember dedup only touches raw layer.
             existing_raw = self.vector.search_similar(
                 vector,
                 user_id=user_id,
                 agent_id=agent_id,
                 limit=5,
+                exclude_layers=["consolidated"],
             )
             # Dual-scope: also check shared memories when agent_id is set
             if agent_id:
@@ -894,6 +928,7 @@ class MemoryService:
                     agent_id=None,
                     shared_only=True,
                     limit=5,
+                    exclude_layers=["consolidated"],
                 )
                 seen_ids: set[str] = set()
                 merged: list[dict[str, Any]] = []
@@ -980,6 +1015,7 @@ class MemoryService:
                     explicit_fields=remember_explicit,
                     vector_map=vector_map,
                     event_date=None,
+                    memory_layer="raw",
                 )
                 if result_entry:
                     results.append(result_entry)
@@ -994,6 +1030,24 @@ class MemoryService:
             len(results),
             [r.get("event") for r in results],
         )
+
+        # Record remember quality metrics
+        from mnemory.metrics import get_collector
+
+        collector = get_collector()
+        if collector:
+            # Count dedup action types from executed results
+            dedup_counts: dict[str, int] = {}
+            for r in results:
+                event = r.get("event", "").lower()
+                if event:
+                    dedup_counts[event] = dedup_counts.get(event, 0) + 1
+            collector.record_remember_extraction(
+                user_id=user_id,
+                facts_extracted=len(facts),
+                facts_stored=len(results),
+                dedup_actions=dedup_counts,
+            )
 
         return results
 
@@ -1502,6 +1556,7 @@ class MemoryService:
         explicit_fields: dict[str, Any],
         vector_map: dict[str, list[float]],
         event_date: str | None = None,
+        memory_layer: str = "consolidated",
     ) -> dict[str, Any] | None:
         """Execute a single memory action (ADD, UPDATE, or DELETE)."""
         # Guard: role must be resolved to a concrete value before execution.
@@ -1551,6 +1606,7 @@ class MemoryService:
                 "pinned": pin,
                 "artifacts": [],
                 "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "memory_layer": memory_layer,
             }
             if effective_event_date is not None:
                 metadata["event_date"] = effective_event_date
@@ -1597,6 +1653,7 @@ class MemoryService:
                     explicit_fields=explicit_fields,
                     vector_map=vector_map,
                     event_date=event_date,
+                    memory_layer=memory_layer,
                 )
 
             # Build updated metadata — preserve existing, override with new
@@ -1611,6 +1668,10 @@ class MemoryService:
                 # update_metadata() uses Qdrant set_payload (patch semantics)
                 # and would silently preserve the old role if omitted.
                 "role": role,
+                # Write memory_layer on UPDATE to tag legacy memories that
+                # were created before the two-layer system. Without this,
+                # legacy memories touched by remember would stay untagged.
+                "memory_layer": memory_layer,
             }
             # Preserve or update event_date
             # Priority: caller-provided > LLM-extracted > existing
@@ -1851,6 +1912,7 @@ class MemoryService:
             "pinned": pinned,
             "artifacts": [],
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "memory_layer": "consolidated",
         }
         if event_date is not None:
             metadata["event_date"] = event_date

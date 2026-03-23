@@ -481,6 +481,39 @@ class MemoryConfig:
         default_factory=lambda: _env("FSCK_AUTO_MIN_SEVERITY", "medium")
     )
 
+    # ── Consolidation settings ────────────────────────────────────
+
+    # Minimum idle time (seconds) before a session is eligible for
+    # within-session consolidation. Default 1 hour.
+    consolidation_idle_threshold: int = field(
+        default_factory=lambda: _env_int("CONSOLIDATION_IDLE_THRESHOLD", 3600)
+    )
+
+    # Maximum raw memories to process per user during cross-session
+    # consolidation (fsck Phase 3). Prevents unbounded LLM costs.
+    consolidation_max_raw_per_user: int = field(
+        default_factory=lambda: _env_int("CONSOLIDATION_MAX_RAW_PER_USER", 500)
+    )
+
+    # Maximum clusters to evaluate during cross-session consolidation.
+    consolidation_max_clusters: int = field(
+        default_factory=lambda: _env_int("CONSOLIDATION_MAX_CLUSTERS", 20)
+    )
+
+    # Days to retain superseded raw memories before garbage collection.
+    # Raw memories with artifacts are always retained regardless.
+    consolidation_raw_retention_days: int = field(
+        default_factory=lambda: _env_int("CONSOLIDATION_RAW_RETENTION_DAYS", 30)
+    )
+
+    # Recall ranking penalties for raw memories (score adjustment).
+    recall_raw_penalty: float = field(
+        default_factory=lambda: _env_float("RECALL_RAW_PENALTY", 0.05)
+    )
+    recall_superseded_penalty: float = field(
+        default_factory=lambda: _env_float("RECALL_SUPERSEDED_PENALTY", 0.15)
+    )
+
     # Labels: client-provided key-value metadata on memories.
     # Max number of label keys per memory.
     labels_max_fields: int = field(
