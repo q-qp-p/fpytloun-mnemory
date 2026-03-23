@@ -892,7 +892,7 @@
 
           <!-- Sessions list -->
           <div x-show="!loading && sessions.length > 0" class="space-y-3">
-            <template x-for="(session, idx) in sessions" :key="session.session_id || session._point_id || idx">
+            <template x-for="(session, idx) in sessions" :key="session.session_id || ('s-' + idx)">
               <div class="card cursor-pointer hover:border-brand-accent/30 transition-colors"
                    @click="toggleSession(session)">
                 <div class="flex items-start justify-between gap-4">

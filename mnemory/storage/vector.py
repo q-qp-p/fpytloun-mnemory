@@ -1613,13 +1613,22 @@ class SessionSummaryStore:
         )
 
         sessions = []
+        seen_ids: set[str] = set()
         for p in result[0]:
             payload = dict(p.payload or {})
-            # Skip entries with missing session_id (corrupted/legacy data)
-            if not payload.get("session_id"):
+            # Skip entries with empty/corrupted payload
+            if (
+                not payload
+                or not payload.get("session_id")
+                or not payload.get("summary")
+            ):
+                logger.debug("Skipping corrupted session entry (point_id=%s)", p.id)
                 continue
-            # Include the Qdrant point ID for reference
-            payload["_point_id"] = str(p.id)
+            sid = payload["session_id"]
+            # Skip duplicates (can happen from legacy data)
+            if sid in seen_ids:
+                continue
+            seen_ids.add(sid)
             sessions.append(payload)
         # Sort by updated_at descending
         sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
