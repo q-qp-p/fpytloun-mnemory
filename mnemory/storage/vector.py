@@ -1371,6 +1371,18 @@ class VectorStore:
         return memory
 
 
+def _session_point_id(session_id: str) -> str:
+    """Convert a session ID string to a deterministic UUID for Qdrant.
+
+    Qdrant point IDs must be UUIDs or unsigned integers. Session IDs
+    (e.g., ``ses_2e3418b72ffe5gG7rHDeU5aOkv``) are neither, so we
+    derive a stable UUID5 from the session ID string.
+    """
+    import uuid as _uuid
+
+    return str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"mnemory:session:{session_id}"))
+
+
 class SessionSummaryStore:
     """Persistent session summary storage in Qdrant.
 
@@ -1454,7 +1466,7 @@ class SessionSummaryStore:
             collection_name=self.COLLECTION,
             points=[
                 PointStruct(
-                    id=session_id,
+                    id=_session_point_id(session_id),
                     vector=[0.0],  # dummy vector
                     payload=payload,
                 )
@@ -1469,7 +1481,7 @@ class SessionSummaryStore:
         try:
             result = self._client.retrieve(
                 collection_name=self.COLLECTION,
-                ids=[session_id],
+                ids=[_session_point_id(session_id)],
                 with_payload=True,
             )
             if result:
@@ -1559,7 +1571,7 @@ class SessionSummaryStore:
         self._client.set_payload(
             collection_name=self.COLLECTION,
             payload=payload_update,
-            points=[session_id],
+            points=[_session_point_id(session_id)],
         )
 
     def list_for_user(
