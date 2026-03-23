@@ -227,6 +227,45 @@ class MetricsCollector:
             registry=self._registry,
         )
 
+        # ── Consolidation counters (in-memory) ────────────────────
+        self._consolidation_runs = Counter(
+            "mnemory_consolidation_runs_total",
+            "Total consolidation runs by type",
+            ["user_id", "type"],
+            registry=self._registry,
+        )
+        self._consolidation_produced = Counter(
+            "mnemory_consolidation_memories_produced_total",
+            "Total consolidated memories produced",
+            ["user_id"],
+            registry=self._registry,
+        )
+        self._consolidation_superseded = Counter(
+            "mnemory_consolidation_memories_superseded_total",
+            "Total raw memories superseded by consolidation",
+            ["user_id"],
+            registry=self._registry,
+        )
+        self._consolidation_validation_failures = Counter(
+            "mnemory_consolidation_validation_failures_total",
+            "Consolidation output validation failures",
+            ["user_id"],
+            registry=self._registry,
+        )
+        self._consolidation_duration = Histogram(
+            "mnemory_consolidation_duration_seconds",
+            "Consolidation run duration in seconds",
+            ["user_id", "type"],
+            buckets=[1, 5, 10, 30, 60, 120, 300],
+            registry=self._registry,
+        )
+        self._consolidation_pending = Gauge(
+            "mnemory_consolidation_sessions_pending",
+            "Number of sessions awaiting consolidation",
+            ["user_id"],
+            registry=self._registry,
+        )
+
         # ── Latency histograms ────────────────────────────────────
         self._llm_duration = Histogram(
             "mnemory_llm_duration_seconds",
@@ -407,6 +446,35 @@ class MetricsCollector:
                 self._remember_dedup_decisions.labels(
                     user_id=user_id, action=action.lower()
                 ).inc(count)
+
+    def record_consolidation_run(
+        self,
+        *,
+        user_id: str,
+        run_type: str,  # "session" or "cross_session"
+        memories_produced: int = 0,
+        memories_superseded: int = 0,
+        duration_seconds: float = 0.0,
+        validation_failed: bool = False,
+    ) -> None:
+        """Record consolidation run metrics.
+
+        Args:
+            user_id: User the consolidation was run for.
+            run_type: "session" for within-session, "cross_session" for cross.
+            memories_produced: Number of consolidated memories created.
+            memories_superseded: Number of raw memories marked superseded.
+            duration_seconds: Total duration of the consolidation run.
+            validation_failed: Whether output validation failed.
+        """
+        self._consolidation_runs.labels(user_id=user_id, type=run_type).inc()
+        self._consolidation_produced.labels(user_id=user_id).inc(memories_produced)
+        self._consolidation_superseded.labels(user_id=user_id).inc(memories_superseded)
+        self._consolidation_duration.labels(user_id=user_id, type=run_type).observe(
+            duration_seconds
+        )
+        if validation_failed:
+            self._consolidation_validation_failures.labels(user_id=user_id).inc()
 
     def collect_gauges(self) -> None:
         """Refresh gauge values from Qdrant (with caching).

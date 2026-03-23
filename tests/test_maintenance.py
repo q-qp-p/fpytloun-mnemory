@@ -21,13 +21,20 @@ from mnemory.maintenance import _SEVERITY_ORDER, MaintenanceService
 
 
 def _make_config(
-    *, interval: int = 0, min_confidence: float = 0.95, min_severity: str = "medium"
+    *,
+    interval: int = 0,
+    min_confidence: float = 0.95,
+    min_severity: str = "medium",
+    consolidation_raw_retention_days: int = 30,
+    consolidation_idle_threshold: int = 3600,
 ):
     """Build a minimal mock Config for MaintenanceService."""
     cfg = MagicMock()
     cfg.memory.fsck_auto_interval = interval
     cfg.memory.fsck_auto_min_confidence = min_confidence
     cfg.memory.fsck_auto_min_severity = min_severity
+    cfg.memory.consolidation_raw_retention_days = consolidation_raw_retention_days
+    cfg.memory.consolidation_idle_threshold = consolidation_idle_threshold
     return cfg
 
 
@@ -68,6 +75,9 @@ def _make_fsck_service(
         "failed": 0,
         "details": [],
     }
+
+    # gc_superseded_raw returns deleted count
+    fsck.gc_superseded_raw.return_value = {"deleted": 0}
 
     return fsck
 

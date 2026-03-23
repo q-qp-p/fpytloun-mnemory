@@ -1411,6 +1411,81 @@ class FsckService:
 
         return executed, skipped
 
+    # ── GC for superseded raw memories ─────────────────────────────
+
+    def gc_superseded_raw(
+        self,
+        user_id: str,
+        *,
+        retention_days: int = 30,
+    ) -> dict[str, int]:
+        """Garbage-collect old superseded raw memories without artifacts.
+
+        Deletes raw memories that:
+        - Have memory_layer=raw
+        - Have superseded_by set (not None)
+        - Were created more than retention_days ago
+        - Do NOT have artifacts
+
+        Args:
+            user_id: User scope.
+            retention_days: Minimum age before GC (default 30).
+
+        Returns:
+            Dict with 'deleted' count.
+        """
+        from datetime import timedelta
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat()
+
+        # Scroll all memories for user (reuse scroll_with_vectors, ignore vectors)
+        all_memories = self._vector.scroll_with_vectors(user_id=user_id)
+
+        deleted = 0
+        for mem in all_memories:
+            meta = mem.get("metadata") or {}
+
+            # Must be raw layer
+            if meta.get("memory_layer") != "raw":
+                continue
+
+            # Must be superseded
+            if not meta.get("superseded_by"):
+                continue
+
+            # Must not have artifacts
+            if meta.get("artifacts"):
+                continue
+
+            # Must be old enough
+            created = meta.get("created_at_utc", "")
+            if not created or created > cutoff:
+                continue
+
+            # Delete
+            try:
+                mem_id = mem.get("id", "")
+                if mem_id:
+                    self._vector.delete(mem_id)
+                    deleted += 1
+            except Exception:
+                logger.warning(
+                    "Failed to GC superseded memory %s",
+                    mem.get("id"),
+                    exc_info=True,
+                )
+
+        if deleted:
+            logger.info(
+                "GC: deleted %d superseded raw memories for user %s",
+                deleted,
+                user_id,
+            )
+
+        return {"deleted": deleted}
+
     # ── Helpers ───────────────────────────────────────────────────────
 
     @staticmethod

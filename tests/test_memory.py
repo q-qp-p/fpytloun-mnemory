@@ -65,6 +65,9 @@ def _mock_memory_config(mock_config: MagicMock) -> None:
     mock_config.memory.labels_max_key_length = 64
     mock_config.memory.labels_max_value_length = 1000
     mock_config.memory.labels_indexes = []
+    # Recall ranking penalties for raw memories
+    mock_config.memory.recall_raw_penalty = 0.05
+    mock_config.memory.recall_superseded_penalty = 0.15
 
 
 def _make_service(auto_classify=False, track_access=False):

@@ -331,9 +331,19 @@ def list_memories(
         None,
         description='Filter by labels as JSON object (AND logic), e.g. \'{"source":"web"}\'',
     ),
+    memory_layer: str | None = Query(
+        None,
+        description='Filter by memory layer: "raw" or "consolidated"',
+    ),
     ctx: SessionContext = Depends(get_session_context),
 ):
     """List all or filtered memories with optional sorting."""
+    if memory_layer and memory_layer not in ("raw", "consolidated"):
+        raise HTTPException(
+            status_code=422,
+            detail="memory_layer must be 'raw' or 'consolidated'",
+        )
+
     _record("list_memories", ctx)
     service = _get_service()
     cat_list = [c.strip() for c in categories.split(",")] if categories else None
@@ -374,6 +384,16 @@ def list_memories(
             )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+    # Filter by memory_layer if specified (post-retrieval filtering)
+    if memory_layer:
+        results = [
+            m
+            for m in results
+            if (m.get("metadata") or {}).get("memory_layer", "consolidated")
+            == memory_layer
+        ]
+
     items = [format_memory_item(r) for r in results]
     return ListMemoriesResponse(results=items)
 

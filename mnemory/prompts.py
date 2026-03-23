@@ -4064,3 +4064,356 @@ def build_fsck_quality_prompt(
     ]
 
     return messages, FSCK_QUALITY_SCHEMA
+
+
+# ── Consolidation prompts ────────────────────────────────────────────
+
+_CONSOLIDATION_SYSTEM_PROMPT = """\
+{anti_injection}
+
+You are a memory consolidation system. Given a conversation summary and
+individual raw memories from that conversation, synthesize the durable
+knowledge that should be preserved long-term.
+
+## Instructions
+
+- Extract durable knowledge: decisions, preferences, constraints, stable
+  facts, accepted recommendations, project rules, actions taken
+- Write each memory as a self-contained statement:
+  "User decided to...", "User prefers...", "User rejected..."
+  NOT "Decision: ..." or "Constraint: ..."
+- Use standard memory types: preference, fact, episodic, procedural, context
+- Freely reclassify — e.g., if raw memories are episodic but a stable
+  preference emerges, output as preference
+- Assign categories from the predefined set only: personal, preferences,
+  health, work, technical, finance, home, vehicles, travel, entertainment,
+  goals, decisions, project. Use project:<name> for project-scoped memories.
+- Set importance based on durability and impact (low, normal, high, critical)
+- For memories referencing detailed artifacts, note the artifact source
+- If a raw memory is already well-formed and durable, keep it as-is
+- Assign role: "user" for user facts/decisions/preferences, "assistant"
+  for assistant conclusions/actions/identity
+
+## What to extract (categories)
+
+1. **Decisions** — conclusions, agreements, accepted/rejected approaches.
+   importance=high. Example: "User decided to use PostgreSQL for billing"
+2. **Preferences** — likes, dislikes, style choices, workflows.
+   Example: "User prefers Conventional Commits for git messages"
+3. **Facts** — stable biographical or project information.
+   Example: "User has 14 years of DevOps experience"
+4. **Actions** — what was actually done by user or assistant.
+   Example: "User deployed lab-junction to production"
+5. **Explorations with conclusions** — what was investigated and the outcome.
+   role=assistant. Example: "Assistant explored multiple approaches and
+   identified consolidation as the key missing concept"
+
+## What NOT to extract
+
+- Process noise: "User reconsidered...", "User asked if..."
+- Intermediate reasoning: "Assistant analyzed...", "Assistant considered..."
+- Conversational scaffolding: greetings, acknowledgements, status pings
+- Tool output: timings, diff stats, message IDs
+- Transient observations that are only relevant within the session
+"""
+
+_CONSOLIDATION_USER_TEMPLATE = """\
+## Session Summary
+
+{summary_wrapped}
+
+## Raw Memories from this Session ({raw_count} total)
+
+{memories_wrapped}
+
+{artifact_note}
+
+Synthesize the durable knowledge from this session. Output a JSON object
+with a "memories" array.
+"""
+
+CONSOLIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
+    "name": "consolidation_output",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "memories": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The consolidated memory text",
+                        },
+                        "memory_type": {
+                            "type": "string",
+                            "enum": [
+                                "preference",
+                                "fact",
+                                "episodic",
+                                "procedural",
+                                "context",
+                            ],
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "importance": {
+                            "type": "string",
+                            "enum": ["low", "normal", "high", "critical"],
+                        },
+                        "role": {
+                            "type": "string",
+                            "enum": ["user", "assistant"],
+                        },
+                        "pinned": {"type": "boolean"},
+                    },
+                    "required": [
+                        "text",
+                        "memory_type",
+                        "categories",
+                        "importance",
+                        "role",
+                        "pinned",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["memories"],
+        "additionalProperties": False,
+    },
+}
+
+
+def build_consolidation_prompt(
+    *,
+    summary: str,
+    raw_memories: list[dict],
+    artifact_memory_ids: set[str] | None = None,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Build the within-session consolidation prompt.
+
+    Args:
+        summary: The session conversation summary.
+        raw_memories: List of raw memory dicts with 'id', 'memory', 'metadata'.
+        artifact_memory_ids: Set of memory IDs that have artifacts (protected).
+
+    Returns:
+        Tuple of (messages, json_schema) for LLM call.
+    """
+    # Format raw memories as text
+    raw_lines = []
+    for mem in raw_memories:
+        text = mem.get("memory", "") or mem.get("text", "")
+        meta = mem.get("metadata") or {}
+        mem_type = meta.get("memory_type", "unknown")
+        role = meta.get("role", "user")
+        importance = meta.get("importance", "normal")
+        cats = ", ".join(meta.get("categories", []))
+        mid = mem.get("id", "")
+
+        has_artifact = artifact_memory_ids and mid in artifact_memory_ids
+        artifact_marker = " [HAS ARTIFACT]" if has_artifact else ""
+
+        raw_lines.append(
+            f"- [{mem_type}, {role}, {importance}] {text}"
+            f" (categories: {cats or 'none'}){artifact_marker}"
+        )
+
+    raw_memories_text = "\n".join(raw_lines) if raw_lines else "(no raw memories)"
+
+    artifact_note = ""
+    if artifact_memory_ids:
+        artifact_note = (
+            f"Note: {len(artifact_memory_ids)} memory/memories marked "
+            "[HAS ARTIFACT] contain detailed attachments. Reference them "
+            "in consolidated memories where relevant. These raw memories "
+            "will NOT be deleted."
+        )
+
+    system_prompt = _CONSOLIDATION_SYSTEM_PROMPT.format(
+        anti_injection=ANTI_INJECTION_PREAMBLE,
+    )
+
+    summary_wrapped = wrap_with_boundary(summary, "summary")
+    memories_wrapped = wrap_with_boundary(raw_memories_text, "existing_memories")
+
+    user_prompt = _CONSOLIDATION_USER_TEMPLATE.format(
+        summary_wrapped=summary_wrapped,
+        raw_count=len(raw_memories),
+        memories_wrapped=memories_wrapped,
+        artifact_note=artifact_note,
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    return messages, CONSOLIDATION_OUTPUT_SCHEMA
+
+
+# ── Cross-session consolidation prompts ──────────────────────────────
+
+_CROSS_SESSION_SYSTEM_PROMPT = """\
+{anti_injection}
+
+You are a memory consolidation system. Given a set of related memories
+from different conversations, synthesize durable knowledge.
+
+## Instructions
+
+- Merge repeated preferences into one canonical version
+- Resolve contradictions (prefer more recent, more specific)
+- Synthesize patterns from multiple observations
+- A memory appearing across multiple sessions is stronger evidence
+- Write each memory as: "User decided...", "User prefers...", etc.
+- Use standard memory types and categories
+- Set importance based on durability and cross-session evidence strength
+- Assign role: "user" or "assistant"
+
+## Output
+
+For each cluster of related memories, decide:
+- "merge": combine into one canonical memory (provide the merged text)
+- "keep": the existing consolidated memory is already good, keep as-is
+- "skip": these memories are noise or too transient to consolidate
+"""
+
+CROSS_SESSION_OUTPUT_SCHEMA: dict[str, Any] = {
+    "name": "cross_session_output",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "actions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["merge", "keep", "skip"],
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": ("Merged memory text (for merge action)"),
+                        },
+                        "memory_type": {
+                            "type": "string",
+                            "enum": [
+                                "preference",
+                                "fact",
+                                "episodic",
+                                "procedural",
+                                "context",
+                            ],
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "importance": {
+                            "type": "string",
+                            "enum": ["low", "normal", "high", "critical"],
+                        },
+                        "role": {
+                            "type": "string",
+                            "enum": ["user", "assistant"],
+                        },
+                        "pinned": {"type": "boolean"},
+                        "source_memory_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": ("IDs of source memories being merged"),
+                        },
+                    },
+                    "required": [
+                        "action",
+                        "text",
+                        "memory_type",
+                        "categories",
+                        "importance",
+                        "role",
+                        "pinned",
+                        "source_memory_ids",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["actions"],
+        "additionalProperties": False,
+    },
+}
+
+
+def build_cross_session_prompt(
+    *,
+    memories: list[dict],
+    session_summaries: dict[str, str] | None = None,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Build the cross-session consolidation prompt.
+
+    Args:
+        memories: List of related memory dicts from different sessions.
+        session_summaries: Optional mapping of session_id -> summary text
+            for context.
+
+    Returns:
+        Tuple of (messages, json_schema) for LLM call.
+    """
+    # Format memories with session context
+    mem_lines = []
+    for mem in memories:
+        text = mem.get("memory", "") or mem.get("text", "")
+        meta = mem.get("metadata") or {}
+        mem_type = meta.get("memory_type", "unknown")
+        role = meta.get("role", "user")
+        importance = meta.get("importance", "normal")
+        cats = ", ".join(meta.get("categories", []))
+        labels = meta.get("labels") or {}
+        session_id = labels.get("session_id", "unknown")
+        created = meta.get("created_at_utc", "")
+
+        mem_lines.append(
+            f"- [{mem_type}, {role}, {importance}] {text}"
+            f" (categories: {cats or 'none'}, session: {session_id}, "
+            f"created: {created})"
+        )
+
+    memories_text = "\n".join(mem_lines) if mem_lines else "(no memories)"
+
+    # Add session summaries if available
+    summary_section = ""
+    if session_summaries:
+        summary_lines = []
+        for sid, summary in session_summaries.items():
+            summary_lines.append(f"### Session {sid}\n{summary}")
+        summary_section = "## Session Summaries (for context)\n\n" + "\n\n".join(
+            summary_lines
+        )
+
+    system_prompt = _CROSS_SESSION_SYSTEM_PROMPT.format(
+        anti_injection=ANTI_INJECTION_PREAMBLE,
+    )
+
+    memories_wrapped = wrap_with_boundary(memories_text, "existing_memories")
+
+    user_prompt = (
+        f"## Related Memories ({len(memories)} from multiple sessions)\n\n"
+        f"{memories_wrapped}\n\n"
+        f"{summary_section}\n\n"
+        "Synthesize durable knowledge from these related memories."
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    return messages, CROSS_SESSION_OUTPUT_SCHEMA

@@ -2013,6 +2013,22 @@ class MemoryService:
             imp_value = IMPORTANCE_WEIGHTS.get(imp_level, 0.4)
             mem["score"] = round(mem.get("score", 0) + importance_weight * imp_value, 4)
 
+        # Layer-aware scoring: penalize raw and superseded memories
+        raw_penalty = self._config.memory.recall_raw_penalty
+        superseded_penalty = self._config.memory.recall_superseded_penalty
+        if raw_penalty > 0 or superseded_penalty > 0:
+            for mem in memories:
+                meta = mem.get("metadata") or {}
+                layer = meta.get("memory_layer")
+                # Absent memory_layer = legacy = treated as consolidated (no penalty)
+                if layer == "raw":
+                    if meta.get("superseded_by"):
+                        mem["score"] = round(
+                            mem.get("score", 0) - superseded_penalty, 4
+                        )
+                    else:
+                        mem["score"] = round(mem.get("score", 0) - raw_penalty, 4)
+
         memories.sort(key=lambda m: m.get("score", 0), reverse=True)
         return memories
 

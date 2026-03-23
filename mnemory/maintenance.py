@@ -45,11 +45,14 @@ class MaintenanceService:
         config: Config,
         fsck: FsckService,
         collector: MetricsCollector | None = None,
+        consolidation: Any | None = None,
     ) -> None:
         self._config = config
         self._fsck = fsck
         self._collector = collector
         self._task: asyncio.Task | None = None
+        self._consolidation = consolidation
+        self._consolidation_task: asyncio.Task | None = None
 
         # Scheduling state — exposed via properties for the stats endpoint.
         self._next_run_at: float | None = None  # Unix timestamp
@@ -92,6 +95,19 @@ class MaintenanceService:
         )
         self._task = asyncio.create_task(self._loop(), name="maintenance-autofsck")
 
+        # Start consolidation loop if service is available
+        if self._consolidation is not None:
+            consolidation_interval = self._config.memory.consolidation_idle_threshold
+            if consolidation_interval > 0:
+                logger.info(
+                    "Consolidation enabled: checking every %ds for idle sessions",
+                    consolidation_interval,
+                )
+                self._consolidation_task = asyncio.create_task(
+                    self._consolidation_loop(),
+                    name="maintenance-consolidation",
+                )
+
     async def stop(self) -> None:
         """Stop the background maintenance loop."""
         if self._task is not None:
@@ -103,6 +119,15 @@ class MaintenanceService:
             self._task = None
             self._next_run_at = None
             logger.debug("Auto-fsck maintenance loop stopped")
+
+        if self._consolidation_task is not None:
+            self._consolidation_task.cancel()
+            try:
+                await self._consolidation_task
+            except asyncio.CancelledError:
+                pass
+            self._consolidation_task = None
+            logger.debug("Consolidation maintenance loop stopped")
 
     # ── Run Now ──────────────────────────────────────────────────────
 
@@ -229,6 +254,83 @@ class MaintenanceService:
             finally:
                 self._running = False
 
+    # ── Consolidation loop ─────────────────────────────────────────
+
+    async def _consolidation_loop(self) -> None:
+        """Consolidation maintenance loop: check for idle sessions periodically."""
+        interval = self._config.memory.consolidation_idle_threshold
+        if interval <= 0:
+            return
+        while True:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
+            try:
+                await self._run_consolidation()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Consolidation run failed unexpectedly")
+
+    async def _run_consolidation(self) -> None:
+        """Run within-session consolidation for all users with idle sessions."""
+        # Get all user IDs from the vector store
+        user_ids: list[str] = await asyncio.to_thread(
+            self._consolidation._vector.list_user_ids
+        )
+        if not user_ids:
+            return
+
+        for user_id in user_ids:
+            try:
+                # Recover any incomplete consolidations first
+                await asyncio.to_thread(self._consolidation.recover_incomplete, user_id)
+
+                # Find pending sessions
+                pending = await asyncio.to_thread(
+                    self._consolidation.find_pending_sessions, user_id
+                )
+                if not pending:
+                    continue
+
+                logger.info(
+                    "Consolidation: %d pending session(s) for user %s",
+                    len(pending),
+                    user_id,
+                )
+
+                for session in pending:
+                    session_id = session.get("session_id", "")
+                    if not session_id:
+                        continue
+                    try:
+                        result = await asyncio.to_thread(
+                            self._consolidation.consolidate_session,
+                            session_id,
+                        )
+                        if self._collector is not None:
+                            self._collector.record_consolidation_run(
+                                user_id=user_id,
+                                run_type="session",
+                                memories_produced=result.memories_produced,
+                                memories_superseded=result.memories_superseded,
+                                duration_seconds=result.duration_seconds,
+                                validation_failed=(result.state == "failed"),
+                            )
+                        if result.state == "failed":
+                            logger.warning(
+                                "Consolidation failed for session %s: %s",
+                                session_id,
+                                result.error,
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Consolidation error for session %s", session_id
+                        )
+            except Exception:
+                logger.exception("Consolidation error for user %s, continuing", user_id)
+
     # ── Core logic ───────────────────────────────────────────────────
 
     async def _run_auto_fsck(self) -> None:
@@ -330,6 +432,26 @@ class MaintenanceService:
         # Mark completed after auto-apply is done so the UI sees the
         # final state with applied_issue_ids populated.
         check.status = "completed"
+
+        # Run GC for superseded raw memories
+        retention_days = self._config.memory.consolidation_raw_retention_days
+        if retention_days > 0:
+            try:
+                gc_result = await asyncio.to_thread(
+                    self._fsck.gc_superseded_raw,
+                    user_id,
+                    retention_days=retention_days,
+                )
+                if gc_result.get("deleted", 0) > 0:
+                    logger.info(
+                        "Auto-fsck: GC deleted %d superseded raw memories for user %s",
+                        gc_result["deleted"],
+                        user_id,
+                    )
+            except Exception:
+                logger.warning(
+                    "Auto-fsck: GC failed for user %s", user_id, exc_info=True
+                )
 
         if self._collector is not None:
             self._collector.record_autofsck_run(

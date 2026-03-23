@@ -1042,6 +1042,7 @@ async def list_memories(
     agent_id: str | None = None,
     include_decayed: bool = False,
     labels: dict[str, Any] | None = None,
+    memory_layer: str | None = None,
 ) -> str:
     """List all stored memories for a user, optionally filtered.
 
@@ -1052,8 +1053,17 @@ async def list_memories(
         limit: Max results (default 50).
         include_decayed: Include expired memories (default false).
         labels: Filter by label key-value pairs (AND logic).
+        memory_layer: Filter by memory layer: "raw" or "consolidated". Omit for all.
     """
     try:
+        if memory_layer and memory_layer not in ("raw", "consolidated"):
+            return json.dumps(
+                {
+                    "error": True,
+                    "message": "memory_layer must be 'raw' or 'consolidated'",
+                }
+            )
+
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
         collector = get_collector()
@@ -1096,6 +1106,16 @@ async def list_memories(
                 include_decayed=include_decayed,
                 labels=labels,
             )
+
+        # Filter by memory_layer if specified (post-retrieval filtering)
+        if memory_layer:
+            results = [
+                m
+                for m in results
+                if (m.get("metadata") or {}).get("memory_layer", "consolidated")
+                == memory_layer
+            ]
+
         return _format_memories(results)
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
@@ -1988,12 +2008,24 @@ async def lifespan(app):
 
     # Start periodic maintenance (auto-fsck) if enabled
     global _maintenance_service
+    from mnemory.consolidation import ConsolidationService
     from mnemory.maintenance import MaintenanceService
+
+    consolidation = ConsolidationService(
+        config=cfg,
+        vector=service.vector,
+        llm=service._llm,
+        embedding=service._embedding,
+        memory_service=service,
+        session_summary_store=service._session_summary_store,
+        collector=get_collector(),
+    )
 
     maintenance = MaintenanceService(
         config=cfg,
         fsck=_get_fsck_service(),
         collector=get_collector(),
+        consolidation=consolidation,
     )
     _maintenance_service = maintenance
 
