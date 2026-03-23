@@ -391,6 +391,54 @@ document.addEventListener('alpine:init', () => {
     },
   });
 
+  // ── Session Detail Modal Store ────────────────────────────────
+  // Global session detail modal — opened from Memories tab when
+  // clicking a session_id label.
+  Alpine.store('sessionDetail', {
+    open: false,
+    loading: false,
+    session: null,
+
+    async show(sessionId) {
+      this.open = true;
+      this.loading = true;
+      this.session = null;
+      try {
+        const data = await MnemoryAPI.get(`/sessions/${sessionId}`);
+        this.session = data;
+      } catch (err) {
+        Alpine.store('notify').error(`Failed to load session: ${err.message}`);
+        this.open = false;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    close() {
+      this.open = false;
+      this.session = null;
+    },
+
+    formatDate(dateStr) {
+      if (!dateStr) return '';
+      try {
+        return new Date(dateStr).toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit',
+        });
+      } catch { return dateStr; }
+    },
+
+    stateBadgeClass(state) {
+      return {
+        'bg-yellow-500/20 text-yellow-300': state === 'idle',
+        'bg-blue-500/20 text-blue-300': state === 'consolidating',
+        'bg-green-500/20 text-green-300': state === 'consolidated',
+        'bg-red-500/20 text-red-300': state === 'failed',
+      };
+    },
+  });
+
   // ── Navigation Store ─────────────────────────────────────────
   Alpine.store('nav', {
     activeTab: 'dashboard',
