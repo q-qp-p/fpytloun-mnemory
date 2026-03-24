@@ -4116,11 +4116,12 @@ _CONSOLIDATION_USER_SYSTEM_PROMPT = """\
 {anti_injection}
 
 You are a memory consolidation system. Given a conversation summary and
-individual raw memories about the USER, synthesize durable user knowledge.
+individual raw memories about the USER, synthesize durable user knowledge
+that would be valuable in FUTURE conversations.
 
 ## Instructions
 
-- Extract durable user knowledge: decisions, preferences, constraints,
+- Extract ONLY durable user knowledge: decisions, preferences, constraints,
   stable facts, goals, actions the user took, project rules
 - Write each memory as: "User decided to...", "User prefers...",
   "User rejected...", "User deployed..."
@@ -4141,13 +4142,14 @@ individual raw memories about the USER, synthesize durable user knowledge.
 
 1. **Decisions** — conclusions, agreements, accepted/rejected approaches.
    importance=high. Example: "User decided to use PostgreSQL for billing"
-2. **Preferences** — likes, dislikes, style choices, workflows.
+2. **Preferences** — ONLY when explicitly stated or demonstrated through
+   a repeated pattern. A single request does NOT imply a preference.
    Example: "User prefers conventional commit messages for git"
 3. **Facts** — stable biographical or project information.
    Example: "User has 14 years of DevOps experience"
-4. **Actions** — what the user actually did.
+4. **Actions** — what the user actually did with lasting impact.
    Example: "User deployed the payment service to production"
-5. **Goals** — what the user is working toward.
+5. **Goals** — what the user is working toward (stated, not inferred).
    Example: "User wants to improve memory quality without extra LLM calls"
 
 ## What NOT to extract
@@ -4156,6 +4158,22 @@ individual raw memories about the USER, synthesize durable user knowledge.
 - Conversational scaffolding: greetings, acknowledgements, status pings
 - Tool output: timings, diff stats, message IDs
 - Transient observations only relevant within the session
+- Single requests that do NOT indicate a preference or habit. "User asked
+  to call X" does NOT mean "User prefers X" — it means the user asked
+  once, which is not a durable preference.
+- Test or debug interactions with no lasting outcome
+- Routine tool calls or status checks
+
+## Quality rules
+
+- Be CONSERVATIVE. It is better to produce fewer high-quality memories
+  than many low-quality ones.
+- If the session contains only transient activity with no durable
+  knowledge (e.g., a brief test, a status check, a greeting), return
+  an EMPTY memories array. This is acceptable and preferred over
+  inventing memories.
+- Each memory must pass the test: "Would this be useful in a completely
+  different future conversation?" If not, do not include it.
 """
 
 _CONSOLIDATION_ASSISTANT_SYSTEM_PROMPT = """\
@@ -4163,11 +4181,11 @@ _CONSOLIDATION_ASSISTANT_SYSTEM_PROMPT = """\
 
 You are a memory consolidation system. Given a conversation summary and
 individual raw memories about the ASSISTANT's actions, synthesize durable
-assistant knowledge.
+assistant knowledge that would be valuable in FUTURE conversations.
 
 ## Instructions
 
-- Extract durable assistant knowledge: implementations, deployments,
+- Extract ONLY durable assistant knowledge: implementations, deployments,
   research findings, recommendations, design decisions, explorations
   with conclusions, actions with lasting impact
 - Write each memory as: "Assistant implemented...", "Assistant deployed...",
@@ -4186,25 +4204,45 @@ assistant knowledge.
 ## What to extract
 
 1. **Implementations** — code written, features built, bugs fixed.
-   Example: "Assistant implemented the database migration and caching layer"
+   Example: "Assistant implemented the database migration and caching layer
+   for the billing service"
 2. **Recommendations** — design choices, tool selections, architecture decisions.
-   Example: "Assistant recommended Redis with TTL-based eviction for caching"
+   Example: "Assistant recommended Redis with TTL-based eviction for the
+   session store caching layer"
 3. **Research findings** — analysis outcomes, investigation conclusions.
-   Example: "Assistant explored multiple caching strategies and concluded
-   that Redis is the best fit"
+   Example: "Assistant explored multiple caching strategies for the session
+   store and concluded that Redis with TTL-based eviction is the best fit"
 4. **Deployments and operations** — what was deployed, configured, or managed.
-   Example: "Assistant deployed the billing service to production Kubernetes"
+   Example: "Assistant deployed the billing service to the production
+   Kubernetes cluster and verified health checks"
 5. **Design decisions** — architectural choices made by the assistant.
    Example: "Assistant designed a two-layer memory system with raw ingest
-   and async consolidation"
+   and async consolidation for the memory service"
 
 ## What NOT to extract
 
 - Intermediate reasoning without conclusion: "Assistant analyzed...",
   "Assistant considered..." (but DO extract if there is a conclusion)
-- Transient task execution: "Assistant read the file", "Assistant checked"
+- Transient task execution: "Assistant read the file", "Assistant checked",
+  "Assistant called a tool"
 - Tool output: timings, diff stats, build output
 - Offers or proposals that were not acted on
+- Routine tool calls (initialize, load, check) unless they produced a
+  significant finding or conclusion
+- Brief confirmations or status responses
+
+## Quality rules
+
+- Be CONSERVATIVE. It is better to produce fewer high-quality memories
+  than many low-quality ones.
+- If the session contains only transient assistant activity with no
+  lasting outcome (e.g., routine tool calls, brief answers, status
+  checks), return an EMPTY memories array. This is acceptable and
+  preferred over inventing memories.
+- Each memory must pass the test: "Would knowing this be useful in a
+  completely different future conversation?" If not, do not include it.
+- Merge related raw memories into one consolidated memory when they
+  describe the same action or finding from different angles.
 """
 
 _CONSOLIDATION_USER_TEMPLATE = """\
