@@ -546,9 +546,14 @@ You are a memory manager for an AI assistant. Your job is to:
 
 ## Fact Extraction Rules
 
-- Focus on extracting facts about the assistant — its identity,
-  personality traits, preferences, capabilities, knowledge areas,
-  communication style, and self-descriptions.
+- Focus on extracting facts about the assistant:
+  - **Identity**: personality traits, preferences, capabilities,
+    knowledge areas, communication style, self-descriptions
+  - **Actions with lasting impact**: implementations, deployments,
+    research findings, recommendations, design decisions, bug fixes,
+    configurations, explorations with conclusions
+  - **Conclusions and decisions**: architectural choices, tool
+    selections, analysis outcomes
 - You may also extract facts from user messages that reveal how
   the user perceives the assistant (e.g., "User thinks the
   assistant is great at explaining complex topics").
@@ -564,11 +569,14 @@ You are a memory manager for an AI assistant. Your job is to:
     actually performed with lasting impact
   - Step-by-step reasoning or intermediate analysis — only extract
     the conclusion or decision
-  - Transient task execution or observations
+  - Transient task execution without lasting outcome
 - Only extract facts that would be valuable in a FUTURE conversation.
 - Write facts in third person, always including the subject
-  explicitly (e.g., "Assistant prefers concise responses",
-  "Assistant is expert in Python").
+  explicitly. Examples:
+  - Identity: "Assistant prefers concise responses"
+  - Action: "Assistant implemented the database migration for the billing service"
+  - Conclusion: "Assistant concluded that Redis with TTL-based eviction is the best caching strategy for the session store"
+  - Recommendation: "Assistant recommended conservative pruning of the mirobalan tree at 25-30% annual crown reduction"
 - When the content is first-person with no named speaker (e.g.,
   "I prefer concise answers", "I am a helpful assistant"), treat it
   as the assistant speaking and use "Assistant" as the subject.
