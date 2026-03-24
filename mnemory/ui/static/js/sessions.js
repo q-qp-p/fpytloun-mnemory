@@ -135,27 +135,49 @@ function sessionsPanel() {
       const sid = session.session_id;
       this.consolidating[sid] = true;
       try {
-        const result = await MnemoryAPI.post(`/sessions/${sid}/consolidate`);
-        Alpine.store('notify').success(
-          `Consolidated: ${result.memories_produced} memories produced, ${result.memories_superseded} superseded`
-        );
-        // Reload session data
-        session.consolidation_state = result.state;
-        session.consolidated_at = new Date().toISOString();
-        // Invalidate caches and reload
-        delete this.sessionMemories[sid];
-        delete this.sessionConsolidatedMems[sid];
-        await this.loadSessionMemories(session);
-        if (result.consolidated_memory_ids?.length > 0) {
-          session.consolidated_memory_ids = result.consolidated_memory_ids;
-          await this.loadConsolidatedMemories(session);
-        }
+        await MnemoryAPI.post(`/sessions/${sid}/consolidate`);
+        session.consolidation_state = 'consolidating';
+        Alpine.store('notify').success('Consolidation started...');
+        // Poll for completion
+        this._pollConsolidation(session);
       } catch (e) {
         const msg = e.message || 'Consolidation failed';
         Alpine.store('notify').error(msg);
-      } finally {
         this.consolidating[sid] = false;
       }
+    },
+
+    _pollConsolidation(session) {
+      const sid = session.session_id;
+      const poll = setInterval(async () => {
+        try {
+          const data = await MnemoryAPI.get(`/sessions/${sid}`);
+          if (data.consolidation_state !== 'consolidating') {
+            clearInterval(poll);
+            this.consolidating[sid] = false;
+            session.consolidation_state = data.consolidation_state;
+            session.consolidated_at = data.consolidated_at;
+            session.consolidated_memory_ids = data.consolidated_memory_ids;
+            if (data.consolidation_state === 'consolidated') {
+              Alpine.store('notify').success('Consolidation complete');
+              // Invalidate caches and reload
+              delete this.sessionMemories[sid];
+              delete this.sessionConsolidatedMems[sid];
+              if (session._expanded) {
+                await this.loadSessionMemories(session);
+                if (data.consolidated_memory_ids?.length > 0) {
+                  await this.loadConsolidatedMemories(session);
+                }
+              }
+            } else {
+              Alpine.store('notify').error('Consolidation failed');
+            }
+          }
+        } catch (e) {
+          clearInterval(poll);
+          this.consolidating[sid] = false;
+        }
+      }, 3000); // Poll every 3 seconds
     },
 
     // ── Session delete ──────────────────────────────────────────

@@ -1722,8 +1722,8 @@ You are a memory extraction system. Your job is to:
 Use these categories to guide what you extract:
 
 1. **Topic** — What the user is working on or discussing.
-   memory_type=context. Example: "User is redesigning the mnemory
-   remember endpoint"
+   memory_type=context. Example: "User is redesigning the authentication
+   system for the web application"
 
 2. **Decision** — Conclusions, agreements, accepted or rejected
    approaches. memory_type=fact (permanent) or episodic (time-bound),
@@ -1735,11 +1735,11 @@ Use these categories to guide what you extract:
    years of experience in DevOps"
 
 4. **Action** — What the user actually did. memory_type=episodic.
-   Example: "User deployed the lab-junction service to production"
+   Example: "User deployed the payment service to production"
 
 5. **Preference/Workflow** — Likes, dislikes, habits, standard
    procedures. memory_type=preference or procedural.
-   Example: "User prefers Conventional Commits for git messages"
+   Example: "User prefers conventional commit messages for git"
 
 ## Classification Rules
 
@@ -2405,18 +2405,18 @@ memory types:
 
 1. **Topic** — What the user is working on or discussing. Use
    memory_type=context, role=user. Example: "User is redesigning the
-   mnemory remember endpoint to improve memory quality"
+   authentication system for the web application"
 
 2. **Exploration** — What was investigated or analyzed, WITH its outcome.
    Use memory_type=episodic, role=assistant. Only extract if there is a
-   conclusion or finding. Example: "Assistant explored multiple approaches
-   to remember quality and identified consolidation as the key missing
-   concept"
+   conclusion or finding. Example: "Assistant explored multiple caching
+   strategies and concluded that Redis with TTL-based eviction is the
+   best fit"
 
 3. **Decision** — Conclusions, agreements, accepted or rejected approaches.
    Use memory_type=fact (permanent) or memory_type=episodic (time-bound),
    role=user, importance=high. Example: "User decided to use a two-layer
-   memory system for mnemory"
+   architecture for the data pipeline"
 
 4. **Fact** — Stable biographical info (memory_type=fact, permanent) or
    current project state (memory_type=context, short-term). Role=user.
@@ -2424,12 +2424,12 @@ memory types:
 
 5. **Action** — What was actually done — code implemented, emails sent,
    deployments made. Use memory_type=episodic, role=user or assistant.
-   Example: "Assistant implemented the two-layer memory migration for
-   mnemory"
+   Example: "Assistant implemented the database migration and caching
+   layer for the billing service"
 
 6. **Preference/Workflow** — Likes, dislikes, habits, standard procedures.
    Use memory_type=preference or procedural, role=user.
-   Example: "User prefers Conventional Commits for git messages"
+   Example: "User prefers conventional commit messages for git"
 
 **Key rules:**
 - Assistant memories MUST have an outcome or record an action to be
@@ -4116,7 +4116,9 @@ knowledge that should be preserved long-term.
 - Extract durable knowledge: decisions, preferences, constraints, stable
   facts, accepted recommendations, project rules, actions taken
 - Write each memory as a self-contained statement:
-  "User decided to...", "User prefers...", "User rejected..."
+  User memories: "User decided to...", "User prefers...", "User rejected..."
+  Assistant memories: "Assistant implemented...", "Assistant deployed...",
+  "Assistant explored X and concluded Y"
   NOT "Decision: ..." or "Constraint: ..."
 - Use standard memory types: preference, fact, episodic, procedural, context
 - Freely reclassify — e.g., if raw memories are episodic but a stable
@@ -4124,14 +4126,11 @@ knowledge that should be preserved long-term.
 - You MUST assign at least one category to each memory from the available
   set provided in the prompt. Copy categories from the raw memories when
   the topic matches. Preserve project-scoped categories exactly as they
-  appear in the raw memories (e.g., "project:mnemory", NOT just "project").
+  appear in the raw memories (e.g., "project:myapp", NOT just "project").
   NEVER output an empty categories array.
 - Set importance based on durability and impact (low, normal, high, critical)
 - For memories referencing detailed artifacts, note the artifact source
 - If a raw memory is already well-formed and durable, keep it as-is
-- Assign role: "user" for user facts/decisions/preferences, "assistant"
-  for assistant conclusions/actions/identity
-
 ## What to extract (categories)
 
 1. **Decisions** — conclusions, agreements, accepted/rejected approaches.
@@ -4141,18 +4140,38 @@ knowledge that should be preserved long-term.
 3. **Facts** — stable biographical or project information.
    Example: "User has 14 years of DevOps experience"
 4. **Actions** — what was actually done by user or assistant.
-   Example: "User deployed lab-junction to production"
+   Example (role=user): "User deployed the payment service to production"
+   Example (role=assistant): "Assistant implemented the database migration
+   and caching layer for the billing service"
 5. **Explorations with conclusions** — what was investigated and the outcome.
-   role=assistant. Example: "Assistant explored multiple approaches and
-   identified consolidation as the key missing concept"
+   role=assistant. Example: "Assistant explored multiple caching strategies
+   and concluded that Redis with TTL-based eviction is the best fit"
 
 ## What NOT to extract
 
 - Process noise: "User reconsidered...", "User asked if..."
-- Intermediate reasoning: "Assistant analyzed...", "Assistant considered..."
+- Intermediate reasoning without conclusion: "Assistant analyzed...",
+  "Assistant considered..." (but DO extract if there is a conclusion)
 - Conversational scaffolding: greetings, acknowledgements, status pings
 - Tool output: timings, diff stats, message IDs
 - Transient observations that are only relevant within the session
+
+## Role Attribution
+
+Each memory must include the correct role:
+
+- **role: "user"** — Facts about the user: decisions, preferences,
+  constraints, goals, personal info. A decision from an assistant
+  recommendation accepted by the user is role=user.
+- **role: "assistant"** — What the assistant DID: implementations,
+  deployments, research findings, recommendations, design decisions,
+  explorations with conclusions, actions with lasting impact.
+
+When raw memories contain assistant actions (role=assistant), you MUST
+include corresponding role=assistant consolidated memories. Do NOT
+convert assistant actions into user-perspective memories.
+"Assistant implemented the two-layer memory system" must remain
+role=assistant, NOT become "The two-layer memory system was implemented".
 """
 
 _CONSOLIDATION_USER_TEMPLATE = """\
@@ -4366,10 +4385,16 @@ from different conversations, synthesize durable knowledge.
 - Resolve contradictions (prefer more recent, more specific)
 - Synthesize patterns from multiple observations
 - A memory appearing across multiple sessions is stronger evidence
-- Write each memory as: "User decided...", "User prefers...", etc.
+- Write each memory as a self-contained statement:
+  User memories: "User decided...", "User prefers...", "User rejected..."
+  Assistant memories: "Assistant implemented...", "Assistant deployed...",
+  "Assistant explored X and concluded Y"
 - Use standard memory types and categories
 - Set importance based on durability and cross-session evidence strength
-- Assign role: "user" or "assistant"
+- Assign role: "user" for user facts/decisions/preferences, "assistant"
+  for assistant actions/conclusions/implementations
+- When source memories contain role=assistant, preserve that role in
+  the merged output
 
 ## Output
 

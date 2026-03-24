@@ -65,6 +65,9 @@ function searchTab() {
     /** Client-side filter: show only decayed memories */
     filterDecayedOnly: false,
 
+    /** Client-side filter: memory layer (raw/consolidated) */
+    filterMemoryLayer: '',
+
     /** All known agent IDs (loaded from stats API, not from current results) */
     availableAgentIds: [],
 
@@ -271,6 +274,10 @@ function searchTab() {
       // Client-side filter: has artifacts only
       if (this.filterArtifactsOnly) {
         arr = arr.filter(r => r.has_artifacts);
+      }
+      // Client-side filter: memory layer
+      if (this.filterMemoryLayer) {
+        arr = arr.filter(r => (r.metadata?.memory_layer || 'consolidated') === this.filterMemoryLayer);
       }
       // Client-side filter: agent_id
       if (this.filterAgentId) {

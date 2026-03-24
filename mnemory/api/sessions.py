@@ -138,8 +138,9 @@ async def consolidate_session_endpoint(
 ) -> dict:
     """Trigger consolidation for a specific session.
 
-    Ignores the idle threshold — consolidates immediately.
-    Returns the consolidation result.
+    Ignores the idle threshold. Runs consolidation in a background task
+    and returns immediately with status 202. The client should poll
+    GET /api/sessions/{id} to check when consolidation completes.
     """
     service = _get_service()
 
@@ -164,18 +165,16 @@ async def consolidate_session_endpoint(
             status_code=503, detail="Consolidation service not available"
         )
 
-    # Run in thread pool to avoid blocking the event loop
-    result = await asyncio.to_thread(
-        _maintenance_service._consolidation.consolidate_session,
-        session_id,
-    )
+    # Fire and forget — run in background to avoid HTTP timeout
+    async def _run_consolidation() -> None:
+        try:
+            await asyncio.to_thread(
+                _maintenance_service._consolidation.consolidate_session,
+                session_id,
+            )
+        except Exception:
+            logger.exception("Manual consolidation failed for session %s", session_id)
 
-    return {
-        "session_id": result.session_id,
-        "state": result.state,
-        "memories_produced": result.memories_produced,
-        "memories_superseded": result.memories_superseded,
-        "consolidated_memory_ids": result.consolidated_memory_ids or [],
-        "duration_seconds": round(result.duration_seconds, 2),
-        "error": result.error,
-    }
+    asyncio.create_task(_run_consolidation())
+
+    return {"status": "consolidating", "session_id": session_id}
