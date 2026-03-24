@@ -12,6 +12,7 @@ function sessionsPanel() {
     loading: false,
     error: '',
     stateFilter: '',
+    agentFilter: '',
 
     // Per-session state for memory loading and expansion
     sessionMemories: {},   // session_id → memory[]
@@ -39,6 +40,22 @@ function sessionsPanel() {
       } finally {
         this.loading = false;
       }
+    },
+
+    get filteredSessions() {
+      let arr = this.sessions;
+      if (this.agentFilter) {
+        arr = arr.filter(s => (s.agent_id || '') === this.agentFilter);
+      }
+      return arr;
+    },
+
+    get uniqueAgents() {
+      const agents = new Set();
+      for (const s of this.sessions) {
+        if (s.agent_id) agents.add(s.agent_id);
+      }
+      return [...agents].sort();
     },
 
     async toggleSession(session) {
@@ -108,6 +125,10 @@ function sessionsPanel() {
 
     isConsolidatedLoading(sessionId) {
       return !!this.sessionConsolidatedLoading[sessionId];
+    },
+
+    isConsolidating(sessionId) {
+      return !!this.consolidating[sessionId];
     },
 
     async consolidateSession(session) {

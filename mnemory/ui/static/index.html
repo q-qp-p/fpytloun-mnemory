@@ -869,6 +869,12 @@
               </p>
             </div>
             <div class="flex items-center gap-2">
+              <select class="select text-sm" x-model="agentFilter">
+                <option value="">All agents</option>
+                <template x-for="agent in uniqueAgents" :key="agent">
+                  <option :value="agent" x-text="agent"></option>
+                </template>
+              </select>
               <select class="select text-sm" x-model="stateFilter" @change="load()">
                 <option value="">All states</option>
                 <option value="idle">Idle</option>
@@ -893,7 +899,7 @@
           </div>
 
           <!-- Empty state -->
-          <div x-show="!loading && !error && sessions.length === 0"
+          <div x-show="!loading && !error && filteredSessions.length === 0"
                class="text-center py-12">
             <p class="text-secondary">No session summaries found</p>
             <p class="text-xs text-muted mt-1">
@@ -902,8 +908,8 @@
           </div>
 
           <!-- Sessions list -->
-          <div x-show="!loading && sessions.length > 0" class="space-y-3">
-            <template x-for="(session, idx) in sessions" :key="session.session_id || ('s-' + idx)">
+          <div x-show="!loading && filteredSessions.length > 0" class="space-y-3">
+            <template x-for="(session, idx) in filteredSessions" :key="session.session_id || ('s-' + idx)">
               <div class="card cursor-pointer hover:border-brand-accent/30 transition-colors"
                    @click="toggleSession(session)">
                 <div class="flex items-start justify-between gap-4">
@@ -958,7 +964,7 @@
                     <div class="flex items-center gap-2">
                       <button x-show="!session.consolidation_state || session.consolidation_state === 'idle' || session.consolidation_state === 'failed'"
                               @click.stop="consolidateSession(session)"
-                              :disabled="consolidating[session.session_id]"
+                              :disabled="isConsolidating(session.session_id)"
                               class="btn-primary text-xs">
                         <span x-show="!consolidating[session.session_id]">Consolidate Now</span>
                         <span x-show="consolidating[session.session_id]">Consolidating...</span>
