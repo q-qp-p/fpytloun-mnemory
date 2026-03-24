@@ -26,8 +26,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Minimum consolidated memories per 5 raw memories (validation gate)
-_MIN_CONSOLIDATED_RATIO = 0.2
+# Minimum consolidated memories per raw memories (warning threshold)
+_MIN_CONSOLIDATED_RATIO = 0.05
 
 # Maximum similarity between consolidated outputs (near-duplicate detection)
 _MAX_OUTPUT_SIMILARITY = 0.90
@@ -213,27 +213,16 @@ class ConsolidationService:
                 len(consolidated_facts),
             )
 
-            # 6. Validate output quality
-            validation_error = self._validate_output(
+            # 6. Validate output quality (warn but proceed — don't block)
+            validation_warning = self._validate_output(
                 consolidated_facts, len(raw_memories)
             )
-            if validation_error:
+            if validation_warning:
                 logger.warning(
-                    "Session %s: consolidation validation failed: %s",
+                    "Session %s: consolidation quality warning: %s",
                     session_id,
-                    validation_error,
+                    validation_warning,
                 )
-                result.error = validation_error
-                result.state = "failed"
-                self._sessions.update_consolidation_state(session_id, "failed")
-                if self._collector is not None:
-                    self._collector.record_consolidation_run(
-                        user_id=user_id,
-                        run_type="session",
-                        duration_seconds=time.monotonic() - t0,
-                        validation_failed=True,
-                    )
-                return result
 
             # 6b. Delete old consolidated memories (replace-all re-consolidation)
             # On re-consolidation, we replace ALL previous consolidated memories
