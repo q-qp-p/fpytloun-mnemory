@@ -141,6 +141,38 @@ class ConsolidationService:
                 result.state = "consolidated"
                 return result
 
+            # 3b. Fetch previously consolidated memories (for re-consolidation)
+            previous_consolidated = []
+            prev_consolidated_ids = session.get("consolidated_memory_ids") or []
+            if prev_consolidated_ids:
+                try:
+                    prev_results = self._vector._client.retrieve(
+                        collection_name=self._vector._collection_name,
+                        ids=prev_consolidated_ids,
+                        with_payload=True,
+                    )
+                    for point in prev_results:
+                        payload = dict(point.payload or {})
+                        if payload.get("memory"):
+                            previous_consolidated.append(
+                                {
+                                    "id": str(point.id),
+                                    "memory": payload.get("memory", ""),
+                                    "metadata": payload,
+                                }
+                            )
+                except Exception:
+                    logger.debug(
+                        "Could not fetch previous consolidated memories for %s",
+                        session_id,
+                    )
+                if previous_consolidated:
+                    logger.info(
+                        "Consolidation session %s: %d previous consolidated memories for context",
+                        session_id,
+                        len(previous_consolidated),
+                    )
+
             # 4. Identify artifact-bearing memories (protected from superseding)
             artifact_ids = {
                 m["id"]
@@ -162,6 +194,7 @@ class ConsolidationService:
                 summary=summary,
                 raw_memories=raw_memories,
                 artifact_memory_ids=artifact_ids,
+                previous_consolidated=previous_consolidated,
             )
 
             from mnemory.llm import parse_json_response
@@ -210,6 +243,25 @@ class ConsolidationService:
                         validation_failed=True,
                     )
                 return result
+
+            # 6b. Delete old consolidated memories (replace-all re-consolidation)
+            # On re-consolidation, we replace ALL previous consolidated memories
+            # with fresh ones that incorporate the full context (old + new raw).
+            # This avoids LLM-generated target_id hallucination risks and keeps
+            # derived_from lineage clean.
+            if prev_consolidated_ids:
+                for old_id in prev_consolidated_ids:
+                    try:
+                        self._vector.delete(old_id)
+                    except Exception:
+                        logger.debug(
+                            "Could not delete old consolidated memory %s", old_id
+                        )
+                logger.info(
+                    "Consolidation session %s: deleted %d old consolidated memories",
+                    session_id,
+                    len(prev_consolidated_ids),
+                )
 
             # 7. Store consolidated memories
             raw_ids = [m["id"] for m in raw_memories]
@@ -265,9 +317,11 @@ class ConsolidationService:
             )
             result.state = "consolidated"
 
+            reconsolidation = bool(prev_consolidated_ids)
             logger.info(
-                "Session %s consolidated: %d raw -> %d consolidated, %d superseded",
+                "Session %s %s: %d raw -> %d consolidated, %d superseded",
                 session_id,
+                "re-consolidated" if reconsolidation else "consolidated",
                 len(raw_memories),
                 len(stored_ids),
                 superseded_count,
@@ -381,7 +435,7 @@ class ConsolidationService:
         for f in facts:
             text = f.get("text", "")
             if len(text) < _MIN_CONTENT_LENGTH:
-                return f"Consolidated memory too short ({len(text)} chars): {text[:50]}"
+                return f"Consolidated memory too short ({len(text)} chars)"
 
         # Check minimum ratio (at least 1 per 5 raw)
         min_expected = max(1, int(raw_count * _MIN_CONSOLIDATED_RATIO))
@@ -450,8 +504,9 @@ class ConsolidationService:
                         stored_ids.append(mem_id)
             except Exception:
                 logger.warning(
-                    "Failed to store consolidated memory: %s",
-                    fact.get("text", "")[:80],
+                    "Failed to store consolidated memory (type=%s, role=%s)",
+                    fact.get("memory_type", "unknown"),
+                    fact.get("role", "user"),
                     exc_info=True,
                 )
         return stored_ids

@@ -121,10 +121,11 @@ function sessionsPanel() {
         // Reload session data
         session.consolidation_state = result.state;
         session.consolidated_at = new Date().toISOString();
-        // Reload raw memories for this session (to show superseded badges)
+        // Invalidate caches and reload
+        delete this.sessionMemories[sid];
+        delete this.sessionConsolidatedMems[sid];
         await this.loadSessionMemories(session);
         if (result.consolidated_memory_ids?.length > 0) {
-          // Update session with the produced consolidated memory IDs
           session.consolidated_memory_ids = result.consolidated_memory_ids;
           await this.loadConsolidatedMemories(session);
         }

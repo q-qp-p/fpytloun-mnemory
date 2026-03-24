@@ -717,10 +717,12 @@ class MemoryService:
         self._update_session_context(session_id, extracted_texts, summary)
 
         # 4b. Persist session summary to _mnemory_sessions (for consolidation)
-        if session_id and self._session_store:
+        if session_id:
             try:
-                ctx = self._session_store.get_remember_context(session_id)
-                current_summary = ctx.get("conversation_summary", "") if ctx else ""
+                current_summary = ""
+                if self._session_store:
+                    ctx = self._session_store.get_remember_context(session_id)
+                    current_summary = ctx.get("conversation_summary", "") if ctx else ""
                 # Collect IDs of memories that were actually stored (ADD/UPDATE)
                 stored_ids = [
                     r["id"]

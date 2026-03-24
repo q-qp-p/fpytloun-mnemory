@@ -32,6 +32,9 @@ _BOUNDARY_TAGS = {
     "conversation_summary": ("⟨conversation_summary⟩", "⟨/conversation_summary⟩"),
     "extracted_memories": ("⟨extracted_memories⟩", "⟨/extracted_memories⟩"),
     "summary": ("⟨summary⟩", "⟨/summary⟩"),
+    "previous_consolidated": ("⟨previous_consolidated⟩", "⟨/previous_consolidated⟩"),
+    "consolidation_input": ("⟨consolidation_input⟩", "⟨/consolidation_input⟩"),
+    "cross_session_input": ("⟨cross_session_input⟩", "⟨/cross_session_input⟩"),
 }
 
 

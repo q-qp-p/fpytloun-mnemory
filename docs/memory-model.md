@@ -104,8 +104,9 @@ The `remember` pipeline only deduplicates against other raw memories — it neve
 A background consolidation service synthesizes durable knowledge from raw memories and their session summaries:
 
 1. **Within-session**: After a session goes idle, reads the session summary + raw memories, LLM synthesizes consolidated memories
-2. **Cross-session**: During auto-fsck, clusters related raw memories across sessions and merges repeated patterns
-3. **Garbage collection**: Old superseded raw memories without artifacts are deleted after a configurable retention period
+2. **Re-consolidation**: If a session continues after consolidation, new raw memories reset the session to idle. The next consolidation run uses a replace-all approach — the LLM receives both new raw memories and previously consolidated memories as context, produces a complete replacement set, and old consolidated memories are deleted
+3. **Cross-session**: During auto-fsck, clusters related raw memories across sessions and merges repeated patterns
+4. **Garbage collection**: Old superseded raw memories without artifacts are deleted after a configurable retention period
 
 ### Recall ranking
 

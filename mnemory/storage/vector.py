@@ -1433,6 +1433,16 @@ class SessionSummaryStore:
                 memory_ids.extend(new_memory_ids)
             turn_count = existing.get("turn_count", 0) + 1
 
+            # Re-consolidation: reset state to idle when new memories
+            # arrive after consolidation, making the session eligible
+            # for re-consolidation on the next check cycle.
+            # Race condition note: if consolidation is running concurrently,
+            # last-writer-wins — both idle and consolidated are valid end
+            # states, and the idle threshold prevents immediate re-trigger.
+            consolidation_state = existing.get("consolidation_state", "idle")
+            if consolidation_state == "consolidated" and new_memory_ids:
+                consolidation_state = "idle"
+
             payload = {
                 "session_id": session_id,
                 "user_id": user_id,
@@ -1441,7 +1451,7 @@ class SessionSummaryStore:
                 "memory_ids": memory_ids,
                 "updated_at": now,
                 "created_at": existing.get("created_at", now),
-                "consolidation_state": existing.get("consolidation_state", "idle"),
+                "consolidation_state": consolidation_state,
             }
             if agent_id:
                 payload["agent_id"] = agent_id

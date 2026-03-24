@@ -4230,6 +4230,7 @@ def build_consolidation_prompt(
     summary: str,
     raw_memories: list[dict],
     artifact_memory_ids: set[str] | None = None,
+    previous_consolidated: list[dict] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Build the within-session consolidation prompt.
 
@@ -4237,6 +4238,9 @@ def build_consolidation_prompt(
         summary: The session conversation summary.
         raw_memories: List of raw memory dicts with 'id', 'memory', 'metadata'.
         artifact_memory_ids: Set of memory IDs that have artifacts (protected).
+        previous_consolidated: Previously consolidated memories from this session
+            (for re-consolidation context). The LLM should incorporate this
+            knowledge and produce a complete replacement set.
 
     Returns:
         Tuple of (messages, json_schema) for LLM call.
@@ -4271,6 +4275,30 @@ def build_consolidation_prompt(
             "will NOT be deleted."
         )
 
+    # Format previous consolidated memories (for re-consolidation)
+    previous_section = ""
+    if previous_consolidated:
+        prev_lines = []
+        for mem in previous_consolidated:
+            text = mem.get("memory", "") or mem.get("text", "")
+            meta = mem.get("metadata") or {}
+            mem_type = meta.get("memory_type", "unknown")
+            role = meta.get("role", "user")
+            importance = meta.get("importance", "normal")
+            prev_lines.append(f"- [{mem_type}, {role}, {importance}] {text}")
+        prev_text = "\n".join(prev_lines)
+        prev_wrapped = wrap_with_boundary(prev_text, "previous_consolidated")
+        previous_section = (
+            "\n## Previously Consolidated Memories\n\n"
+            "These memories were produced by a previous consolidation of this\n"
+            "session. You are now re-consolidating because new conversation\n"
+            "happened since then. Produce a COMPLETE replacement set that\n"
+            "incorporates both the previous knowledge and any new information\n"
+            "from the raw memories. Do NOT simply repeat the previous memories\n"
+            "— synthesize them with the new evidence.\n\n"
+            f"{prev_wrapped}\n"
+        )
+
     system_prompt = _CONSOLIDATION_SYSTEM_PROMPT.format(
         anti_injection=ANTI_INJECTION_PREAMBLE,
     )
@@ -4284,6 +4312,9 @@ def build_consolidation_prompt(
         memories_wrapped=memories_wrapped,
         artifact_note=artifact_note,
     )
+    # Append previous consolidated section if present
+    if previous_section:
+        user_prompt += previous_section
 
     messages = [
         {"role": "system", "content": system_prompt},

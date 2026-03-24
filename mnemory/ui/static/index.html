@@ -956,7 +956,7 @@
 
                     <!-- Consolidation actions -->
                     <div class="flex items-center gap-2">
-                      <button x-show="session.consolidation_state === 'idle' || session.consolidation_state === 'failed'"
+                      <button x-show="!session.consolidation_state || session.consolidation_state === 'idle' || session.consolidation_state === 'failed'"
                               @click.stop="consolidateSession(session)"
                               :disabled="consolidating[session.session_id]"
                               class="btn-primary text-xs">

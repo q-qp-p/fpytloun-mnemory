@@ -131,3 +131,171 @@ class TestFetchRawMemories:
         result = service._fetch_raw_memories(["m1", "m2", "m3", "m4", "m5"], "user-1")
         assert len(result) == 2
         assert {r["id"] for r in result} == {"m1", "m2"}
+
+
+class TestReConsolidationStateReset:
+    """Tests for re-consolidation state reset in SessionSummaryStore.upsert()."""
+
+    def test_state_resets_to_idle_on_new_memories_after_consolidation(self):
+        """When new memories arrive after consolidation, state should reset to idle."""
+        from mnemory.storage.vector import SessionSummaryStore
+
+        store = SessionSummaryStore.__new__(SessionSummaryStore)
+        store._client = MagicMock()
+
+        # Simulate existing consolidated session
+        store._client.retrieve.return_value = [
+            MagicMock(
+                payload={
+                    "session_id": "ses-1",
+                    "user_id": "user-1",
+                    "summary": "old summary",
+                    "turn_count": 5,
+                    "memory_ids": ["m1", "m2"],
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "consolidation_state": "consolidated",
+                }
+            )
+        ]
+
+        store.upsert(
+            session_id="ses-1",
+            user_id="user-1",
+            summary="new summary",
+            new_memory_ids=["m3"],
+        )
+
+        # Verify the upsert was called with consolidation_state="idle"
+        call_args = store._client.upsert.call_args
+        payload = call_args.kwargs["points"][0].payload
+        assert payload["consolidation_state"] == "idle"
+
+    def test_state_preserved_when_no_new_memories(self):
+        """When no new memories arrive, consolidated state should be preserved."""
+        from mnemory.storage.vector import SessionSummaryStore
+
+        store = SessionSummaryStore.__new__(SessionSummaryStore)
+        store._client = MagicMock()
+
+        store._client.retrieve.return_value = [
+            MagicMock(
+                payload={
+                    "session_id": "ses-1",
+                    "user_id": "user-1",
+                    "summary": "old summary",
+                    "turn_count": 5,
+                    "memory_ids": ["m1"],
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "consolidation_state": "consolidated",
+                }
+            )
+        ]
+
+        store.upsert(
+            session_id="ses-1",
+            user_id="user-1",
+            summary="updated summary",
+            new_memory_ids=None,
+        )
+
+        call_args = store._client.upsert.call_args
+        payload = call_args.kwargs["points"][0].payload
+        assert payload["consolidation_state"] == "consolidated"
+
+    def test_idle_state_stays_idle_with_new_memories(self):
+        """Idle state should remain idle when new memories arrive."""
+        from mnemory.storage.vector import SessionSummaryStore
+
+        store = SessionSummaryStore.__new__(SessionSummaryStore)
+        store._client = MagicMock()
+
+        store._client.retrieve.return_value = [
+            MagicMock(
+                payload={
+                    "session_id": "ses-1",
+                    "user_id": "user-1",
+                    "summary": "summary",
+                    "turn_count": 3,
+                    "memory_ids": ["m1"],
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "consolidation_state": "idle",
+                }
+            )
+        ]
+
+        store.upsert(
+            session_id="ses-1",
+            user_id="user-1",
+            summary="summary",
+            new_memory_ids=["m2"],
+        )
+
+        call_args = store._client.upsert.call_args
+        payload = call_args.kwargs["points"][0].payload
+        assert payload["consolidation_state"] == "idle"
+
+
+class TestConsolidationPromptWithPrevious:
+    """Tests for build_consolidation_prompt with previous_consolidated."""
+
+    def test_prompt_includes_previous_section(self):
+        """When previous_consolidated is provided, prompt should include the section."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, schema = build_consolidation_prompt(
+            summary="Test summary",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "User likes Python",
+                    "metadata": {
+                        "memory_type": "preference",
+                        "role": "user",
+                        "importance": "normal",
+                        "categories": [],
+                    },
+                },
+            ],
+            previous_consolidated=[
+                {
+                    "id": "c1",
+                    "memory": "User prefers Python for coding",
+                    "metadata": {
+                        "memory_type": "preference",
+                        "role": "user",
+                        "importance": "normal",
+                    },
+                },
+            ],
+        )
+
+        user_msg = messages[1]["content"]
+        assert "Previously Consolidated Memories" in user_msg
+        assert "User prefers Python for coding" in user_msg
+        assert "COMPLETE replacement set" in user_msg
+
+    def test_prompt_without_previous(self):
+        """When no previous_consolidated, prompt should not include the section."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, schema = build_consolidation_prompt(
+            summary="Test summary",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "User likes Python",
+                    "metadata": {
+                        "memory_type": "preference",
+                        "role": "user",
+                        "importance": "normal",
+                        "categories": [],
+                    },
+                },
+            ],
+        )
+
+        user_msg = messages[1]["content"]
+        assert "Previously Consolidated" not in user_msg

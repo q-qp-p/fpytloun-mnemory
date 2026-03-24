@@ -121,8 +121,10 @@ Memories have a `memory_layer` field that distinguishes provisional evidence fro
    - LLM synthesizes durable knowledge (decisions, preferences, facts, actions)
    - Stores consolidated memories with `derived_from` links to source raw memories
    - Marks raw memories as superseded (except those with artifacts)
-3. Recall ranking boosts consolidated memories and penalizes raw/superseded ones
-4. During auto-fsck, old superseded raw memories without artifacts are garbage-collected
+3. If the user continues the conversation after consolidation, new raw memories reset the session to idle, triggering re-consolidation on the next check cycle
+4. Re-consolidation uses a replace-all approach: the LLM receives both new raw memories and previously consolidated memories as context, produces a complete replacement set, and old consolidated memories are deleted
+5. Recall ranking boosts consolidated memories and penalizes raw/superseded ones
+6. During auto-fsck, old superseded raw memories without artifacts are garbage-collected
 
 **Extraction model:** The extraction prompt uses a 6-category model to guide what to extract:
 
