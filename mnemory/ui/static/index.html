@@ -1109,7 +1109,7 @@
           </div>
         </div>
 
-        <!-- Delete Session Modal -->
+        <!-- Delete Session Modal (must be inside x-data="sessionsPanel()" scope) -->
         <div x-show="deleteSessionTarget" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click="cancelDeleteSession()" x-transition>
           <div class="modal-content max-w-lg" @click.stop>
             <div class="flex items-center justify-between mb-4">
@@ -1158,7 +1158,8 @@
             </template>
           </div>
         </div>
-      </div>
+      </div><!-- closes x-data="sessionsPanel()" -->
+      </div><!-- closes sessions tab x-show -->
 
       <!-- User Tab -->
       <div x-show="$store.nav.activeTab === 'user'" x-data="userTab()" x-init="init()">
