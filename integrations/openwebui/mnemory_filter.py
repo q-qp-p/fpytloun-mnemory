@@ -2,7 +2,7 @@
 title: Mnemory - Persistent Memory
 author: mnemory
 description: Automatic memory recall and storage for conversations
-version: 0.2.0
+version: 0.3.0
 """
 
 import asyncio
@@ -66,6 +66,14 @@ class Filter:
             default=True,
             description="Show memory status messages in chat (can be overridden per-user)",
         )
+        debug: bool = Field(
+            default=False,
+            description=(
+                "Emit detailed debug info as chat status messages. "
+                "Shows session resolution, query, API response stats, "
+                "tool stripping, and injection details."
+            ),
+        )
         request_timeout: int = Field(
             default=30,
             description="HTTP request timeout in seconds for mnemory API calls",
@@ -116,7 +124,26 @@ class Filter:
         # second message.
         self._pending_session: dict | None = None
 
-    async def _post(self, path: str, payload: dict, user: dict) -> dict | None:
+    # ── Helpers ───────────────────────────────────────────────────────
+
+    async def _debug(self, emitter: Callable | None, msg: str) -> None:
+        """Emit a debug status message into the chat if debug mode is on."""
+        if not self.valves.debug or not emitter:
+            return
+        await emitter(
+            {
+                "type": "status",
+                "data": {"description": f"[mnemory debug] {msg}", "done": True},
+            }
+        )
+
+    async def _post(
+        self,
+        path: str,
+        payload: dict,
+        user: dict,
+        emitter: Callable | None = None,
+    ) -> dict | None:
         """Make a POST request to mnemory REST API."""
         headers = {
             "Content-Type": "application/json",
@@ -136,59 +163,96 @@ class Filter:
                 ) as resp:
                     if resp.status == 200:
                         return await resp.json()
+                    await self._debug(
+                        emitter,
+                        f"API {path} returned {resp.status}",
+                    )
                     return None
-        except Exception:
+        except Exception as exc:
+            await self._debug(emitter, f"API {path} error: {exc}")
             return None  # Graceful degradation
 
-    def _strip_managed_tools(self, body: dict) -> None:
+    def _strip_managed_tools(
+        self, body: dict, emitter: Callable | None = None
+    ) -> list[str]:
         """Remove mnemory MCP tools the filter handles automatically.
 
         Strips from both ``tool_ids`` (list of string identifiers) and
         ``tools`` (list of tool-definition dicts) so the LLM never sees
         the managed tools regardless of how Open WebUI passes them.
+
+        Returns list of stripped tool names for debug logging.
         """
+        stripped: list[str] = []
+
         # Strip from tool_ids (list[str])
         tool_ids = body.get("tool_ids")
         if tool_ids:
-            body["tool_ids"] = [
-                t
-                for t in tool_ids
-                if not any(t.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES)
-            ]
+            kept = []
+            for t in tool_ids:
+                if isinstance(t, str) and any(
+                    t.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES
+                ):
+                    stripped.append(t)
+                else:
+                    kept.append(t)
+            body["tool_ids"] = kept
 
         # Strip from tools (list[dict]) — Open WebUI may pass full tool
         # definitions here instead of (or in addition to) tool_ids.
         tools = body.get("tools")
         if tools and isinstance(tools, list):
-            body["tools"] = [t for t in tools if not self._is_managed_tool(t)]
+            kept_tools = []
+            for t in tools:
+                if isinstance(t, dict) and self._is_managed_tool(t):
+                    name = self._tool_name(t)
+                    stripped.append(name or "unknown_tool")
+                else:
+                    kept_tools.append(t)
+            body["tools"] = kept_tools
+
+        return stripped
 
     def _is_managed_tool(self, tool: dict) -> bool:
         """Check if a tool definition dict matches a managed tool suffix."""
-        # Try common fields where the tool name/id might appear
+        name = self._tool_name(tool)
+        if name and any(name.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES):
+            return True
+        return False
+
+    @staticmethod
+    def _tool_name(tool: dict) -> str:
+        """Extract the tool name from a tool definition dict."""
         for key in ("id", "name", "tool_id"):
             val = tool.get(key, "")
-            if val and any(val.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES):
-                return True
-        # Also check nested function.name (OpenAI tool format)
+            if val and isinstance(val, str):
+                return val
         func = tool.get("function")
         if isinstance(func, dict):
             name = func.get("name", "")
-            if name and any(name.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES):
-                return True
-        return False
+            if name and isinstance(name, str):
+                return name
+        return ""
 
     def _get_session(self, chat_id: str) -> dict | None:
         """Look up or adopt a session for the given chat_id.
 
         Handles the first-to-second-message transition where chat_id
         appears after the pending session was already created.
+
+        When adopting, _pending_session is NOT cleared — the inlet may
+        still need it on subsequent turns when chat_id is unavailable
+        (Open WebUI provides chat_id in the outlet but not always in
+        the inlet).  _pending_session is only cleared when a new first
+        turn starts (is_first=True in inlet).
         """
         if chat_id:
             sess = self._sessions.get(chat_id)
             if sess is None and self._pending_session:
                 sess = self._pending_session
                 self._sessions[chat_id] = sess
-                self._pending_session = None
+                # Don't clear _pending_session — inlet may still need
+                # it when chat_id is not available.
             return sess
         return self._pending_session
 
@@ -238,6 +302,8 @@ class Filter:
                 ),
             }
 
+    # ── Inlet (before LLM) ───────────────────────────────────────────
+
     async def inlet(
         self,
         body: dict,
@@ -257,7 +323,18 @@ class Filter:
         # The filter handles recall automatically — these tools would
         # only waste tokens in the tools[] array on every LLM request.
         if self.valves.strip_redundant_mcp_tools:
-            self._strip_managed_tools(body)
+            stripped = self._strip_managed_tools(body, __event_emitter__)
+            if stripped:
+                await self._debug(
+                    __event_emitter__,
+                    f"Stripped tools: {', '.join(stripped)}",
+                )
+            else:
+                await self._debug(
+                    __event_emitter__,
+                    "No managed tools found to strip"
+                    f" (tool_ids={body.get('tool_ids', 'absent')!r})",
+                )
 
         chat_id = body.get("chat_id") or ""
         sess = self._get_session(chat_id)
@@ -270,6 +347,21 @@ class Filter:
         messages = body.get("messages", [])
         user_msg_count = sum(1 for m in messages if m.get("role") == "user")
         is_first = user_msg_count <= 1
+
+        await self._debug(
+            __event_emitter__,
+            f"chat_id={chat_id!r} session_id={session_id!r} "
+            f"is_first={is_first} user_msgs={user_msg_count}",
+        )
+
+        # On the first turn, always send session_id=None so the recall
+        # endpoint treats it as a fresh session and loads core memories.
+        # A stale _pending_session from a previous chat could otherwise
+        # cause the server to skip core memory loading.
+        if is_first:
+            session_id = None
+            # Clear stale pending session — this is a new conversation
+            self._pending_session = None
 
         # In first_only mode, skip recall on subsequent messages.
         # Still inject cached static context so the LLM keeps its
@@ -285,6 +377,11 @@ class Filter:
                 content = msg.get("content", "")
                 query = content if isinstance(content, str) else ""
                 break
+
+        await self._debug(
+            __event_emitter__,
+            f"Query ({len(query)} chars): {query[:120]}{'...' if len(query) > 120 else ''}",
+        )
 
         if not query and not is_first:
             self._inject_static_context(body, sess)
@@ -322,7 +419,31 @@ class Filter:
             payload["include_instructions"] = True
             payload["managed"] = True
 
-        result = await self._post("/api/recall", payload, __user__)
+        await self._debug(
+            __event_emitter__,
+            f"Calling /api/recall: mode={search_mode} "
+            f"session_id={session_id!r} is_first={is_first}",
+        )
+
+        user_id = __user__.get("email", __user__.get("id", ""))
+        result = await self._post("/api/recall", payload, __user__, __event_emitter__)
+
+        if result:
+            stats = result.get("stats", {})
+            await self._debug(
+                __event_emitter__,
+                f"Recall response: user_id={user_id!r} "
+                f"session={result.get('session_id', '?')!r} "
+                f"core={stats.get('core_count', 0)} "
+                f"search={stats.get('search_count', 0)} "
+                f"new={stats.get('new_count', 0)} "
+                f"skipped={stats.get('known_skipped', 0)} "
+                f"has_instructions={bool(result.get('instructions'))} "
+                f"has_core={bool(result.get('core_memories'))} "
+                f"latency={stats.get('latency_ms', 0)}ms",
+            )
+        else:
+            await self._debug(__event_emitter__, "Recall returned None (API error)")
 
         # Update session tracking
         if result and result.get("session_id"):
@@ -338,6 +459,12 @@ class Filter:
                 if result.get("core_memories"):
                     static_parts.append(result["core_memories"])
                 static_ctx = "\n\n".join(static_parts) if static_parts else None
+                await self._debug(
+                    __event_emitter__,
+                    f"Cached static_ctx: {len(static_ctx) if static_ctx else 0} chars "
+                    f"(instructions={bool(result.get('instructions'))}, "
+                    f"core_memories={bool(result.get('core_memories'))})",
+                )
 
             self._save_session(
                 chat_id,
@@ -369,7 +496,12 @@ class Filter:
         # being re-processed on every turn.
 
         # 1. Static context — always inject from cache
+        has_static = sess and bool(sess.get("static_ctx"))
         self._inject_static_context(body, sess)
+        await self._debug(
+            __event_emitter__,
+            f"Static context injected: {has_static}",
+        )
 
         # 2. Dynamic context — new search results from this turn
         if result and result.get("search_results"):
@@ -450,6 +582,8 @@ class Filter:
             return f"Found {new} new memories ({ms}ms)"
         return f"No new memories ({ms}ms)"
 
+    # ── Outlet (after LLM) ───────────────────────────────────────────
+
     async def outlet(
         self,
         body: dict,
@@ -473,6 +607,10 @@ class Filter:
         conversation = [m for m in messages if m.get("role") in ("user", "assistant")]
 
         if len(conversation) < 2:
+            await self._debug(
+                __event_emitter__,
+                f"Outlet: skipping, only {len(conversation)} messages",
+            )
             return body
 
         # Last 2 user/assistant messages (current exchange)
@@ -495,6 +633,11 @@ class Filter:
             # Cap context to avoid sending huge first messages
             context = f"Conversation topic: {first_user_msg[:500]}"
 
+        await self._debug(
+            __event_emitter__,
+            f"Outlet: session={session_id!r} msgs={len(last_two)} chat_id={chat_id!r}",
+        )
+
         # Fire-and-forget
         payload: dict = {"session_id": session_id, "messages": last_two}
         if context:
@@ -505,6 +648,8 @@ class Filter:
         if chat_id:
             labels["chat_id"] = chat_id
         payload["labels"] = labels
-        asyncio.create_task(self._post("/api/remember", payload, __user__))
+        asyncio.create_task(
+            self._post("/api/remember", payload, __user__, __event_emitter__)
+        )
 
         return body
