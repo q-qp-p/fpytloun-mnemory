@@ -4335,12 +4335,11 @@ def build_consolidation_prompt(
         prev_wrapped = wrap_with_boundary(prev_text, "previous_consolidated")
         previous_section = (
             "\n## Previously Consolidated Memories\n\n"
-            "These memories were produced by a previous consolidation of this\n"
-            "session. You are now re-consolidating because new conversation\n"
-            "happened since then. Produce a COMPLETE replacement set that\n"
-            "incorporates both the previous knowledge and any new information\n"
-            "from the raw memories. Do NOT simply repeat the previous memories\n"
-            "— synthesize them with the new evidence.\n\n"
+            "These memories were already consolidated from earlier turns in\n"
+            "this session. They will be KEPT as-is. Do NOT duplicate or\n"
+            "re-produce them. Only extract NEW knowledge from the raw memories\n"
+            "that is not already covered by these previously consolidated\n"
+            "memories.\n\n"
             f"{prev_wrapped}\n"
         )
 

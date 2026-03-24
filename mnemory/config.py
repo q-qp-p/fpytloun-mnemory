@@ -495,6 +495,14 @@ class MemoryConfig:
         default_factory=lambda: _env_int("CONSOLIDATION_CHECK_INTERVAL", 300)
     )
 
+    # Maximum raw memories per consolidation LLM call. When a session
+    # has more raw memories than this, they are split into time-based
+    # batches. Each batch is consolidated independently with accumulated
+    # context from prior batches.
+    consolidation_batch_size: int = field(
+        default_factory=lambda: _env_int("CONSOLIDATION_BATCH_SIZE", 100)
+    )
+
     # Maximum raw memories to process per user during cross-session
     # consolidation (fsck Phase 3). Prevents unbounded LLM costs.
     consolidation_max_raw_per_user: int = field(

@@ -178,44 +178,112 @@ class ConsolidationService:
                 len(artifact_ids),
             )
 
-            # 5. Build consolidation prompt and call LLM
+            # 5. Build batches and consolidate
+            from mnemory.llm import parse_json_response
             from mnemory.prompts import build_consolidation_prompt
 
-            messages, json_schema = build_consolidation_prompt(
-                summary=summary,
-                raw_memories=raw_memories,
-                artifact_memory_ids=artifact_ids,
-                previous_consolidated=previous_consolidated,
-            )
+            batch_size = self._config.memory.consolidation_batch_size
+            all_consolidated_facts: list[dict] = []
+            batch_raw_ids_map: list[tuple[list[dict], list[str]]] = []
 
-            from mnemory.llm import parse_json_response
+            # Split into batches if too many raw memories for one call
+            if len(raw_memories) <= batch_size:
+                batches = [raw_memories]
+            else:
+                batches = [
+                    raw_memories[i : i + batch_size]
+                    for i in range(0, len(raw_memories), batch_size)
+                ]
+                logger.info(
+                    "Consolidation session %s: splitting %d raw memories into %d batches of ~%d",
+                    session_id,
+                    len(raw_memories),
+                    len(batches),
+                    batch_size,
+                )
 
-            response_text = self._llm.generate(
-                messages,
-                json_schema=json_schema,
-                temperature=0.3,
-                operation="consolidation",
-            )
+            # Accumulated context from prior batches (prevents cross-batch duplication)
+            accumulated_context: list[dict] = []
 
-            parsed = parse_json_response(response_text)
+            for batch_idx, batch in enumerate(batches):
+                if len(batches) > 1:
+                    logger.info(
+                        "Consolidation session %s: processing batch %d/%d (%d memories)",
+                        session_id,
+                        batch_idx + 1,
+                        len(batches),
+                        len(batch),
+                    )
 
-            if not parsed or not isinstance(parsed.get("memories"), list):
-                result.error = "LLM returned invalid consolidation output"
-                result.state = "failed"
-                self._sessions.update_consolidation_state(session_id, "failed")
+                # Combine previous consolidated (from prior runs) with
+                # accumulated context (from prior batches in this run)
+                full_context = list(previous_consolidated)
+                full_context.extend(accumulated_context)
+
+                batch_artifact_ids = artifact_ids & {m["id"] for m in batch}
+
+                messages, json_schema = build_consolidation_prompt(
+                    summary=summary,
+                    raw_memories=batch,
+                    artifact_memory_ids=batch_artifact_ids,
+                    previous_consolidated=full_context if full_context else None,
+                )
+
+                response_text = self._llm.generate(
+                    messages,
+                    json_schema=json_schema,
+                    temperature=0.3,
+                    operation="consolidation",
+                )
+
+                parsed = parse_json_response(response_text)
+
+                if not parsed or not isinstance(parsed.get("memories"), list):
+                    logger.warning(
+                        "Consolidation session %s batch %d: invalid LLM output, skipping",
+                        session_id,
+                        batch_idx + 1,
+                    )
+                    continue
+
+                batch_facts = parsed["memories"]
+                batch_raw_ids = [m["id"] for m in batch]
+
+                logger.info(
+                    "Consolidation session %s batch %d: LLM produced %d facts",
+                    session_id,
+                    batch_idx + 1,
+                    len(batch_facts),
+                )
+
+                all_consolidated_facts.extend(batch_facts)
+                batch_raw_ids_map.append((batch_facts, batch_raw_ids))
+
+                # Add batch results to accumulated context for next batch
+                for f in batch_facts:
+                    accumulated_context.append(
+                        {
+                            "memory": f.get("text", ""),
+                            "metadata": {
+                                "memory_type": f.get("memory_type", "episodic"),
+                                "role": f.get("role", "user"),
+                                "importance": f.get("importance", "normal"),
+                            },
+                        }
+                    )
+
+            if not all_consolidated_facts:
+                logger.info(
+                    "Consolidation session %s: no facts produced across all batches",
+                    session_id,
+                )
+                self._sessions.update_consolidation_state(session_id, "consolidated")
+                result.state = "consolidated"
                 return result
-
-            consolidated_facts = parsed["memories"]
-
-            logger.info(
-                "Consolidation session %s: LLM produced %d facts",
-                session_id,
-                len(consolidated_facts),
-            )
 
             # 6. Validate output quality (warn but proceed — don't block)
             validation_warning = self._validate_output(
-                consolidated_facts, len(raw_memories)
+                all_consolidated_facts, len(raw_memories)
             )
             if validation_warning:
                 logger.warning(
@@ -224,52 +292,40 @@ class ConsolidationService:
                     validation_warning,
                 )
 
-            # 6b. Delete old consolidated memories (replace-all re-consolidation)
-            # On re-consolidation, we replace ALL previous consolidated memories
-            # with fresh ones that incorporate the full context (old + new raw).
-            # This avoids LLM-generated target_id hallucination risks and keeps
-            # derived_from lineage clean.
-            if prev_consolidated_ids:
-                for old_id in prev_consolidated_ids:
-                    try:
-                        self._vector.delete(old_id)
-                    except Exception:
-                        logger.debug(
-                            "Could not delete old consolidated memory %s", old_id
-                        )
-                logger.info(
-                    "Consolidation session %s: deleted %d old consolidated memories",
-                    session_id,
-                    len(prev_consolidated_ids),
+            # 7. Store consolidated memories (per-batch derived_from)
+            all_stored_ids: list[str] = []
+            for batch_facts, batch_raw_ids in batch_raw_ids_map:
+                batch_stored = self._store_consolidated(
+                    batch_facts,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    derived_from=batch_raw_ids,
+                    raw_memories=raw_memories,
                 )
+                all_stored_ids.extend(batch_stored)
 
-            # 7. Store consolidated memories
-            raw_ids = [m["id"] for m in raw_memories]
-            stored_ids = self._store_consolidated(
-                consolidated_facts,
-                user_id=user_id,
-                agent_id=agent_id,
-                derived_from=raw_ids,
-                raw_memories=raw_memories,
-            )
-            result.memories_produced = len(stored_ids)
-            result.consolidated_memory_ids = stored_ids
+            result.memories_produced = len(all_stored_ids)
+            result.consolidated_memory_ids = all_stored_ids
 
             logger.info(
                 "Consolidation session %s: stored %d consolidated memories",
                 session_id,
-                len(stored_ids),
+                len(all_stored_ids),
             )
 
-            # 8. Write consolidated_memory_ids to session FIRST (crash recovery)
+            # 8. Write consolidated_memory_ids to session (append to existing)
+            # Append-only: previous consolidated memories are kept intact.
+            # New IDs are added alongside old ones.
+            merged_consolidated_ids = list(prev_consolidated_ids) + all_stored_ids
             self._sessions.update_consolidation_state(
                 session_id,
                 "consolidating",  # still consolidating until supersede done
-                consolidated_memory_ids=stored_ids,
+                consolidated_memory_ids=merged_consolidated_ids,
             )
 
             # 9. Mark raw memories as superseded (except artifact-bearing)
             superseded_count = 0
+            first_stored = all_stored_ids[0] if all_stored_ids else None
             for mem in raw_memories:
                 mem_id = mem["id"]
                 if mem_id in artifact_ids:
@@ -281,7 +337,7 @@ class ConsolidationService:
                 try:
                     self._vector.update_metadata(
                         mem_id,
-                        {"superseded_by": stored_ids[0] if stored_ids else None},
+                        {"superseded_by": first_stored},
                     )
                     superseded_count += 1
                 except Exception:
@@ -290,11 +346,11 @@ class ConsolidationService:
                     )
             result.memories_superseded = superseded_count
 
-            # 10. Set final state
+            # 10. Set final state (with merged IDs)
             self._sessions.update_consolidation_state(
                 session_id,
                 "consolidated",
-                consolidated_memory_ids=stored_ids,
+                consolidated_memory_ids=merged_consolidated_ids,
             )
             result.state = "consolidated"
 
@@ -304,7 +360,7 @@ class ConsolidationService:
                 session_id,
                 "re-consolidated" if reconsolidation else "consolidated",
                 len(raw_memories),
-                len(stored_ids),
+                len(all_stored_ids),
                 superseded_count,
             )
 

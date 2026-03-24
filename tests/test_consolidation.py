@@ -275,7 +275,7 @@ class TestConsolidationPromptWithPrevious:
         user_msg = messages[1]["content"]
         assert "Previously Consolidated Memories" in user_msg
         assert "User prefers Python for coding" in user_msg
-        assert "COMPLETE replacement set" in user_msg
+        assert "Do NOT duplicate" in user_msg
 
     def test_prompt_without_previous(self):
         """When no previous_consolidated, prompt should not include the section."""
