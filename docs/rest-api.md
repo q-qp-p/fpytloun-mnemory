@@ -33,6 +33,7 @@ Persistent session summaries from the remember endpoint, used by the consolidati
 |---|---|---|
 | `/api/sessions` | GET | List session summaries (optional `consolidation_state` filter) |
 | `/api/sessions/{id}` | GET | Get a single session summary |
+| `/api/sessions/{id}/consolidate` | POST | Trigger consolidation for a specific session (returns result) |
 
 ## Memory Check (fsck)
 

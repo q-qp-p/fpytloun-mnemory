@@ -43,6 +43,7 @@ class ConsolidationResult:
     session_id: str
     memories_produced: int = 0
     memories_superseded: int = 0
+    consolidated_memory_ids: list[str] | None = None
     state: str = "idle"  # idle, consolidating, consolidated, failed
     error: str | None = None
     duration_seconds: float = 0.0
@@ -112,6 +113,13 @@ class ConsolidationService:
             memory_ids = session.get("memory_ids", [])
             summary = session.get("summary", "")
 
+            logger.info(
+                "Consolidation session %s: %d linked memories, summary_len=%d",
+                session_id,
+                len(memory_ids),
+                len(summary),
+            )
+
             if not memory_ids:
                 logger.debug("Session %s has no memories, skipping", session_id)
                 result.state = "consolidated"
@@ -140,6 +148,13 @@ class ConsolidationService:
                 if (m.get("metadata") or {}).get("artifacts")
             }
 
+            logger.info(
+                "Consolidation session %s: %d raw memories fetched (%d with artifacts)",
+                session_id,
+                len(raw_memories),
+                len(artifact_ids),
+            )
+
             # 5. Build consolidation prompt and call LLM
             from mnemory.prompts import build_consolidation_prompt
 
@@ -167,6 +182,12 @@ class ConsolidationService:
                 return result
 
             consolidated_facts = parsed["memories"]
+
+            logger.info(
+                "Consolidation session %s: LLM produced %d facts",
+                session_id,
+                len(consolidated_facts),
+            )
 
             # 6. Validate output quality
             validation_error = self._validate_output(
@@ -199,6 +220,13 @@ class ConsolidationService:
                 derived_from=raw_ids,
             )
             result.memories_produced = len(stored_ids)
+            result.consolidated_memory_ids = stored_ids
+
+            logger.info(
+                "Consolidation session %s: stored %d consolidated memories",
+                session_id,
+                len(stored_ids),
+            )
 
             # 8. Write consolidated_memory_ids to session FIRST (crash recovery)
             self._sessions.update_consolidation_state(
@@ -331,7 +359,7 @@ class ConsolidationService:
                     continue
                 meta = result.get("metadata") or {}
                 # Only include raw, unsuperseded memories
-                layer = meta.get("memory_layer", "consolidated")
+                layer = meta.get("memory_layer", "raw")
                 if layer != "raw":
                     continue
                 if meta.get("superseded_by"):

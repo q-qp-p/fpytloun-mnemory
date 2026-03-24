@@ -19,6 +19,11 @@ function sessionsPanel() {
     expandedMemId: null,   // currently expanded memory ID within sessions
     deleteConfirm: null,
 
+    // Per-session consolidated memories
+    sessionConsolidatedMems: {},
+    sessionConsolidatedLoading: {},
+    consolidating: {},
+
     async load() {
       this.loading = true;
       this.error = '';
@@ -38,9 +43,15 @@ function sessionsPanel() {
 
     async toggleSession(session) {
       session._expanded = !session._expanded;
-      // Load memories on first expand
-      if (session._expanded && session.memory_ids?.length > 0 && !this.sessionMemories[session.session_id]) {
-        await this.loadSessionMemories(session);
+      if (session._expanded) {
+        // Load raw memories on first expand
+        if (session.memory_ids?.length > 0 && !this.sessionMemories[session.session_id]) {
+          await this.loadSessionMemories(session);
+        }
+        // Load consolidated memories on first expand (if consolidated)
+        if (session.consolidated_memory_ids?.length > 0 && !this.sessionConsolidatedMems[session.session_id]) {
+          await this.loadConsolidatedMemories(session);
+        }
       }
     },
 
@@ -71,6 +82,58 @@ function sessionsPanel() {
 
     toggleMemExpand(id) {
       this.expandedMemId = this.expandedMemId === id ? null : id;
+    },
+
+    async loadConsolidatedMemories(session) {
+      const sid = session.session_id;
+      const cids = session.consolidated_memory_ids || [];
+      if (cids.length === 0) return;
+      this.sessionConsolidatedLoading[sid] = true;
+      try {
+        const data = await MnemoryAPI.listMemories({ limit: 5000 });
+        const allMems = data.results || [];
+        const idSet = new Set(cids);
+        this.sessionConsolidatedMems[sid] = allMems.filter(m => idSet.has(m.id));
+      } catch (e) {
+        Alpine.store('notify').error(`Failed to load consolidated memories: ${e.message}`);
+        this.sessionConsolidatedMems[sid] = [];
+      } finally {
+        this.sessionConsolidatedLoading[sid] = false;
+      }
+    },
+
+    getConsolidatedMemories(sessionId) {
+      return this.sessionConsolidatedMems[sessionId] || [];
+    },
+
+    isConsolidatedLoading(sessionId) {
+      return !!this.sessionConsolidatedLoading[sessionId];
+    },
+
+    async consolidateSession(session) {
+      const sid = session.session_id;
+      this.consolidating[sid] = true;
+      try {
+        const result = await MnemoryAPI.post(`/sessions/${sid}/consolidate`);
+        Alpine.store('notify').success(
+          `Consolidated: ${result.memories_produced} memories produced, ${result.memories_superseded} superseded`
+        );
+        // Reload session data
+        session.consolidation_state = result.state;
+        session.consolidated_at = new Date().toISOString();
+        // Reload raw memories for this session (to show superseded badges)
+        await this.loadSessionMemories(session);
+        if (result.consolidated_memory_ids?.length > 0) {
+          // Update session with the produced consolidated memory IDs
+          session.consolidated_memory_ids = result.consolidated_memory_ids;
+          await this.loadConsolidatedMemories(session);
+        }
+      } catch (e) {
+        const msg = e.message || 'Consolidation failed';
+        Alpine.store('notify').error(msg);
+      } finally {
+        this.consolidating[sid] = false;
+      }
     },
 
     // ── Memory actions (delegate to global stores) ────────────

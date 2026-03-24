@@ -97,7 +97,7 @@ class MaintenanceService:
 
         # Start consolidation loop if service is available
         if self._consolidation is not None:
-            consolidation_interval = self._config.memory.consolidation_idle_threshold
+            consolidation_interval = self._config.memory.consolidation_check_interval
             if consolidation_interval > 0:
                 logger.info(
                     "Consolidation enabled: checking every %ds for idle sessions",
@@ -258,7 +258,7 @@ class MaintenanceService:
 
     async def _consolidation_loop(self) -> None:
         """Consolidation maintenance loop: check for idle sessions periodically."""
-        interval = self._config.memory.consolidation_idle_threshold
+        interval = self._config.memory.consolidation_check_interval
         if interval <= 0:
             return
         while True:
@@ -275,12 +275,15 @@ class MaintenanceService:
 
     async def _run_consolidation(self) -> None:
         """Run within-session consolidation for all users with idle sessions."""
-        # Get all user IDs from the vector store
         user_ids: list[str] = await asyncio.to_thread(
             self._consolidation._vector.list_user_ids
         )
         if not user_ids:
             return
+
+        total_processed = 0
+        total_succeeded = 0
+        total_failed = 0
 
         for user_id in user_ids:
             try:
@@ -309,27 +312,32 @@ class MaintenanceService:
                             self._consolidation.consolidate_session,
                             session_id,
                         )
-                        if self._collector is not None:
-                            self._collector.record_consolidation_run(
-                                user_id=user_id,
-                                run_type="session",
-                                memories_produced=result.memories_produced,
-                                memories_superseded=result.memories_superseded,
-                                duration_seconds=result.duration_seconds,
-                                validation_failed=(result.state == "failed"),
-                            )
-                        if result.state == "failed":
+                        total_processed += 1
+                        if result.state == "consolidated":
+                            total_succeeded += 1
+                        elif result.state == "failed":
+                            total_failed += 1
                             logger.warning(
                                 "Consolidation failed for session %s: %s",
                                 session_id,
                                 result.error,
                             )
                     except Exception:
+                        total_processed += 1
+                        total_failed += 1
                         logger.exception(
                             "Consolidation error for session %s", session_id
                         )
             except Exception:
                 logger.exception("Consolidation error for user %s, continuing", user_id)
+
+        if total_processed > 0:
+            logger.info(
+                "Consolidation run complete: %d processed, %d succeeded, %d failed",
+                total_processed,
+                total_succeeded,
+                total_failed,
+            )
 
     # ── Core logic ───────────────────────────────────────────────────
 

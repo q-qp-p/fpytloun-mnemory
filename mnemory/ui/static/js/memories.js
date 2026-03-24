@@ -25,6 +25,7 @@ function memoriesTab() {
     filterArtifactsOnly: false,
     filterAgentId: '',
     filterDecayedOnly: false,
+    filterMemoryLayer: '',
 
     /** Current page (1-indexed). Each page shows pageSize items. */
     page: 1,
@@ -196,6 +197,11 @@ function memoriesTab() {
         } catch (e) {
           // Invalid JSON — skip labels filter
         }
+      }
+
+      // Client-side filter: memory layer
+      if (this.filterMemoryLayer) {
+        arr = arr.filter(m => (m.metadata?.memory_layer || 'consolidated') === this.filterMemoryLayer);
       }
 
       // All sorting is client-side

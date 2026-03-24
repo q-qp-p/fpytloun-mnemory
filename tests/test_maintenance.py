@@ -27,6 +27,7 @@ def _make_config(
     min_severity: str = "medium",
     consolidation_raw_retention_days: int = 30,
     consolidation_idle_threshold: int = 3600,
+    consolidation_check_interval: int = 300,
 ):
     """Build a minimal mock Config for MaintenanceService."""
     cfg = MagicMock()
@@ -35,6 +36,7 @@ def _make_config(
     cfg.memory.fsck_auto_min_severity = min_severity
     cfg.memory.consolidation_raw_retention_days = consolidation_raw_retention_days
     cfg.memory.consolidation_idle_threshold = consolidation_idle_threshold
+    cfg.memory.consolidation_check_interval = consolidation_check_interval
     return cfg
 
 

@@ -489,6 +489,12 @@ class MemoryConfig:
         default_factory=lambda: _env_int("CONSOLIDATION_IDLE_THRESHOLD", 3600)
     )
 
+    # How often the consolidation loop checks for idle sessions (seconds).
+    # Separate from idle_threshold which controls eligibility.
+    consolidation_check_interval: int = field(
+        default_factory=lambda: _env_int("CONSOLIDATION_CHECK_INTERVAL", 300)
+    )
+
     # Maximum raw memories to process per user during cross-session
     # consolidation (fsck Phase 3). Prevents unbounded LLM costs.
     consolidation_max_raw_per_user: int = field(

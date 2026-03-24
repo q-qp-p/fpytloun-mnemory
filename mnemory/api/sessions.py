@@ -6,6 +6,7 @@ stored in the _mnemory_sessions Qdrant collection.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -70,3 +71,53 @@ async def get_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     return session
+
+
+@router.post("/sessions/{session_id}/consolidate")
+async def consolidate_session_endpoint(
+    session_id: str,
+    ctx: SessionContext = Depends(get_session_context),
+) -> dict:
+    """Trigger consolidation for a specific session.
+
+    Ignores the idle threshold — consolidates immediately.
+    Returns the consolidation result.
+    """
+    service = _get_service()
+
+    # Verify session exists and user owns it
+    session = service._session_summary_store.get(session_id)
+    if session is None or session.get("user_id") != ctx.user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Check if already consolidating (race condition guard)
+    if session.get("consolidation_state") == "consolidating":
+        raise HTTPException(status_code=409, detail="Consolidation already in progress")
+
+    # Reset failed sessions to idle so consolidate_session() can proceed
+    if session.get("consolidation_state") == "failed":
+        service._session_summary_store.update_consolidation_state(session_id, "idle")
+
+    # Reuse the ConsolidationService from MaintenanceService
+    from mnemory.server import _maintenance_service
+
+    if _maintenance_service is None or _maintenance_service._consolidation is None:
+        raise HTTPException(
+            status_code=503, detail="Consolidation service not available"
+        )
+
+    # Run in thread pool to avoid blocking the event loop
+    result = await asyncio.to_thread(
+        _maintenance_service._consolidation.consolidate_session,
+        session_id,
+    )
+
+    return {
+        "session_id": result.session_id,
+        "state": result.state,
+        "memories_produced": result.memories_produced,
+        "memories_superseded": result.memories_superseded,
+        "consolidated_memory_ids": result.consolidated_memory_ids or [],
+        "duration_seconds": round(result.duration_seconds, 2),
+        "error": result.error,
+    }
