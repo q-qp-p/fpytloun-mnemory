@@ -261,6 +261,7 @@ class ConsolidationService:
                 user_id=user_id,
                 agent_id=agent_id,
                 derived_from=raw_ids,
+                raw_memories=raw_memories,
             )
             result.memories_produced = len(stored_ids)
             result.consolidated_memory_ids = stored_ids
@@ -468,11 +469,23 @@ class ConsolidationService:
         user_id: str,
         agent_id: str | None,
         derived_from: list[str],
+        raw_memories: list[dict] | None = None,
     ) -> list[str]:
         """Store consolidated memories via add_memory(infer=False).
 
         Returns list of stored memory IDs.
         """
+        # Collect fallback categories from raw memories
+        fallback_categories: list[str] = []
+        if raw_memories:
+            cats_set: set[str] = set()
+            for mem in raw_memories:
+                meta = mem.get("metadata") or {}
+                for cat in meta.get("categories", []):
+                    if cat:
+                        cats_set.add(cat)
+            fallback_categories = sorted(cats_set)
+
         stored_ids: list[str] = []
         for fact in facts:
             try:
@@ -488,13 +501,17 @@ class ConsolidationService:
                 # For assistant role, infer=True is required by add_memory
                 effective_infer = fact.get("role") == "assistant"
 
+                # Use LLM-assigned categories, fall back to raw memory
+                # categories if the LLM returned an empty list
+                categories = fact.get("categories") or fallback_categories
+
                 result = self._memory.add_memory(
                     text,
                     user_id=user_id,
                     agent_id=effective_agent_id,
                     infer=effective_infer,
                     memory_type=fact.get("memory_type", "episodic"),
-                    categories=fact.get("categories", []),
+                    categories=categories,
                     importance=fact.get("importance", "normal"),
                     pinned=fact.get("pinned", False),
                     role=fact.get("role", "user"),

@@ -4121,9 +4121,11 @@ knowledge that should be preserved long-term.
 - Use standard memory types: preference, fact, episodic, procedural, context
 - Freely reclassify — e.g., if raw memories are episodic but a stable
   preference emerges, output as preference
-- Assign categories from the available set provided in the prompt.
-  Preserve project-scoped categories exactly as they appear in the raw
-  memories (e.g., "project:mnemory", NOT just "project").
+- You MUST assign at least one category to each memory from the available
+  set provided in the prompt. Copy categories from the raw memories when
+  the topic matches. Preserve project-scoped categories exactly as they
+  appear in the raw memories (e.g., "project:mnemory", NOT just "project").
+  NEVER output an empty categories array.
 - Set importance based on durability and impact (low, normal, high, critical)
 - For memories referencing detailed artifacts, note the artifact source
 - If a raw memory is already well-formed and durable, keep it as-is
@@ -4203,6 +4205,8 @@ CONSOLIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
                         "categories": {
                             "type": "array",
                             "items": {"type": "string"},
+                            "minItems": 1,
+                            "description": "At least one category from the available set",
                         },
                         "importance": {
                             "type": "string",
