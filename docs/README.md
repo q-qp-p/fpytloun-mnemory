@@ -42,6 +42,7 @@ Step-by-step setup instructions for each supported client. Every guide covers MC
 | [ChatGPT](clients/chatgpt.md) | Yes (MCP connector) | -- | Developer Mode connector + GPT Actions |
 | [Open WebUI](clients/open-webui.md) | Yes | Yes (filter) | Filter for automatic recall/remember |
 | [OpenCode](clients/opencode.md) | Yes | Yes (automatic recall/remember) | Plugin for automatic memory |
+| [OpenClaw](clients/openclaw.md) | Yes | Yes (automatic recall/remember) | Plugin for automatic memory |
 | [Cursor](clients/cursor.md) | Yes | -- | MCP config |
 | [Windsurf](clients/windsurf.md) | Yes | -- | MCP config |
 | [Cline](clients/cline.md) | Yes | -- | MCP config |
@@ -76,6 +77,7 @@ Runnable plugin code lives in the [`integrations/`](../integrations/) directory:
 |---|---|
 | [Claude Code](../integrations/claude-code/) | Hooks-based plugin for automatic recall/remember |
 | [OpenCode](../integrations/opencode/) | TypeScript plugin for automatic recall/remember |
+| [OpenClaw](../integrations/openclaw/) | TypeScript plugin for automatic recall/remember ([npm](https://www.npmjs.com/package/@fpytloun/openclaw-mnemory)) |
 | [Open WebUI](../integrations/openwebui/) | Filter function for automatic recall/remember |
 | [Grafana](../integrations/grafana/) | Pre-built monitoring dashboard |
 

@@ -16,6 +16,10 @@ env/
 *.db
 /data/
 
+# Node
+node_modules/
+package-lock.json
+
 # Benchmark artifacts
 benchmarks/locomo/data/
 benchmarks/locomo/results/

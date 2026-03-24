@@ -1,0 +1,98 @@
+{
+  "id": "mnemory",
+  "kind": "memory",
+  "uiHints": {
+    "url": {
+      "label": "Mnemory Server URL",
+      "placeholder": "http://localhost:8050",
+      "help": "URL of the mnemory server (or use ${MNEMORY_URL})"
+    },
+    "apiKey": {
+      "label": "API Key",
+      "sensitive": true,
+      "placeholder": "your-api-key",
+      "help": "Bearer token for mnemory authentication (or use ${MNEMORY_API_KEY})"
+    },
+    "userId": {
+      "label": "User ID",
+      "placeholder": "your-user-id",
+      "help": "Sent as X-User-Id header. Required when the API key is a wildcard or auth is disabled (or use ${MNEMORY_USER_ID})"
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Automatically inject relevant memories into context before each agent turn"
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Automatically extract and store memories from conversations"
+    },
+    "scoreThreshold": {
+      "label": "Score Threshold",
+      "placeholder": "0.5",
+      "help": "Minimum relevance score for recalled memories (0.0-1.0)",
+      "advanced": true
+    },
+    "includeAssistant": {
+      "label": "Include Assistant Messages",
+      "help": "Send assistant messages to mnemory for extraction (not just user messages)",
+      "advanced": true
+    },
+    "managed": {
+      "label": "Managed Mode",
+      "help": "Include mnemory behavioral instructions in the system prompt",
+      "advanced": true
+    },
+    "agentPrefix": {
+      "label": "Agent ID Prefix",
+      "placeholder": "openclaw",
+      "help": "Prefix for agent IDs sent to mnemory (e.g. 'openclaw' produces 'openclaw:main'). Set to empty string to disable prefixing (or use ${MNEMORY_AGENT_PREFIX})",
+      "advanced": true
+    },
+    "timeout": {
+      "label": "Request Timeout (ms)",
+      "placeholder": "60000",
+      "help": "HTTP request timeout in milliseconds. Default: 60000 (60 seconds) (or use ${MNEMORY_TIMEOUT})",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "type": "string"
+      },
+      "apiKey": {
+        "type": "string"
+      },
+      "userId": {
+        "type": "string"
+      },
+      "autoRecall": {
+        "type": "boolean"
+      },
+      "autoCapture": {
+        "type": "boolean"
+      },
+      "scoreThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "includeAssistant": {
+        "type": "boolean"
+      },
+      "managed": {
+        "type": "boolean"
+      },
+      "agentPrefix": {
+        "type": "string"
+      },
+      "timeout": {
+        "type": "number",
+        "minimum": 1000
+      }
+    },
+    "required": ["url"]
+  }
+}

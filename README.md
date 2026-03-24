@@ -20,7 +20,7 @@ Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://mo
 - **Two-tier memory** — Fast searchable summaries in a vector store + detailed artifact storage (reports, code, research) retrieved on demand.
 - **AI-powered search** — Multi-query semantic search with temporal awareness. Ask "What did I decide last week about the database?" and it finds the right memories.
 - **Memory health checks** — Built-in three-phase consistency checker (fsck) detects duplicates, contradictions, quality issues, and prompt injection. Run manually or on a schedule with auto-fix.
-- **10+ client support** — Claude Code, ChatGPT, Open WebUI, Cursor, Windsurf, Cline, OpenCode, and more. Native plugins available for automatic recall/remember.
+- **10+ client support** — Claude Code, ChatGPT, Open WebUI, OpenClaw, Cursor, Windsurf, Cline, OpenCode, and more. Native plugins available for automatic recall/remember.
 - **Built-in management UI** — Dashboard, semantic search, memory browser with full CRUD, relationship graph visualization, and health check interface. No extra tools needed.
 - **Production ready** — Qdrant for vectors, S3/MinIO for artifacts, API key authentication, per-user isolation, Kubernetes-friendly stateless HTTP.
 - **Secure by default** — API key authentication with session-level identity binding, per-user memory isolation, anti-injection safeguards in extraction prompts.
@@ -87,6 +87,7 @@ mnemory works with any MCP-compatible client. Some clients also have dedicated p
 | Claude Desktop | Yes | -- | [Guide](docs/clients/claude-desktop.md) |
 | Open WebUI | Yes | Yes ([filter](integrations/openwebui/)) | [Guide](docs/clients/open-webui.md) |
 | OpenCode | Yes | Yes ([plugin](integrations/opencode/)) | [Guide](docs/clients/opencode.md) |
+| OpenClaw | Yes | Yes ([plugin](integrations/openclaw/)) | [Guide](docs/clients/openclaw.md) |
 | Cursor | Yes | -- | [Guide](docs/clients/cursor.md) |
 | Windsurf | Yes | -- | [Guide](docs/clients/windsurf.md) |
 | Cline | Yes | -- | [Guide](docs/clients/cline.md) |

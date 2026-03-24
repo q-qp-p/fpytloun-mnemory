@@ -1,0 +1,48 @@
+{
+  "name": "@fpytloun/openclaw-mnemory",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin for mnemory — long-term semantic memory with auto-recall/capture and explicit tools",
+  "type": "module",
+  "license": "MIT",
+  "author": "Filip Pytloun <filip@pytloun.cz>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fpytloun/mnemory.git",
+    "directory": "integrations/openclaw"
+  },
+  "homepage": "https://github.com/fpytloun/mnemory/tree/main/integrations/openclaw",
+  "bugs": {
+    "url": "https://github.com/fpytloun/mnemory/issues"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.11"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "files": [
+    "*.ts",
+    "!*.test.ts",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "plugin",
+    "memory",
+    "mnemory",
+    "semantic-memory",
+    "long-term-memory"
+  ]
+}
