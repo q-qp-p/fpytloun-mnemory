@@ -4104,21 +4104,18 @@ def build_fsck_quality_prompt(
 
 # ── Consolidation prompts ────────────────────────────────────────────
 
-_CONSOLIDATION_SYSTEM_PROMPT = """\
+_CONSOLIDATION_USER_SYSTEM_PROMPT = """\
 {anti_injection}
 
 You are a memory consolidation system. Given a conversation summary and
-individual raw memories from that conversation, synthesize the durable
-knowledge that should be preserved long-term.
+individual raw memories about the USER, synthesize durable user knowledge.
 
 ## Instructions
 
-- Extract durable knowledge: decisions, preferences, constraints, stable
-  facts, accepted recommendations, project rules, actions taken
-- Write each memory as a self-contained statement:
-  User memories: "User decided to...", "User prefers...", "User rejected..."
-  Assistant memories: "Assistant implemented...", "Assistant deployed...",
-  "Assistant explored X and concluded Y"
+- Extract durable user knowledge: decisions, preferences, constraints,
+  stable facts, goals, actions the user took, project rules
+- Write each memory as: "User decided to...", "User prefers...",
+  "User rejected...", "User deployed..."
   NOT "Decision: ..." or "Constraint: ..."
 - Use standard memory types: preference, fact, episodic, procedural, context
 - Freely reclassify — e.g., if raw memories are episodic but a stable
@@ -4131,47 +4128,75 @@ knowledge that should be preserved long-term.
 - Set importance based on durability and impact (low, normal, high, critical)
 - For memories referencing detailed artifacts, note the artifact source
 - If a raw memory is already well-formed and durable, keep it as-is
-## What to extract (categories)
+
+## What to extract
 
 1. **Decisions** — conclusions, agreements, accepted/rejected approaches.
    importance=high. Example: "User decided to use PostgreSQL for billing"
 2. **Preferences** — likes, dislikes, style choices, workflows.
-   Example: "User prefers Conventional Commits for git messages"
+   Example: "User prefers conventional commit messages for git"
 3. **Facts** — stable biographical or project information.
    Example: "User has 14 years of DevOps experience"
-4. **Actions** — what was actually done by user or assistant.
-   Example (role=user): "User deployed the payment service to production"
-   Example (role=assistant): "Assistant implemented the database migration
-   and caching layer for the billing service"
-5. **Explorations with conclusions** — what was investigated and the outcome.
-   role=assistant. Example: "Assistant explored multiple caching strategies
-   and concluded that Redis with TTL-based eviction is the best fit"
+4. **Actions** — what the user actually did.
+   Example: "User deployed the payment service to production"
+5. **Goals** — what the user is working toward.
+   Example: "User wants to improve memory quality without extra LLM calls"
 
 ## What NOT to extract
 
 - Process noise: "User reconsidered...", "User asked if..."
-- Intermediate reasoning without conclusion: "Assistant analyzed...",
-  "Assistant considered..." (but DO extract if there is a conclusion)
 - Conversational scaffolding: greetings, acknowledgements, status pings
 - Tool output: timings, diff stats, message IDs
-- Transient observations that are only relevant within the session
+- Transient observations only relevant within the session
+"""
 
-## Role Attribution
+_CONSOLIDATION_ASSISTANT_SYSTEM_PROMPT = """\
+{anti_injection}
 
-Each memory must include the correct role:
+You are a memory consolidation system. Given a conversation summary and
+individual raw memories about the ASSISTANT's actions, synthesize durable
+assistant knowledge.
 
-- **role: "user"** — Facts about the user: decisions, preferences,
-  constraints, goals, personal info. A decision from an assistant
-  recommendation accepted by the user is role=user.
-- **role: "assistant"** — What the assistant DID: implementations,
-  deployments, research findings, recommendations, design decisions,
-  explorations with conclusions, actions with lasting impact.
+## Instructions
 
-When raw memories contain assistant actions (role=assistant), you MUST
-include corresponding role=assistant consolidated memories. Do NOT
-convert assistant actions into user-perspective memories.
-"Assistant implemented the two-layer memory system" must remain
-role=assistant, NOT become "The two-layer memory system was implemented".
+- Extract durable assistant knowledge: implementations, deployments,
+  research findings, recommendations, design decisions, explorations
+  with conclusions, actions with lasting impact
+- Write each memory as: "Assistant implemented...", "Assistant deployed...",
+  "Assistant explored X and concluded Y", "Assistant recommended..."
+- Use standard memory types: preference, fact, episodic, procedural, context
+- Freely reclassify types as appropriate
+- You MUST assign at least one category to each memory from the available
+  set provided in the prompt. Copy categories from the raw memories when
+  the topic matches. Preserve project-scoped categories exactly as they
+  appear in the raw memories (e.g., "project:myapp", NOT just "project").
+  NEVER output an empty categories array.
+- Set importance based on durability and impact (low, normal, high, critical)
+- For memories referencing detailed artifacts, note the artifact source
+- If a raw memory is already well-formed and durable, keep it as-is
+
+## What to extract
+
+1. **Implementations** — code written, features built, bugs fixed.
+   Example: "Assistant implemented the database migration and caching layer"
+2. **Recommendations** — design choices, tool selections, architecture decisions.
+   Example: "Assistant recommended Redis with TTL-based eviction for caching"
+3. **Research findings** — analysis outcomes, investigation conclusions.
+   Example: "Assistant explored multiple caching strategies and concluded
+   that Redis is the best fit"
+4. **Deployments and operations** — what was deployed, configured, or managed.
+   Example: "Assistant deployed the billing service to production Kubernetes"
+5. **Design decisions** — architectural choices made by the assistant.
+   Example: "Assistant designed a two-layer memory system with raw ingest
+   and async consolidation"
+
+## What NOT to extract
+
+- Intermediate reasoning without conclusion: "Assistant analyzed...",
+  "Assistant considered..." (but DO extract if there is a conclusion)
+- Transient task execution: "Assistant read the file", "Assistant checked"
+- Tool output: timings, diff stats, build output
+- Offers or proposals that were not acted on
 """
 
 _CONSOLIDATION_USER_TEMPLATE = """\
@@ -4179,7 +4204,7 @@ _CONSOLIDATION_USER_TEMPLATE = """\
 
 {summary_wrapped}
 
-## Raw Memories from this Session ({raw_count} total)
+## Raw Memories ({raw_count} total)
 
 {memories_wrapped}
 
@@ -4192,7 +4217,7 @@ Use ONLY these categories. Preserve project-scoped names exactly:
 
 Categories found in raw memories: {raw_categories}
 
-Synthesize the durable knowledge from this session. Output a JSON object
+Synthesize the durable knowledge from these memories. Output a JSON object
 with a "memories" array.
 """
 
@@ -4231,10 +4256,6 @@ CONSOLIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
                             "type": "string",
                             "enum": ["low", "normal", "high", "critical"],
                         },
-                        "role": {
-                            "type": "string",
-                            "enum": ["user", "assistant"],
-                        },
                         "pinned": {"type": "boolean"},
                     },
                     "required": [
@@ -4242,7 +4263,6 @@ CONSOLIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
                         "memory_type",
                         "categories",
                         "importance",
-                        "role",
                         "pinned",
                     ],
                     "additionalProperties": False,
@@ -4259,29 +4279,33 @@ def build_consolidation_prompt(
     *,
     summary: str,
     raw_memories: list[dict],
+    role: str = "user",
     artifact_memory_ids: set[str] | None = None,
     previous_consolidated: list[dict] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    """Build the within-session consolidation prompt.
+    """Build the within-session consolidation prompt for a specific role.
+
+    Consolidation runs separately for user and assistant memories.
+    Each call processes only memories of one role, producing focused
+    consolidated output.
 
     Args:
         summary: The session conversation summary.
-        raw_memories: List of raw memory dicts with 'id', 'memory', 'metadata'.
+        raw_memories: List of raw memory dicts (already filtered to one role).
+        role: "user" or "assistant" — determines which system prompt to use.
         artifact_memory_ids: Set of memory IDs that have artifacts (protected).
-        previous_consolidated: Previously consolidated memories from this session
-            (for re-consolidation context). The LLM should incorporate this
-            knowledge and produce a complete replacement set.
+        previous_consolidated: Previously consolidated memories of the SAME
+            role from this session (for re-consolidation context).
 
     Returns:
         Tuple of (messages, json_schema) for LLM call.
     """
-    # Format raw memories as text
+    # Format raw memories as text (role is implicit — all same role)
     raw_lines = []
     for mem in raw_memories:
         text = mem.get("memory", "") or mem.get("text", "")
         meta = mem.get("metadata") or {}
         mem_type = meta.get("memory_type", "unknown")
-        role = meta.get("role", "user")
         importance = meta.get("importance", "normal")
         cats = ", ".join(meta.get("categories", []))
         mid = mem.get("id", "")
@@ -4290,7 +4314,7 @@ def build_consolidation_prompt(
         artifact_marker = " [HAS ARTIFACT]" if has_artifact else ""
 
         raw_lines.append(
-            f"- [{mem_type}, {role}, {importance}] {text}"
+            f"- [{mem_type}, {importance}] {text}"
             f" (categories: {cats or 'none'}){artifact_marker}"
         )
 
@@ -4328,9 +4352,8 @@ def build_consolidation_prompt(
             text = mem.get("memory", "") or mem.get("text", "")
             meta = mem.get("metadata") or {}
             mem_type = meta.get("memory_type", "unknown")
-            role = meta.get("role", "user")
             importance = meta.get("importance", "normal")
-            prev_lines.append(f"- [{mem_type}, {role}, {importance}] {text}")
+            prev_lines.append(f"- [{mem_type}, {importance}] {text}")
         prev_text = "\n".join(prev_lines)
         prev_wrapped = wrap_with_boundary(prev_text, "previous_consolidated")
         previous_section = (
@@ -4343,7 +4366,13 @@ def build_consolidation_prompt(
             f"{prev_wrapped}\n"
         )
 
-    system_prompt = _CONSOLIDATION_SYSTEM_PROMPT.format(
+    # Select role-specific system prompt
+    system_template = (
+        _CONSOLIDATION_ASSISTANT_SYSTEM_PROMPT
+        if role == "assistant"
+        else _CONSOLIDATION_USER_SYSTEM_PROMPT
+    )
+    system_prompt = system_template.format(
         anti_injection=ANTI_INJECTION_PREAMBLE,
     )
 

@@ -247,6 +247,7 @@ class TestConsolidationPromptWithPrevious:
 
         messages, schema = build_consolidation_prompt(
             summary="Test summary",
+            role="user",
             raw_memories=[
                 {
                     "id": "m1",
@@ -283,6 +284,7 @@ class TestConsolidationPromptWithPrevious:
 
         messages, schema = build_consolidation_prompt(
             summary="Test summary",
+            role="user",
             raw_memories=[
                 {
                     "id": "m1",
@@ -299,3 +301,78 @@ class TestConsolidationPromptWithPrevious:
 
         user_msg = messages[1]["content"]
         assert "Previously Consolidated" not in user_msg
+
+    def test_user_role_uses_user_system_prompt(self):
+        """role='user' should use the user-focused system prompt."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, _ = build_consolidation_prompt(
+            summary="Test",
+            role="user",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "User likes X",
+                    "metadata": {
+                        "memory_type": "preference",
+                        "importance": "normal",
+                        "categories": [],
+                    },
+                },
+            ],
+        )
+
+        system_msg = messages[0]["content"]
+        assert "USER" in system_msg
+        assert "User decided to" in system_msg or "User prefers" in system_msg
+
+    def test_assistant_role_uses_assistant_system_prompt(self):
+        """role='assistant' should use the assistant-focused system prompt."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, _ = build_consolidation_prompt(
+            summary="Test",
+            role="assistant",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "Assistant implemented X",
+                    "metadata": {
+                        "memory_type": "episodic",
+                        "importance": "high",
+                        "categories": [],
+                    },
+                },
+            ],
+        )
+
+        system_msg = messages[0]["content"]
+        assert "ASSISTANT" in system_msg
+        assert (
+            "Assistant implemented" in system_msg or "Assistant deployed" in system_msg
+        )
+
+    def test_schema_has_no_role_field(self):
+        """The output schema should not have a role field (role is implicit)."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        _, schema = build_consolidation_prompt(
+            summary="Test",
+            role="user",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "Test",
+                    "metadata": {
+                        "memory_type": "fact",
+                        "importance": "normal",
+                        "categories": [],
+                    },
+                },
+            ],
+        )
+
+        item_props = schema["schema"]["properties"]["memories"]["items"]["properties"]
+        assert "role" not in item_props
+        item_required = schema["schema"]["properties"]["memories"]["items"]["required"]
+        assert "role" not in item_required

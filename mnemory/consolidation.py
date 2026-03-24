@@ -178,103 +178,76 @@ class ConsolidationService:
                 len(artifact_ids),
             )
 
-            # 5. Build batches and consolidate
-            from mnemory.llm import parse_json_response
-            from mnemory.prompts import build_consolidation_prompt
+            # 5. Split raw memories by role and consolidate each scope
+            #
+            # User and assistant memories are consolidated independently
+            # with separate LLM calls. This ensures assistant actions are
+            # not drowned out by user-focused synthesis.
+            user_raw = [
+                m
+                for m in raw_memories
+                if (m.get("metadata") or {}).get("role", "user") == "user"
+            ]
+            assistant_raw = [
+                m
+                for m in raw_memories
+                if (m.get("metadata") or {}).get("role") == "assistant"
+            ]
 
-            batch_size = self._config.memory.consolidation_batch_size
+            # Split previous consolidated by role too
+            prev_user = [
+                m
+                for m in previous_consolidated
+                if (m.get("metadata") or {}).get("role", "user") == "user"
+            ]
+            prev_assistant = [
+                m
+                for m in previous_consolidated
+                if (m.get("metadata") or {}).get("role") == "assistant"
+            ]
+
+            logger.info(
+                "Consolidation session %s: %d user raw, %d assistant raw, "
+                "%d prev user consolidated, %d prev assistant consolidated",
+                session_id,
+                len(user_raw),
+                len(assistant_raw),
+                len(prev_user),
+                len(prev_assistant),
+            )
+
             all_consolidated_facts: list[dict] = []
-            batch_raw_ids_map: list[tuple[list[dict], list[str]]] = []
+            all_raw_ids_map: list[tuple[list[dict], list[str]]] = []
 
-            # Split into batches if too many raw memories for one call
-            if len(raw_memories) <= batch_size:
-                batches = [raw_memories]
-            else:
-                batches = [
-                    raw_memories[i : i + batch_size]
-                    for i in range(0, len(raw_memories), batch_size)
-                ]
-                logger.info(
-                    "Consolidation session %s: splitting %d raw memories into %d batches of ~%d",
-                    session_id,
-                    len(raw_memories),
-                    len(batches),
-                    batch_size,
-                )
-
-            # Accumulated context from prior batches (prevents cross-batch duplication)
-            accumulated_context: list[dict] = []
-
-            for batch_idx, batch in enumerate(batches):
-                if len(batches) > 1:
-                    logger.info(
-                        "Consolidation session %s: processing batch %d/%d (%d memories)",
-                        session_id,
-                        batch_idx + 1,
-                        len(batches),
-                        len(batch),
-                    )
-
-                # Combine previous consolidated (from prior runs) with
-                # accumulated context (from prior batches in this run)
-                full_context = list(previous_consolidated)
-                full_context.extend(accumulated_context)
-
-                batch_artifact_ids = artifact_ids & {m["id"] for m in batch}
-
-                messages, json_schema = build_consolidation_prompt(
+            # Consolidate user memories
+            if user_raw:
+                user_facts, user_ids_map = self._consolidate_role(
+                    session_id=session_id,
+                    raw_memories=user_raw,
+                    role="user",
                     summary=summary,
-                    raw_memories=batch,
-                    artifact_memory_ids=batch_artifact_ids,
-                    previous_consolidated=full_context if full_context else None,
+                    artifact_ids=artifact_ids,
+                    previous_consolidated=prev_user,
                 )
+                all_consolidated_facts.extend(user_facts)
+                all_raw_ids_map.extend(user_ids_map)
 
-                response_text = self._llm.generate(
-                    messages,
-                    json_schema=json_schema,
-                    temperature=0.3,
-                    operation="consolidation",
+            # Consolidate assistant memories
+            if assistant_raw:
+                asst_facts, asst_ids_map = self._consolidate_role(
+                    session_id=session_id,
+                    raw_memories=assistant_raw,
+                    role="assistant",
+                    summary=summary,
+                    artifact_ids=artifact_ids,
+                    previous_consolidated=prev_assistant,
                 )
-
-                parsed = parse_json_response(response_text)
-
-                if not parsed or not isinstance(parsed.get("memories"), list):
-                    logger.warning(
-                        "Consolidation session %s batch %d: invalid LLM output, skipping",
-                        session_id,
-                        batch_idx + 1,
-                    )
-                    continue
-
-                batch_facts = parsed["memories"]
-                batch_raw_ids = [m["id"] for m in batch]
-
-                logger.info(
-                    "Consolidation session %s batch %d: LLM produced %d facts",
-                    session_id,
-                    batch_idx + 1,
-                    len(batch_facts),
-                )
-
-                all_consolidated_facts.extend(batch_facts)
-                batch_raw_ids_map.append((batch_facts, batch_raw_ids))
-
-                # Add batch results to accumulated context for next batch
-                for f in batch_facts:
-                    accumulated_context.append(
-                        {
-                            "memory": f.get("text", ""),
-                            "metadata": {
-                                "memory_type": f.get("memory_type", "episodic"),
-                                "role": f.get("role", "user"),
-                                "importance": f.get("importance", "normal"),
-                            },
-                        }
-                    )
+                all_consolidated_facts.extend(asst_facts)
+                all_raw_ids_map.extend(asst_ids_map)
 
             if not all_consolidated_facts:
                 logger.info(
-                    "Consolidation session %s: no facts produced across all batches",
+                    "Consolidation session %s: no facts produced",
                     session_id,
                 )
                 self._sessions.update_consolidation_state(session_id, "consolidated")
@@ -294,7 +267,7 @@ class ConsolidationService:
 
             # 7. Store consolidated memories (per-batch derived_from)
             all_stored_ids: list[str] = []
-            for batch_facts, batch_raw_ids in batch_raw_ids_map:
+            for batch_facts, batch_raw_ids in all_raw_ids_map:
                 batch_stored = self._store_consolidated(
                     batch_facts,
                     user_id=user_id,
@@ -482,6 +455,129 @@ class ConsolidationService:
                 len(memory_ids),
             )
         return memories
+
+    def _consolidate_role(
+        self,
+        *,
+        session_id: str,
+        raw_memories: list[dict],
+        role: str,
+        summary: str,
+        artifact_ids: set[str],
+        previous_consolidated: list[dict],
+    ) -> tuple[list[dict], list[tuple[list[dict], list[str]]]]:
+        """Consolidate raw memories for a single role (user or assistant).
+
+        Handles batching when there are more memories than batch_size.
+        Each batch gets accumulated context from prior batches.
+
+        Returns:
+            Tuple of (all_facts, raw_ids_map) where:
+            - all_facts: list of consolidated fact dicts (with 'role' set)
+            - raw_ids_map: list of (batch_facts, batch_raw_ids) tuples
+        """
+        from mnemory.llm import parse_json_response
+        from mnemory.prompts import build_consolidation_prompt
+
+        batch_size = self._config.memory.consolidation_batch_size
+        all_facts: list[dict] = []
+        raw_ids_map: list[tuple[list[dict], list[str]]] = []
+
+        # Split into batches if needed
+        if len(raw_memories) <= batch_size:
+            batches = [raw_memories]
+        else:
+            batches = [
+                raw_memories[i : i + batch_size]
+                for i in range(0, len(raw_memories), batch_size)
+            ]
+            logger.info(
+                "Consolidation session %s [%s]: splitting %d memories into %d batches",
+                session_id,
+                role,
+                len(raw_memories),
+                len(batches),
+            )
+
+        # Accumulated context from prior batches (prevents cross-batch duplication)
+        accumulated: list[dict] = []
+
+        for batch_idx, batch in enumerate(batches):
+            if len(batches) > 1:
+                logger.info(
+                    "Consolidation session %s [%s]: batch %d/%d (%d memories)",
+                    session_id,
+                    role,
+                    batch_idx + 1,
+                    len(batches),
+                    len(batch),
+                )
+
+            # Combine previous consolidated (from prior runs) with
+            # accumulated context (from prior batches in this run)
+            full_context = list(previous_consolidated)
+            full_context.extend(accumulated)
+
+            batch_artifact_ids = artifact_ids & {m["id"] for m in batch}
+
+            messages, json_schema = build_consolidation_prompt(
+                summary=summary,
+                raw_memories=batch,
+                role=role,
+                artifact_memory_ids=batch_artifact_ids,
+                previous_consolidated=full_context if full_context else None,
+            )
+
+            response_text = self._llm.generate(
+                messages,
+                json_schema=json_schema,
+                temperature=0.3,
+                operation="consolidation",
+            )
+
+            parsed = parse_json_response(response_text)
+
+            if not parsed or not isinstance(parsed.get("memories"), list):
+                logger.warning(
+                    "Consolidation session %s [%s] batch %d: invalid LLM output",
+                    session_id,
+                    role,
+                    batch_idx + 1,
+                )
+                continue
+
+            batch_facts = parsed["memories"]
+            batch_raw_ids = [m["id"] for m in batch]
+
+            # Set role on each fact (implicit from the call)
+            for f in batch_facts:
+                f["role"] = role
+
+            logger.info(
+                "Consolidation session %s [%s] batch %d: produced %d facts",
+                session_id,
+                role,
+                batch_idx + 1,
+                len(batch_facts),
+            )
+
+            all_facts.extend(batch_facts)
+            raw_ids_map.append((batch_facts, batch_raw_ids))
+
+            # Add to accumulated context for next batch
+            for f in batch_facts:
+                accumulated.append(
+                    {
+                        "memory": f.get("text", ""),
+                        "metadata": {
+                            "memory_type": f.get("memory_type", "episodic"),
+                            "role": role,
+                            "importance": f.get("importance", "normal"),
+                        },
+                    }
+                )
+
+        return all_facts, raw_ids_map
 
     def _validate_output(self, facts: list[dict], raw_count: int) -> str | None:
         """Validate consolidation output quality.
