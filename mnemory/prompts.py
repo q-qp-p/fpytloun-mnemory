@@ -3321,7 +3321,7 @@ def parse_dedup_response(
 
         action = entry.get("action", "").upper()
         fact_index = entry.get("fact_index")
-        text = entry.get("text", "").strip()
+        text = (entry.get("text") or "").strip()
 
         # Track all fact indices the LLM addressed (including SKIPs)
         if isinstance(fact_index, int):
