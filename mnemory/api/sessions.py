@@ -73,6 +73,64 @@ async def get_session(
     return session
 
 
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    delete_memories: bool = Query(False),
+    ctx: SessionContext = Depends(get_session_context),
+) -> dict:
+    """Delete a session summary and optionally its linked raw memories.
+
+    Args:
+        session_id: Session to delete.
+        delete_memories: If true, also delete linked raw memories
+            (not consolidated). Artifacts on deleted memories are
+            cleaned up automatically.
+    """
+    service = _get_service()
+
+    # Verify session exists and user owns it
+    session = service._session_summary_store.get(session_id)
+    if session is None or session.get("user_id") != ctx.user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Prevent deletion during active consolidation
+    if session.get("consolidation_state") == "consolidating":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete session while consolidation is in progress",
+        )
+
+    deleted_memories = 0
+
+    # Optionally delete linked raw memories
+    if delete_memories:
+        memory_ids = session.get("memory_ids") or []
+        for mid in memory_ids:
+            try:
+                # Check if memory exists and is raw before deleting
+                mem = service.vector.get(mid)
+                if mem is None:
+                    continue
+                meta = mem.get("metadata") or {}
+                layer = meta.get("memory_layer", "raw")
+                if layer != "raw":
+                    continue
+                # delete_memory handles artifact cleanup
+                service.delete_memory(mid, user_id=ctx.user_id)
+                deleted_memories += 1
+            except Exception:
+                logger.warning("Failed to delete linked memory %s", mid, exc_info=True)
+
+    # Delete the session record
+    service._session_summary_store.delete(session_id)
+
+    return {
+        "deleted_session": True,
+        "deleted_memories": deleted_memories,
+    }
+
+
 @router.post("/sessions/{session_id}/consolidate")
 async def consolidate_session_endpoint(
     session_id: str,

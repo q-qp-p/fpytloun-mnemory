@@ -406,21 +406,44 @@ class ConsolidationService:
     def _fetch_raw_memories(self, memory_ids: list[str], user_id: str) -> list[dict]:
         """Fetch raw memories by IDs, filtering to only unsuperseded raw."""
         memories = []
+        not_found = 0
+        skipped_layer = 0
+        skipped_superseded = 0
+        fetch_errors = 0
         for mid in memory_ids:
             try:
                 result = self._vector.get(mid)
                 if result is None:
+                    not_found += 1
                     continue
                 meta = result.get("metadata") or {}
                 # Only include raw, unsuperseded memories
                 layer = meta.get("memory_layer", "raw")
                 if layer != "raw":
+                    skipped_layer += 1
                     continue
                 if meta.get("superseded_by"):
+                    skipped_superseded += 1
                     continue
                 memories.append(result)
             except Exception:
-                logger.debug("Could not fetch memory %s", mid)
+                fetch_errors += 1
+                logger.warning("Could not fetch memory %s", mid, exc_info=True)
+        # Always log summary at INFO so production can diagnose issues
+        skipped = not_found + skipped_layer + skipped_superseded + fetch_errors
+        if skipped > 0:
+            logger.info(
+                "Fetch raw memories: %d eligible, %d skipped "
+                "(not_found=%d, wrong_layer=%d, superseded=%d, errors=%d) "
+                "from %d total",
+                len(memories),
+                skipped,
+                not_found,
+                skipped_layer,
+                skipped_superseded,
+                fetch_errors,
+                len(memory_ids),
+            )
         return memories
 
     def _validate_output(self, facts: list[dict], raw_count: int) -> str | None:

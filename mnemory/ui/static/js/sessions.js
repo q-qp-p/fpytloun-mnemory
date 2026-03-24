@@ -14,6 +14,10 @@ function sessionsPanel() {
     stateFilter: '',
     agentFilter: '',
 
+    // Delete session modal state
+    deleteSessionTarget: null,    // session object being confirmed for deletion
+    deleteLinkedMemories: false,  // checkbox: also delete linked raw memories
+
     // Per-session state for memory loading and expansion
     sessionMemories: {},   // session_id → memory[]
     sessionMemLoading: {}, // session_id → bool
@@ -155,6 +159,43 @@ function sessionsPanel() {
         Alpine.store('notify').error(msg);
       } finally {
         this.consolidating[sid] = false;
+      }
+    },
+
+    // ── Session delete ──────────────────────────────────────────
+
+    confirmDeleteSession(session) {
+      this.deleteSessionTarget = session;
+      this.deleteLinkedMemories = false;
+    },
+
+    cancelDeleteSession() {
+      this.deleteSessionTarget = null;
+      this.deleteLinkedMemories = false;
+    },
+
+    async executeDeleteSession() {
+      const session = this.deleteSessionTarget;
+      if (!session) return;
+      const sid = session.session_id;
+      const deleteMems = this.deleteLinkedMemories;
+      try {
+        const qs = deleteMems ? '?delete_memories=true' : '';
+        const result = await MnemoryAPI.del(`/sessions/${sid}${qs}`);
+        const msg = deleteMems
+          ? `Session deleted (${result.deleted_memories || 0} raw memories removed)`
+          : 'Session deleted';
+        Alpine.store('notify').success(msg);
+        // Remove from local list
+        this.sessions = this.sessions.filter(s => s.session_id !== sid);
+        // Clean up caches
+        delete this.sessionMemories[sid];
+        delete this.sessionConsolidatedMems[sid];
+      } catch (e) {
+        Alpine.store('notify').error(`Failed to delete session: ${e.message}`);
+      } finally {
+        this.deleteSessionTarget = null;
+        this.deleteLinkedMemories = false;
       }
     },
 

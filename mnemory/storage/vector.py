@@ -1587,6 +1587,22 @@ class SessionSummaryStore:
             points=[_session_point_id(session_id)],
         )
 
+    def delete(self, session_id: str) -> dict | None:
+        """Delete a session summary by ID.
+
+        Returns the session payload before deletion, or None if not found.
+        The caller can use the returned payload to clean up linked memories.
+        """
+        # Read the session first so we can return its data
+        session = self.get(session_id)
+
+        self._client.delete(
+            collection_name=self.COLLECTION,
+            points_selector=PointIdsList(points=[_session_point_id(session_id)]),
+        )
+
+        return session
+
     def list_for_user(
         self,
         user_id: str,

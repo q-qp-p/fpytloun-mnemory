@@ -972,6 +972,11 @@
                       <span x-show="session.consolidation_state === 'consolidated'" class="text-xs text-green-400">
                         Consolidated <span x-text="session.consolidated_at ? formatDate(session.consolidated_at) : ''"></span>
                       </span>
+                      <span class="flex-1"></span>
+                      <button @click.stop="confirmDeleteSession(session)"
+                              class="btn-ghost text-xs text-red-400 hover:text-red-300">
+                        Delete Session
+                      </button>
                     </div>
 
                     <!-- Linked Memories -->
@@ -1098,6 +1103,56 @@
                       </div>
                     </div>
                   </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Delete Session Modal -->
+        <div x-show="deleteSessionTarget" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click="cancelDeleteSession()" x-transition>
+          <div class="modal-content max-w-lg" @click.stop>
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-lg font-semibold text-red-400">Delete Session</h3>
+              <button @click="cancelDeleteSession()" class="text-muted hover:text-secondary">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+              </button>
+            </div>
+
+            <template x-if="deleteSessionTarget">
+              <div class="space-y-4">
+                <!-- Session info -->
+                <div>
+                  <div class="text-xs text-muted mb-1">Session ID</div>
+                  <div class="text-sm font-mono text-secondary" x-text="deleteSessionTarget.session_id"></div>
+                </div>
+                <div>
+                  <div class="text-xs text-muted mb-1">Summary preview</div>
+                  <div class="text-sm text-primary bg-brand-bg rounded-lg p-2 max-h-24 overflow-y-auto"
+                       x-text="truncate(deleteSessionTarget.summary, 300)"></div>
+                </div>
+
+                <!-- Delete linked memories checkbox -->
+                <label class="flex items-start gap-3 p-3 rounded-lg border border-brand-border hover:border-red-500/30 cursor-pointer transition-colors">
+                  <input type="checkbox" x-model="deleteLinkedMemories" class="mt-0.5 rounded border-brand-border">
+                  <div>
+                    <div class="text-sm text-primary">Also delete linked raw memories</div>
+                    <div class="text-xs text-muted mt-0.5"
+                         x-text="(deleteSessionTarget.memory_ids?.length || 0) + ' raw memories will be permanently deleted (consolidated memories are kept)'"></div>
+                  </div>
+                </label>
+
+                <!-- Warning when checkbox is checked -->
+                <div x-show="deleteLinkedMemories" class="text-xs text-red-400 bg-red-500/10 rounded-lg p-2">
+                  Warning: Deleted memories cannot be recovered. Artifacts attached to deleted memories will also be removed.
+                </div>
+
+                <!-- Actions -->
+                <div class="flex justify-end gap-2 pt-2 border-t border-brand-border">
+                  <button @click="cancelDeleteSession()" class="btn-ghost text-sm">Cancel</button>
+                  <button @click="executeDeleteSession()" class="btn-danger text-sm">
+                    Delete Session
+                  </button>
                 </div>
               </div>
             </template>
