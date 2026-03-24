@@ -219,6 +219,9 @@ class ConsolidationService:
             all_consolidated_facts: list[dict] = []
             all_raw_ids_map: list[tuple[list[dict], list[str]]] = []
 
+            # Derive session date for event_date context
+            session_date = (session.get("created_at") or "")[:10] or None
+
             # Consolidate user memories
             if user_raw:
                 user_facts, user_ids_map = self._consolidate_role(
@@ -228,6 +231,7 @@ class ConsolidationService:
                     summary=summary,
                     artifact_ids=artifact_ids,
                     previous_consolidated=prev_user,
+                    session_date=session_date,
                 )
                 all_consolidated_facts.extend(user_facts)
                 all_raw_ids_map.extend(user_ids_map)
@@ -241,6 +245,7 @@ class ConsolidationService:
                     summary=summary,
                     artifact_ids=artifact_ids,
                     previous_consolidated=prev_assistant,
+                    session_date=session_date,
                 )
                 all_consolidated_facts.extend(asst_facts)
                 all_raw_ids_map.extend(asst_ids_map)
@@ -465,6 +470,7 @@ class ConsolidationService:
         summary: str,
         artifact_ids: set[str],
         previous_consolidated: list[dict],
+        session_date: str | None = None,
     ) -> tuple[list[dict], list[tuple[list[dict], list[str]]]]:
         """Consolidate raw memories for a single role (user or assistant).
 
@@ -526,6 +532,7 @@ class ConsolidationService:
                 role=role,
                 artifact_memory_ids=batch_artifact_ids,
                 previous_consolidated=full_context if full_context else None,
+                session_date=session_date,
             )
 
             response_text = self._llm.generate(
@@ -654,6 +661,7 @@ class ConsolidationService:
                     importance=fact.get("importance", "normal"),
                     pinned=fact.get("pinned", False),
                     role=fact.get("role", "user"),
+                    event_date=fact.get("event_date"),
                 )
 
                 results = result.get("results", [])

@@ -4126,7 +4126,17 @@ that would be valuable in FUTURE conversations.
 - Write each memory as: "User decided to...", "User prefers...",
   "User rejected...", "User deployed..."
   NOT "Decision: ..." or "Constraint: ..."
-- Use standard memory types: preference, fact, episodic, procedural, context
+- Use standard memory types. memory_type controls how long the memory lives:
+  - fact/preference: permanent — use for stable, long-lived knowledge
+  - episodic: 90 days — use for events, decisions, actions
+  - procedural: 60 days — use for workflows, approaches, methods
+  - context: 7 days — use ONLY for truly short-term session state
+  Do NOT use context for durable knowledge. Do NOT use fact for
+  transient observations about current state.
+- For episodic memories (events, decisions, actions), set event_date
+  to the date when it happened (YYYY-MM-DD) if it can be determined
+  from the raw memories or session context. Use null when the date is
+  unknown or not applicable (preferences, stable facts).
 - Freely reclassify — e.g., if raw memories are episodic but a stable
   preference emerges, output as preference
 - You MUST assign at least one category to each memory from the available
@@ -4163,6 +4173,8 @@ that would be valuable in FUTURE conversations.
   once, which is not a durable preference.
 - Test or debug interactions with no lasting outcome
 - Routine tool calls or status checks
+- Observations about the current state of the memory system (what is
+  or isn't remembered) — these become stale immediately
 
 ## Quality rules
 
@@ -4190,7 +4202,17 @@ assistant knowledge that would be valuable in FUTURE conversations.
   with conclusions, actions with lasting impact
 - Write each memory as: "Assistant implemented...", "Assistant deployed...",
   "Assistant explored X and concluded Y", "Assistant recommended..."
-- Use standard memory types: preference, fact, episodic, procedural, context
+- Use standard memory types. memory_type controls how long the memory lives:
+  - fact/preference: permanent — use for stable, long-lived knowledge
+  - episodic: 90 days — use for events, decisions, actions
+  - procedural: 60 days — use for workflows, approaches, methods
+  - context: 7 days — use ONLY for truly short-term session state
+  Do NOT use context for durable knowledge. Do NOT use fact for
+  transient observations about current state.
+- For episodic memories (events, decisions, actions), set event_date
+  to the date when it happened (YYYY-MM-DD) if it can be determined
+  from the raw memories or session context. Use null when the date is
+  unknown or not applicable (preferences, stable facts).
 - Freely reclassify types as appropriate
 - You MUST assign at least one category to each memory from the available
   set provided in the prompt. Copy categories from the raw memories when
@@ -4230,6 +4252,8 @@ assistant knowledge that would be valuable in FUTURE conversations.
 - Routine tool calls (initialize, load, check) unless they produced a
   significant finding or conclusion
 - Brief confirmations or status responses
+- Observations about the current state of the memory system (what is
+  or isn't remembered) — these become stale immediately
 
 ## Quality rules
 
@@ -4246,6 +4270,8 @@ assistant knowledge that would be valuable in FUTURE conversations.
 """
 
 _CONSOLIDATION_USER_TEMPLATE = """\
+Session date: {session_date}
+
 ## Session Summary
 
 {summary_wrapped}
@@ -4264,7 +4290,8 @@ Use ONLY these categories. Preserve project-scoped names exactly:
 Categories found in raw memories: {raw_categories}
 
 Synthesize the durable knowledge from these memories. Output a JSON object
-with a "memories" array.
+with a "memories" array. For episodic memories, use the session date or
+raw memory dates for event_date.
 """
 
 CONSOLIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -4303,6 +4330,10 @@ CONSOLIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
                             "enum": ["low", "normal", "high", "critical"],
                         },
                         "pinned": {"type": "boolean"},
+                        "event_date": {
+                            "type": ["string", "null"],
+                            "description": "ISO 8601 date (YYYY-MM-DD) when the event occurred, or null",
+                        },
                     },
                     "required": [
                         "text",
@@ -4310,6 +4341,7 @@ CONSOLIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
                         "categories",
                         "importance",
                         "pinned",
+                        "event_date",
                     ],
                     "additionalProperties": False,
                 },
@@ -4328,6 +4360,7 @@ def build_consolidation_prompt(
     role: str = "user",
     artifact_memory_ids: set[str] | None = None,
     previous_consolidated: list[dict] | None = None,
+    session_date: str | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Build the within-session consolidation prompt for a specific role.
 
@@ -4342,6 +4375,7 @@ def build_consolidation_prompt(
         artifact_memory_ids: Set of memory IDs that have artifacts (protected).
         previous_consolidated: Previously consolidated memories of the SAME
             role from this session (for re-consolidation context).
+        session_date: Date of the session (YYYY-MM-DD) for event_date context.
 
     Returns:
         Tuple of (messages, json_schema) for LLM call.
@@ -4355,12 +4389,14 @@ def build_consolidation_prompt(
         importance = meta.get("importance", "normal")
         cats = ", ".join(meta.get("categories", []))
         mid = mem.get("id", "")
+        event_date = meta.get("event_date", "")
 
         has_artifact = artifact_memory_ids and mid in artifact_memory_ids
         artifact_marker = " [HAS ARTIFACT]" if has_artifact else ""
+        date_marker = f", date: {event_date}" if event_date else ""
 
         raw_lines.append(
-            f"- [{mem_type}, {importance}] {text}"
+            f"- [{mem_type}, {importance}{date_marker}] {text}"
             f" (categories: {cats or 'none'}){artifact_marker}"
         )
 
@@ -4425,7 +4461,20 @@ def build_consolidation_prompt(
     summary_wrapped = wrap_with_boundary(summary, "summary")
     memories_wrapped = wrap_with_boundary(raw_memories_text, "existing_memories")
 
+    # Derive session date from raw memories if not provided
+    effective_session_date = session_date
+    if not effective_session_date:
+        for mem in raw_memories:
+            meta = mem.get("metadata") or {}
+            created = meta.get("created_at_utc", "")
+            if created:
+                effective_session_date = created[:10]  # YYYY-MM-DD
+                break
+    if not effective_session_date:
+        effective_session_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
     user_prompt = _CONSOLIDATION_USER_TEMPLATE.format(
+        session_date=effective_session_date,
         summary_wrapped=summary_wrapped,
         raw_count=len(raw_memories),
         memories_wrapped=memories_wrapped,
