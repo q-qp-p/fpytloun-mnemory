@@ -2,7 +2,7 @@
 title: Mnemory - Persistent Memory
 author: mnemory
 description: Automatic memory recall and storage for conversations
-version: 0.1.0
+version: 0.2.0
 """
 
 import asyncio
@@ -94,7 +94,7 @@ class Filter:
     _MAX_SESSIONS = 1000
 
     # Mnemory MCP tools that the filter handles automatically.
-    # Stripped from tool_ids to save prompt tokens (~800 tokens/request).
+    # Stripped from tool_ids and tools[] to save prompt tokens.
     _MANAGED_TOOL_SUFFIXES = {
         "initialize_memory",
         "get_core_memories",
@@ -103,13 +103,18 @@ class Filter:
 
     def __init__(self):
         self.valves = self.Valves()
-        # Track which chats have been initialized (chat_id -> session_id)
-        self._sessions: dict[str, str] = {}
-        # Pending session from first message when chat_id is not yet available.
-        # Open WebUI may not provide chat_id on the first message of a new
-        # chat (chat not yet saved to DB). This slot holds the server-side
-        # session_id until the real chat_id arrives on the second message.
-        self._pending_session_id: str | None = None
+        # Track which chats have been initialized.
+        # Maps chat_id -> {"session_id": str, "static_ctx": str | None}
+        # static_ctx holds cached instructions + core memories from the
+        # first turn, re-injected on every subsequent turn so the LLM
+        # always has memory context and managed-mode guidance.
+        self._sessions: dict[str, dict] = {}
+        # Pending session from first message when chat_id is not yet
+        # available.  Open WebUI may not provide chat_id on the first
+        # message of a new chat (chat not yet saved to DB).  This slot
+        # holds the session data until the real chat_id arrives on the
+        # second message.
+        self._pending_session: dict | None = None
 
     async def _post(self, path: str, payload: dict, user: dict) -> dict | None:
         """Make a POST request to mnemory REST API."""
@@ -135,6 +140,104 @@ class Filter:
         except Exception:
             return None  # Graceful degradation
 
+    def _strip_managed_tools(self, body: dict) -> None:
+        """Remove mnemory MCP tools the filter handles automatically.
+
+        Strips from both ``tool_ids`` (list of string identifiers) and
+        ``tools`` (list of tool-definition dicts) so the LLM never sees
+        the managed tools regardless of how Open WebUI passes them.
+        """
+        # Strip from tool_ids (list[str])
+        tool_ids = body.get("tool_ids")
+        if tool_ids:
+            body["tool_ids"] = [
+                t
+                for t in tool_ids
+                if not any(t.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES)
+            ]
+
+        # Strip from tools (list[dict]) — Open WebUI may pass full tool
+        # definitions here instead of (or in addition to) tool_ids.
+        tools = body.get("tools")
+        if tools and isinstance(tools, list):
+            body["tools"] = [t for t in tools if not self._is_managed_tool(t)]
+
+    def _is_managed_tool(self, tool: dict) -> bool:
+        """Check if a tool definition dict matches a managed tool suffix."""
+        # Try common fields where the tool name/id might appear
+        for key in ("id", "name", "tool_id"):
+            val = tool.get(key, "")
+            if val and any(val.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES):
+                return True
+        # Also check nested function.name (OpenAI tool format)
+        func = tool.get("function")
+        if isinstance(func, dict):
+            name = func.get("name", "")
+            if name and any(name.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES):
+                return True
+        return False
+
+    def _get_session(self, chat_id: str) -> dict | None:
+        """Look up or adopt a session for the given chat_id.
+
+        Handles the first-to-second-message transition where chat_id
+        appears after the pending session was already created.
+        """
+        if chat_id:
+            sess = self._sessions.get(chat_id)
+            if sess is None and self._pending_session:
+                sess = self._pending_session
+                self._sessions[chat_id] = sess
+                self._pending_session = None
+            return sess
+        return self._pending_session
+
+    def _save_session(
+        self,
+        chat_id: str,
+        session_id: str,
+        static_ctx: str | None = None,
+        *,
+        update_ctx: bool = False,
+    ) -> None:
+        """Store or update session data for a chat.
+
+        Args:
+            chat_id: Open WebUI chat ID (may be empty on first message).
+            session_id: Server-side session ID from recall response.
+            static_ctx: Cached instructions + core memories text.
+            update_ctx: If True, overwrite static_ctx even when the new
+                value is None (used on first turn to set the cache).
+                If False, preserve the existing static_ctx.
+        """
+        if chat_id:
+            existing = self._sessions.get(chat_id)
+            sess = {
+                "session_id": session_id,
+                "static_ctx": (
+                    static_ctx
+                    if update_ctx
+                    else (static_ctx or (existing["static_ctx"] if existing else None))
+                ),
+            }
+            self._sessions[chat_id] = sess
+            self._pending_session = None
+            # Evict oldest entries if over limit
+            if len(self._sessions) > self._MAX_SESSIONS:
+                excess = len(self._sessions) - self._MAX_SESSIONS
+                for key in list(self._sessions)[:excess]:
+                    del self._sessions[key]
+        else:
+            existing = self._pending_session
+            self._pending_session = {
+                "session_id": session_id,
+                "static_ctx": (
+                    static_ctx
+                    if update_ctx
+                    else (static_ctx or (existing["static_ctx"] if existing else None))
+                ),
+            }
+
     async def inlet(
         self,
         body: dict,
@@ -154,29 +257,11 @@ class Filter:
         # The filter handles recall automatically — these tools would
         # only waste tokens in the tools[] array on every LLM request.
         if self.valves.strip_redundant_mcp_tools:
-            tool_ids = body.get("tool_ids")
-            if tool_ids:
-                body["tool_ids"] = [
-                    t
-                    for t in tool_ids
-                    if not any(t.endswith(s) for s in self._MANAGED_TOOL_SUFFIXES)
-                ]
+            self._strip_managed_tools(body)
 
         chat_id = body.get("chat_id") or ""
-
-        # Look up or adopt server-side session for dedup tracking.
-        # Open WebUI may not provide chat_id on the first message of a
-        # new chat (chat not yet saved to DB).  When the real chat_id
-        # arrives on the second message, adopt the pending session so
-        # known_ids for dedup are preserved across the transition.
-        if chat_id:
-            session_id = self._sessions.get(chat_id)
-            if session_id is None and self._pending_session_id:
-                session_id = self._pending_session_id
-                self._sessions[chat_id] = session_id
-                self._pending_session_id = None
-        else:
-            session_id = self._pending_session_id
+        sess = self._get_session(chat_id)
+        session_id = sess["session_id"] if sess else None
 
         # Determine first turn from conversation history, not session
         # tracking.  Session-based detection is unreliable because
@@ -186,8 +271,11 @@ class Filter:
         user_msg_count = sum(1 for m in messages if m.get("role") == "user")
         is_first = user_msg_count <= 1
 
-        # In first_only mode, skip recall on subsequent messages entirely
+        # In first_only mode, skip recall on subsequent messages.
+        # Still inject cached static context so the LLM keeps its
+        # memory instructions and core memories.
         if not is_first and self.valves.recall_mode == "first_only":
+            self._inject_static_context(body, sess)
             return body
 
         # Extract query from last user message
@@ -199,7 +287,8 @@ class Filter:
                 break
 
         if not query and not is_first:
-            return body  # No query on subsequent turn — skip
+            self._inject_static_context(body, sess)
+            return body  # No query on subsequent turn — skip search
 
         # Show status (admin valve AND user valve must both be true)
         show_status = self.valves.show_status
@@ -235,48 +324,65 @@ class Filter:
 
         result = await self._post("/api/recall", payload, __user__)
 
+        # Update session tracking
         if result and result.get("session_id"):
-            if chat_id:
-                self._sessions[chat_id] = result["session_id"]
-                self._pending_session_id = None
-                # Evict oldest entries if over limit to prevent unbounded growth
-                if len(self._sessions) > self._MAX_SESSIONS:
-                    excess = len(self._sessions) - self._MAX_SESSIONS
-                    for key in list(self._sessions)[:excess]:
-                        del self._sessions[key]
-            else:
-                self._pending_session_id = result["session_id"]
+            # On first turn, cache instructions + core memories as
+            # static context.  This text is re-injected at a fixed
+            # early position on every subsequent turn so it becomes
+            # part of the stable prompt prefix (good for caching).
+            static_ctx = None
+            if is_first:
+                static_parts = []
+                if result.get("instructions"):
+                    static_parts.append(result["instructions"])
+                if result.get("core_memories"):
+                    static_parts.append(result["core_memories"])
+                static_ctx = "\n\n".join(static_parts) if static_parts else None
 
-        # Build injection text
-        parts = []
-        if result:
-            if result.get("instructions"):
-                parts.append(result["instructions"])
-            if result.get("core_memories"):
-                parts.append(result["core_memories"])
-            if result.get("search_results"):
-                memories_text = "\n".join(
-                    f"- {m['memory']}"
-                    for m in result["search_results"]
-                    if m.get("memory")
-                )
-                if memories_text:
-                    parts.append(f"## Recalled Memories\n{memories_text}")
-
-        if parts:
-            # Append after the last user message to preserve the
-            # conversation prefix for LLM prompt caching.  The entire
-            # conversation history (system prompt, prior user/assistant
-            # exchanges, and the current user message) forms a stable,
-            # append-only prefix that OpenAI can cache across turns.
-            # Inserting *before* the last user message would shift the
-            # cached prefix boundary on every turn, breaking the cache.
-            body["messages"].append(
-                {
-                    "role": "system",
-                    "content": "\n\n".join(parts),
-                },
+            self._save_session(
+                chat_id,
+                result["session_id"],
+                static_ctx,
+                update_ctx=is_first,
             )
+            # Re-read session after save so we have the latest data
+            sess = self._get_session(chat_id)
+
+        # --- Inject context into messages ---
+        #
+        # Two-position injection for optimal prompt caching:
+        #
+        # 1. STATIC CONTEXT (instructions + core memories):
+        #    Inserted at a fixed early position — after the initial
+        #    system message(s), before the first user message.  This
+        #    becomes part of the stable, cacheable prompt prefix:
+        #      [sys_prompt] [STATIC_CTX] [user_1] [asst_1] [user_2] ...
+        #    Cached from the first turn onward; never re-processed.
+        #
+        # 2. DYNAMIC CONTEXT (new search results):
+        #    Appended after the last user message.  Changes every turn
+        #    so it sits outside the cached prefix.
+        #
+        # This is strictly better for caching than the previous approach
+        # of appending everything after the last user message, because
+        # the static context (often 1-2k tokens) is cached instead of
+        # being re-processed on every turn.
+
+        # 1. Static context — always inject from cache
+        self._inject_static_context(body, sess)
+
+        # 2. Dynamic context — new search results from this turn
+        if result and result.get("search_results"):
+            memories_text = "\n".join(
+                f"- {m['memory']}" for m in result["search_results"] if m.get("memory")
+            )
+            if memories_text:
+                body["messages"].append(
+                    {
+                        "role": "system",
+                        "content": f"## Recalled Memories\n{memories_text}",
+                    },
+                )
 
         # Show detailed status with stats
         if __event_emitter__ and show_status:
@@ -289,6 +395,35 @@ class Filter:
             )
 
         return body
+
+    @staticmethod
+    def _inject_static_context(body: dict, sess: dict | None) -> None:
+        """Inject cached static context at a fixed early position.
+
+        Inserts after the initial system message(s), before the first
+        user message.  This keeps the static context as part of the
+        stable prompt prefix for LLM prompt caching.
+        """
+        if not sess or not sess.get("static_ctx"):
+            return
+
+        messages = body.get("messages", [])
+        # Find insertion point: after consecutive system messages at
+        # the start of the conversation.
+        insert_idx = 0
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "system":
+                insert_idx = i + 1
+            else:
+                break
+
+        messages.insert(
+            insert_idx,
+            {
+                "role": "system",
+                "content": sess["static_ctx"],
+            },
+        )
 
     @staticmethod
     def _build_status(result: dict | None, is_first: bool) -> str:
@@ -330,7 +465,8 @@ class Filter:
             return body
 
         chat_id = body.get("chat_id", "")
-        session_id = self._sessions.get(chat_id)
+        sess = self._get_session(chat_id)
+        session_id = sess["session_id"] if sess else None
         messages = body.get("messages", [])
 
         # Only user/assistant messages — exclude system prompts and tool results
