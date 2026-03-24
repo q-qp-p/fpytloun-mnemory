@@ -483,6 +483,20 @@ class MemoryConfig:
 
     # ── Consolidation settings ────────────────────────────────────
 
+    # Consolidation — optional separate LLM model (empty = fall back to
+    # FSCK_LLM_MODEL, then to main LLM_MODEL). Consolidation benefits from
+    # a stronger model since it synthesizes durable knowledge.
+    consolidation_model: str = field(
+        default_factory=lambda: _env("CONSOLIDATION_LLM_MODEL", "")
+    )
+
+    # Consolidation — reasoning effort. Defaults to "low" because
+    # consolidation processes pre-extracted content (not raw user input)
+    # and benefits more from throughput than deep reasoning.
+    consolidation_reasoning_effort: str | None = field(
+        default_factory=lambda: _env("CONSOLIDATION_REASONING_EFFORT", "low") or None
+    )
+
     # Minimum idle time (seconds) before a session is eligible for
     # within-session consolidation. Default 1 hour.
     consolidation_idle_threshold: int = field(

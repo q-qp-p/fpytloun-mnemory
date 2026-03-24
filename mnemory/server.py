@@ -2025,10 +2025,34 @@ async def lifespan(app):
     from mnemory.consolidation import ConsolidationService
     from mnemory.maintenance import MaintenanceService
 
+    # Use a separate LLM client for consolidation if configured.
+    # Priority: CONSOLIDATION_LLM_MODEL > FSCK_LLM_MODEL > main LLM_MODEL
+    consolidation_model = cfg.memory.consolidation_model or cfg.memory.fsck_model
+    consolidation_reasoning = cfg.memory.consolidation_reasoning_effort
+    if consolidation_model:
+        from mnemory.config import LLMConfig
+        from mnemory.llm import LLMClient
+
+        consolidation_llm_config = LLMConfig(
+            model=consolidation_model,
+            base_url=cfg.llm.base_url,
+            api_key=cfg.llm.api_key,
+            temperature=cfg.llm.temperature,
+            reasoning_effort=consolidation_reasoning,
+        )
+        consolidation_llm = LLMClient(consolidation_llm_config)
+        logger.info(
+            "Consolidation using model=%s reasoning=%s",
+            consolidation_model,
+            consolidation_reasoning or "default",
+        )
+    else:
+        consolidation_llm = service._llm
+
     consolidation = ConsolidationService(
         config=cfg,
         vector=service.vector,
-        llm=service._llm,
+        llm=consolidation_llm,
         embedding=service.vector.embedding,
         memory_service=service,
         session_summary_store=service._session_summary_store,
