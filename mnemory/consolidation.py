@@ -183,6 +183,15 @@ class ConsolidationService:
             # User and assistant memories are consolidated independently
             # with separate LLM calls. This ensures assistant actions are
             # not drowned out by user-focused synthesis.
+            #
+            # Both passes ALWAYS run (even with 0 raw memories for a role)
+            # because the session summary may contain facts for a role that
+            # the remember endpoint didn't extract as raw memories. The LLM
+            # can extract durable knowledge from the summary alone.
+            #
+            # User consolidation runs first. Its output is passed as
+            # read-only context to the assistant pass to prevent cross-role
+            # duplication (e.g., the same commit attributed to both roles).
             user_raw = [
                 m
                 for m in raw_memories
@@ -206,14 +215,26 @@ class ConsolidationService:
                 if (m.get("metadata") or {}).get("role") == "assistant"
             ]
 
+            # Only run assistant pass if there's an agent_id (required for
+            # assistant-role memories) AND either raw memories or a
+            # substantive summary to extract from.
+            # NOTE: explicit bool() on assistant_raw to avoid Python's
+            # short-circuit returning the list itself (which would leak
+            # memory contents into log lines).
+            run_assistant = bool(agent_id) and (
+                bool(assistant_raw) or len(summary) > 50
+            )
+
             logger.info(
                 "Consolidation session %s: %d user raw, %d assistant raw, "
-                "%d prev user consolidated, %d prev assistant consolidated",
+                "%d prev user consolidated, %d prev assistant consolidated, "
+                "run_assistant=%s",
                 session_id,
                 len(user_raw),
                 len(assistant_raw),
                 len(prev_user),
                 len(prev_assistant),
+                run_assistant,
             )
 
             all_consolidated_facts: list[dict] = []
@@ -222,22 +243,24 @@ class ConsolidationService:
             # Derive session date for event_date context
             session_date = (session.get("created_at") or "")[:10] or None
 
-            # Consolidate user memories
-            if user_raw:
-                user_facts, user_ids_map = self._consolidate_role(
-                    session_id=session_id,
-                    raw_memories=user_raw,
-                    role="user",
-                    summary=summary,
-                    artifact_ids=artifact_ids,
-                    previous_consolidated=prev_user,
-                    session_date=session_date,
-                )
-                all_consolidated_facts.extend(user_facts)
-                all_raw_ids_map.extend(user_ids_map)
+            # Consolidate user memories (always runs — summary may contain
+            # user decisions even when no user-role raw memories exist)
+            user_facts, user_ids_map = self._consolidate_role(
+                session_id=session_id,
+                raw_memories=user_raw,
+                role="user",
+                summary=summary,
+                artifact_ids=artifact_ids,
+                previous_consolidated=prev_user,
+                session_date=session_date,
+            )
+            all_consolidated_facts.extend(user_facts)
+            all_raw_ids_map.extend(user_ids_map)
 
-            # Consolidate assistant memories
-            if assistant_raw:
+            # Consolidate assistant memories (runs when agent_id is set
+            # and there's content to consolidate). User consolidated output
+            # is passed as cross-role context to prevent duplication.
+            if run_assistant:
                 asst_facts, asst_ids_map = self._consolidate_role(
                     session_id=session_id,
                     raw_memories=assistant_raw,
@@ -246,6 +269,7 @@ class ConsolidationService:
                     artifact_ids=artifact_ids,
                     previous_consolidated=prev_assistant,
                     session_date=session_date,
+                    other_role_consolidated=user_facts,
                 )
                 all_consolidated_facts.extend(asst_facts)
                 all_raw_ids_map.extend(asst_ids_map)
@@ -420,6 +444,10 @@ class ConsolidationService:
 
     def _fetch_raw_memories(self, memory_ids: list[str], user_id: str) -> list[dict]:
         """Fetch raw memories by IDs, filtering to only unsuperseded raw."""
+        # Deduplicate IDs (preserve order) — sessions may accumulate
+        # duplicate IDs from the remember endpoint's dedup-update path.
+        memory_ids = list(dict.fromkeys(memory_ids))
+
         memories = []
         not_found = 0
         skipped_layer = 0
@@ -471,11 +499,17 @@ class ConsolidationService:
         artifact_ids: set[str],
         previous_consolidated: list[dict],
         session_date: str | None = None,
+        other_role_consolidated: list[dict] | None = None,
     ) -> tuple[list[dict], list[tuple[list[dict], list[str]]]]:
         """Consolidate raw memories for a single role (user or assistant).
 
         Handles batching when there are more memories than batch_size.
         Each batch gets accumulated context from prior batches.
+
+        Args:
+            other_role_consolidated: Consolidated facts from the other role's
+                pass (e.g., user facts when consolidating assistant). Passed
+                as read-only context to prevent cross-role duplication.
 
         Returns:
             Tuple of (all_facts, raw_ids_map) where:
@@ -533,6 +567,7 @@ class ConsolidationService:
                 artifact_memory_ids=batch_artifact_ids,
                 previous_consolidated=full_context if full_context else None,
                 session_date=session_date,
+                other_role_consolidated=other_role_consolidated,
             )
 
             response_text = self._llm.generate(

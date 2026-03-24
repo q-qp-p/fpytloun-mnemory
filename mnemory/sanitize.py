@@ -35,6 +35,7 @@ _BOUNDARY_TAGS = {
     "previous_consolidated": ("⟨previous_consolidated⟩", "⟨/previous_consolidated⟩"),
     "consolidation_input": ("⟨consolidation_input⟩", "⟨/consolidation_input⟩"),
     "cross_session_input": ("⟨cross_session_input⟩", "⟨/cross_session_input⟩"),
+    "other_role": ("⟨other_role⟩", "⟨/other_role⟩"),
 }
 
 

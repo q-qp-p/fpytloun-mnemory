@@ -132,6 +132,21 @@ class TestFetchRawMemories:
         assert len(result) == 2
         assert {r["id"] for r in result} == {"m1", "m2"}
 
+    def test_deduplicates_memory_ids(self):
+        """Duplicate memory IDs should be fetched only once."""
+        vector = MagicMock()
+        vector.get_by_id.return_value = {
+            "id": "m1",
+            "memory": "fact 1",
+            "metadata": {"memory_layer": "raw"},
+        }
+        service = _make_service(vector)
+        result = service._fetch_raw_memories(["m1", "m1", "m1", "m1"], "user-1")
+        assert len(result) == 1
+        assert result[0]["id"] == "m1"
+        # get_by_id should be called only once despite 4 duplicate IDs
+        assert vector.get_by_id.call_count == 1
+
 
 class TestReConsolidationStateReset:
     """Tests for re-consolidation state reset in SessionSummaryStore.upsert()."""
@@ -376,3 +391,298 @@ class TestConsolidationPromptWithPrevious:
         assert "role" not in item_props
         item_required = schema["schema"]["properties"]["memories"]["items"]["required"]
         assert "role" not in item_required
+
+    def test_prompt_with_no_raw_memories(self):
+        """Prompt should work with empty raw memories (summary-only extraction)."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, schema = build_consolidation_prompt(
+            summary="User decided to use PostgreSQL for billing. Assistant recommended Redis for caching.",
+            role="user",
+            raw_memories=[],
+        )
+
+        user_msg = messages[1]["content"]
+        assert "(no raw memories)" in user_msg
+        assert "PostgreSQL" in user_msg
+        # System prompt should mention summary-only extraction
+        system_msg = messages[0]["content"]
+        assert "summary" in system_msg.lower()
+
+    def test_prompt_includes_other_role_context(self):
+        """When other_role_consolidated is provided, prompt should include cross-role section."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, _ = build_consolidation_prompt(
+            summary="Test summary",
+            role="assistant",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "Assistant committed changes as e3a3f72",
+                    "metadata": {
+                        "memory_type": "episodic",
+                        "importance": "normal",
+                        "categories": ["technical"],
+                    },
+                },
+            ],
+            other_role_consolidated=[
+                {"text": "User committed the mnemory changes as commit e3a3f72."},
+            ],
+        )
+
+        user_msg = messages[1]["content"]
+        assert "Already Consolidated" in user_msg
+        assert "user role" in user_msg
+        assert "e3a3f72" in user_msg
+        assert "Do NOT duplicate" in user_msg
+
+    def test_prompt_without_other_role_context(self):
+        """When no other_role_consolidated, prompt should not include cross-role section."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, _ = build_consolidation_prompt(
+            summary="Test summary",
+            role="user",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "User likes Python",
+                    "metadata": {
+                        "memory_type": "preference",
+                        "importance": "normal",
+                        "categories": [],
+                    },
+                },
+            ],
+        )
+
+        user_msg = messages[1]["content"]
+        assert "Already Consolidated" not in user_msg
+
+    def test_prompt_merge_instruction_is_conservative(self):
+        """System prompt should instruct to keep separate memories when details differ."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, _ = build_consolidation_prompt(
+            summary="Test",
+            role="user",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "Test",
+                    "metadata": {
+                        "memory_type": "fact",
+                        "importance": "normal",
+                        "categories": [],
+                    },
+                },
+            ],
+        )
+
+        system_msg = messages[0]["content"]
+        assert "truly redundant" in system_msg
+        assert "SEPARATE" in system_msg
+
+    def test_prompt_category_reclassification_instruction(self):
+        """System prompt should instruct to reclassify wrong categories."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, _ = build_consolidation_prompt(
+            summary="Test",
+            role="user",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "Test",
+                    "metadata": {
+                        "memory_type": "fact",
+                        "importance": "normal",
+                        "categories": [],
+                    },
+                },
+            ],
+        )
+
+        system_msg = messages[0]["content"]
+        assert "Reclassify categories" in system_msg
+        assert 'use "home" rather than "project:home"' in system_msg
+
+    def test_prompt_distinguishes_recalled_from_new_decision(self):
+        """User prompt should avoid turning recalled knowledge into a new decision."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, _ = build_consolidation_prompt(
+            summary="User recalled a prior pruning plan for the mirobalan tree.",
+            role="user",
+            raw_memories=[],
+        )
+
+        system_msg = messages[0]["content"]
+        assert "Distinguish NEW decisions from recalled prior knowledge" in system_msg
+        assert "merely recalls or restates" in system_msg
+
+    def test_prompt_prefers_implementation_over_same_session_recommendation(self):
+        """Assistant prompt should prefer implementation over same-session recommendation."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, _ = build_consolidation_prompt(
+            summary="Assistant recommended and then implemented the same fix.",
+            role="assistant",
+            raw_memories=[],
+        )
+
+        system_msg = messages[0]["content"]
+        assert "prefer the IMPLEMENTATION memory" in system_msg
+        assert "Do not emit both a recommendation and an implementation" in system_msg
+
+    def test_prompt_enforces_one_memory_one_takeaway(self):
+        """Prompt should discourage combining multiple durable takeaways."""
+        from mnemory.prompts import build_consolidation_prompt
+
+        messages, _ = build_consolidation_prompt(
+            summary="User approved the change and stated an ongoing goal.",
+            role="user",
+            raw_memories=[],
+        )
+
+        system_msg = messages[0]["content"]
+        assert "One memory = one durable takeaway" in system_msg
+
+
+class TestConsolidationAlwaysRunsBothPasses:
+    """Tests for the always-run-both-passes behavior in consolidation."""
+
+    def test_user_pass_runs_with_no_user_raw_memories(self):
+        """User consolidation should run even with 0 user raw memories."""
+        import json
+
+        service = _make_service()
+        service._config.memory.consolidation_batch_size = 100
+
+        # Mock LLM to return a user decision extracted from summary
+        service._llm.generate.return_value = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "User decided to prune the maple gently",
+                        "memory_type": "episodic",
+                        "categories": ["home"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": "2026-03-24",
+                    }
+                ]
+            }
+        )
+
+        facts, ids_map = service._consolidate_role(
+            session_id="ses-1",
+            raw_memories=[],  # No user raw memories
+            role="user",
+            summary="User decided to prune the maple more gently. Assistant recommended a conservative pruning strategy.",
+            artifact_ids=set(),
+            previous_consolidated=[],
+            session_date="2026-03-24",
+        )
+
+        # LLM should have been called (summary-only extraction)
+        assert service._llm.generate.called
+        assert len(facts) == 1
+        assert facts[0]["text"] == "User decided to prune the maple gently"
+        assert facts[0]["role"] == "user"
+
+    def test_assistant_pass_receives_user_consolidated_context(self):
+        """Assistant consolidation should receive user facts as cross-role context."""
+        import json
+
+        service = _make_service()
+        service._config.memory.consolidation_batch_size = 100
+
+        service._llm.generate.return_value = json.dumps(
+            {
+                "memories": [
+                    {
+                        "text": "Assistant recommended conservative maple pruning",
+                        "memory_type": "episodic",
+                        "categories": ["home"],
+                        "importance": "normal",
+                        "pinned": False,
+                        "event_date": "2026-03-24",
+                    }
+                ]
+            }
+        )
+
+        user_facts = [
+            {"text": "User decided to prune the maple gently"},
+        ]
+
+        facts, _ = service._consolidate_role(
+            session_id="ses-1",
+            raw_memories=[
+                {
+                    "id": "m1",
+                    "memory": "Assistant recommended conservative pruning",
+                    "metadata": {
+                        "memory_type": "episodic",
+                        "role": "assistant",
+                        "importance": "normal",
+                        "categories": ["home"],
+                    },
+                },
+            ],
+            role="assistant",
+            summary="Test summary",
+            artifact_ids=set(),
+            previous_consolidated=[],
+            session_date="2026-03-24",
+            other_role_consolidated=user_facts,
+        )
+
+        # Verify the LLM was called with a prompt containing cross-role context
+        call_args = service._llm.generate.call_args
+        messages = call_args[0][0]
+        user_msg = messages[1]["content"]
+        assert "Already Consolidated" in user_msg
+        assert "User decided to prune the maple gently" in user_msg
+
+    def test_assistant_pass_skipped_without_agent_id(self):
+        """When agent_id is None, assistant pass should not run."""
+        service = _make_service()
+        service._config.memory.consolidation_batch_size = 100
+
+        # Set up session with no agent_id
+        service._sessions.get.return_value = {
+            "session_id": "ses-1",
+            "user_id": "user-1",
+            "agent_id": None,
+            "memory_ids": ["m1"],
+            "summary": "Test summary with enough content to be substantive for the test",
+            "created_at": "2026-03-24T00:00:00+00:00",
+        }
+        service._sessions.list_for_user.return_value = []
+
+        # Only user raw memories
+        service._vector.get_by_id.return_value = {
+            "id": "m1",
+            "memory": "User likes Python",
+            "metadata": {
+                "memory_layer": "raw",
+                "role": "user",
+                "memory_type": "preference",
+                "importance": "normal",
+                "categories": ["technical"],
+            },
+        }
+
+        import json
+
+        service._llm.generate.return_value = json.dumps({"memories": []})
+        service._memory.add_memory.return_value = {"results": []}
+
+        result = service.consolidate_session("ses-1")
+
+        # LLM should be called exactly once (user pass only, no assistant pass)
+        assert service._llm.generate.call_count == 1

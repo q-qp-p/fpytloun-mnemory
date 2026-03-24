@@ -1176,6 +1176,44 @@ class TestBuildRememberExtractionPrompt:
         user_msg = messages[1]["content"]
         assert "assistant: I prefer" not in user_msg
 
+    def test_auto_prompt_treats_pasted_session_data_as_reference_material(self):
+        """Auto prompt should tell the model not to re-ingest pasted session exports."""
+        messages, _ = build_remember_extraction_prompt("test content", role=None)
+        system = messages[0]["content"]
+        assert "REFERENCE MATERIAL" in system
+        assert "Do NOT re-extract the underlying quoted facts" in system
+        assert "session exports" in system
+
+    def test_user_prompt_treats_pasted_session_data_as_reference_material(self):
+        """User prompt should tell the model to extract only new review outcomes."""
+        messages, _ = build_remember_extraction_prompt("test content", role="user")
+        system = messages[0]["content"]
+        assert "REFERENCE MATERIAL" in system
+        assert "review, correction, approval, or rejection" in system
+        assert "elliptical trainer" in system
+
+    def test_assistant_prompt_treats_pasted_session_data_as_reference_material(self):
+        """Assistant prompt should treat pasted quoted assistant facts as reference."""
+        messages, _ = build_remember_extraction_prompt("test content", role="assistant")
+        system = messages[0]["content"]
+        assert "REFERENCE MATERIAL" in system
+        assert "diagnosis, conclusion, recommendation, or fix proposal" in system
+        assert "Do NOT re-extract the underlying quoted facts" in system
+
+    def test_user_prompt_requires_specific_project_names(self):
+        """User prompt should reject project names that just repeat broad categories."""
+        messages, _ = build_remember_extraction_prompt("test content", role="user")
+        system = messages[0]["content"]
+        assert "project:<specific-name>" in system
+        assert 'use "home" rather than "project:home"' in system
+
+    def test_auto_prompt_requires_specific_project_names(self):
+        """Auto prompt should require specific project-scoped category names."""
+        messages, _ = build_remember_extraction_prompt("test content", role=None)
+        system = messages[0]["content"]
+        assert "project:<specific-name>" in system
+        assert "repeat a broad category" in system
+
 
 # ── build_extraction_prompt content normalisation ─────────────────────
 

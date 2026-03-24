@@ -278,6 +278,25 @@ You are a memory manager for an AI assistant. Your job is to:
   unique — if two pieces of information overlap, merge them into
   a single fact.
 
+### Quoted and reference material
+
+- If the conversation includes pasted logs, session exports, memory dumps,
+  UI excerpts, transcripts, diagnostic output, or quoted historical records,
+  treat that content as REFERENCE MATERIAL being reviewed, not as fresh
+  facts to remember.
+- Do NOT re-extract the underlying quoted facts as new memories just because
+  they appear in the pasted material.
+- Instead, extract only what is NEW in the current exchange:
+  - the user's review, correction, approval, or rejection
+  - the assistant's diagnosis, conclusion, or recommendation about the
+    pasted material
+  - any explicit confirmation that a quoted fact is still true now
+- Only extract a quoted historical fact itself when the user explicitly
+  reaffirms it, corrects it, updates it, or asks to remember it now.
+- Example: if the user pastes a session excerpt containing
+  "User owns an elliptical trainer", do NOT store that ownership fact again
+  unless the current exchange explicitly reaffirms or updates it.
+
 ### Examples
 
 Input: "Hi, how are you?"
@@ -436,10 +455,11 @@ For each extracted fact, classify:
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
-  clearly involves a specific named project, create a subcategory by
-  appending the project name (e.g., project:mnemory, project:argocd-apps).
-  Only do this when the project name is clearly identifiable from the
-  content or additional context — do not guess.
+  clearly involves a specific named project, initiative, or effort, create
+  a subcategory as "project:<specific-name>". Only do this when the name is
+  clearly identifiable from the content or additional context — do not guess.
+  The name must add specific scope, not just repeat a broad category.
+  For example, use "home" rather than "project:home".
 
 - **importance**: {importance_levels}
   - low = minor details, temporary notes
@@ -683,10 +703,11 @@ For each extracted fact, classify:
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
-  clearly involves a specific named project, create a subcategory by
-  appending the project name (e.g., project:mnemory, project:argocd-apps).
-  Only do this when the project name is clearly identifiable from the
-  content or additional context — do not guess.
+  clearly involves a specific named project, initiative, or effort, create
+  a subcategory as "project:<specific-name>". Only do this when the name is
+  clearly identifiable from the content or additional context — do not guess.
+  The name must add specific scope, not just repeat a broad category.
+  For example, use "home" rather than "project:home".
 
 - **importance**: {importance_levels}
   - low = minor details
@@ -1128,8 +1149,10 @@ def build_classification_prompt(
         field_instructions.append(
             f'"categories": list of applicable categories from [{cats}]. '
             '"project" is for general project content; create a subcategory '
-            "by appending the project name (e.g., project:mnemory) when "
-            "clearly identifiable. "
+            'as "project:<specific-name>" only when a specific project, '
+            "initiative, or effort is clearly identifiable. Do NOT use "
+            '"project:<name>" if <name> merely repeats a broad predefined '
+            "category like home, work, health, or technical. "
             "Empty list [] if no category fits."
         )
         schema_props["categories"] = {
@@ -1725,6 +1748,25 @@ You are a memory extraction system. Your job is to:
   unique — if two pieces of information overlap, merge them into
   a single fact.
 
+### Quoted and reference material
+
+- If the conversation includes pasted logs, session exports, memory dumps,
+  UI excerpts, transcripts, diagnostic output, or quoted historical records,
+  treat that content as REFERENCE MATERIAL being reviewed, not as fresh
+  facts to remember.
+- Do NOT re-extract the underlying quoted facts as new memories just because
+  they appear in the pasted material.
+- Instead, extract only what is NEW in the current exchange:
+  - the user's review, correction, approval, or rejection
+  - the assistant's diagnosis, conclusion, or recommendation about the
+    pasted material
+  - any explicit confirmation that a quoted fact is still true now
+- Only extract a quoted historical fact itself when the user explicitly
+  reaffirms it, corrects it, updates it, or asks to remember it now.
+- Example: if the user pastes a session excerpt containing
+  "User owns an elliptical trainer", do NOT store that ownership fact again
+  unless the current exchange explicitly reaffirms or updates it.
+
 ### Extraction Categories (what to look for)
 
 Use these categories to guide what you extract:
@@ -1799,8 +1841,10 @@ For each extracted fact, classify:
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
-  clearly involves a specific named project, create a subcategory by
-  appending the project name (e.g., project:mnemory, project:argocd-apps).
+  clearly involves a specific named project, initiative, or effort, create
+  a subcategory as "project:<specific-name>".
+  The name must add specific scope, not just repeat a broad category.
+  For example, use "home" rather than "project:home".
   Only do this when the project name is clearly identifiable from the
   content or additional context — do not guess.
 
@@ -2121,6 +2165,22 @@ You are a memory extraction system for an AI assistant. Your job is to:
   annotations to extracted facts.
 - Do not extract the same fact twice. Each extracted fact must be unique —
   if two pieces of information overlap, merge them into a single fact.
+
+## Quoted and reference material
+
+- If the conversation includes pasted logs, session exports, memory dumps,
+  UI excerpts, transcripts, diagnostic output, or quoted historical records,
+  treat that content as REFERENCE MATERIAL being reviewed, not as fresh
+  facts to remember.
+- Do NOT re-extract the underlying quoted facts as new assistant memories
+  just because they appear in pasted material.
+- Instead, extract only what is NEW in the current exchange:
+  - the assistant's diagnosis, conclusion, recommendation, or fix proposal
+    about the pasted material
+  - the assistant's implementation or change made in response
+  - any explicit confirmation that a quoted assistant fact is still current
+- Only extract a quoted historical assistant fact itself when the current
+  exchange explicitly reaffirms, corrects, updates, or acts on it.
 
 ## Classification Rules
 
@@ -2491,6 +2551,25 @@ memory types:
 - Do not extract the same fact twice. Each extracted fact must be
   unique — if two pieces of information overlap, merge them.
 
+### Quoted and reference material
+
+- If the conversation includes pasted logs, session exports, memory dumps,
+  UI excerpts, transcripts, diagnostic output, or quoted historical records,
+  treat that content as REFERENCE MATERIAL being reviewed, not as fresh
+  facts to remember.
+- Do NOT re-extract the underlying quoted facts as new memories just because
+  they appear in pasted material.
+- Instead, extract only what is NEW in the current exchange:
+  - the user's review, correction, approval, rejection, or confirmation
+  - the assistant's diagnosis, conclusion, recommendation, or action
+    about the pasted material
+  - any explicit confirmation that a quoted fact is still true now
+- Only extract a quoted historical fact itself when the current exchange
+  explicitly reaffirms it, corrects it, updates it, or asks to remember it.
+- Example: if the user pastes a session excerpt containing
+  "User owns an elliptical trainer", do NOT store that ownership fact again
+  unless the current exchange explicitly reaffirms or updates it.
+
 ## Classification Rules
 
 For each extracted fact, classify:
@@ -2518,8 +2597,10 @@ For each extracted fact, classify:
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
-  clearly involves a specific named project, create a subcategory by
-  appending the project name (e.g., project:mnemory, project:argocd-apps).
+  clearly involves a specific named project, initiative, or effort, create
+  a subcategory as "project:<specific-name>".
+  The name must add specific scope, not just repeat a broad category.
+  For example, use "home" rather than "project:home".
 
 - **importance**: {importance_levels}
   - low = minor details, temporary notes
@@ -3850,10 +3931,12 @@ new memories. Do NOT invent categories not on this list.
 {categories_list}
 
 "project" is a valid category for general project-related content. Use \
-"project:<name>" only when a specific project name is known (e.g., \
-"project:myapp"). Do NOT change "project" to "project:<name>" unless the \
-memory clearly and unambiguously belongs to a specific named project — \
-never guess or infer a project name. \
+"project:<name>" only when a specific project or effort name is known. \
+Do NOT change "project" to "project:<name>" unless the memory clearly and \
+unambiguously belongs to a specific named project or effort, and the name \
+adds specific scope rather than merely repeating a broad category. \
+For example, prefer "home" over "project:home". \
+Never guess or infer a project name. \
 If no predefined category fits, use [] rather than making one up.
 
 ## Rules
@@ -4119,6 +4202,15 @@ You are a memory consolidation system. Given a conversation summary and
 individual raw memories about the USER, synthesize durable user knowledge
 that would be valuable in FUTURE conversations.
 
+## Priority order
+
+When sources differ, use this order:
+
+1. Raw memories = primary source for concrete details
+2. Session summary = recover durable facts missing from raw memories
+3. Previously consolidated memories = dedup context only
+4. Other-role consolidated memories = cross-role dedup context only
+
 ## Instructions
 
 - Extract ONLY durable user knowledge: decisions, preferences, constraints,
@@ -4147,6 +4239,29 @@ that would be valuable in FUTURE conversations.
 - Set importance based on durability and impact (low, normal, high, critical)
 - For memories referencing detailed artifacts, note the artifact source
 - If a raw memory is already well-formed and durable, keep it as-is
+- Set pinned=false by default. Set pinned=true ONLY for essential long-lived
+  identity facts, standing rules, or critical ongoing constraints.
+
+## Attribution rules
+
+- If the same event appears for both roles, do NOT duplicate it across roles.
+- Prefer USER role for decisions, preferences, constraints, goals, and facts
+  about the user.
+- Prefer ASSISTANT role for implementations, commits, deployments, research
+  conclusions, and recommendations made by the assistant.
+- Emit both roles ONLY when they represent two independently useful durable
+  memories, such as a user decision and the assistant implementation of it.
+
+## Decision rules
+
+- Distinguish NEW decisions from recalled prior knowledge.
+- If the session merely recalls or restates an existing plan, preference,
+  or fact without reaffirming, changing, or newly deciding it, do NOT emit
+  a new episodic decision memory.
+- Emit a user decision memory only when the user clearly chose, approved,
+  rejected, changed, or reaffirmed something in this session.
+- If a prior plan is explicitly reaffirmed or changed in this session,
+  capture the reaffirmation/change, not a vague re-statement of old context.
 
 ## What to extract
 
@@ -4186,6 +4301,54 @@ that would be valuable in FUTURE conversations.
   inventing memories.
 - Each memory must pass the test: "Would this be useful in a completely
   different future conversation?" If not, do not include it.
+- Merge raw memories ONLY when they are truly redundant (same information,
+  different wording). If memories contain different details or aspects of
+  the same topic, keep them as SEPARATE consolidated memories or ensure
+  the merged version preserves ALL key details. Never lose specific
+  technical details, recommendations, or constraints in a merge.
+- Reclassify categories if the raw memory categories clearly do not match
+  the actual topic. For example, garden/home topics should use "home",
+  not "project". Use "project:<name>" only when the name adds specific
+  scope; if the name merely repeats a broad category, replace it with the
+  broad category instead (for example, use "home" rather than "project:home").
+- Use the MOST SPECIFIC valid category. If "project:<name>" applies, do
+  NOT also output the generic "project" category.
+- Do not omit a durable item merely because another memory covers the same
+  topic. If two memories share a topic but contain different actionable
+  details, keep them separate or merge only if ALL key details survive.
+- A shorter memory is NOT better if it drops a recommendation, constraint,
+  or technical detail.
+- One memory = one durable takeaway. Do not combine multiple distinct
+  decisions, approvals, goals, or outcomes into a single memory unless they
+  are inseparable parts of the same durable fact.
+
+## Event date rules
+
+Use event_date in this order:
+
+1. Explicit date from a raw memory
+2. Explicit date stated in the summary
+3. Session date for same-session decisions/actions/events
+4. null if no date can be determined
+
+## Summary-only extraction
+
+If there are no raw memories but the session summary describes durable
+user knowledge (decisions, preferences, facts, actions), extract those
+from the summary. The summary is a reliable source — it was generated
+from the full conversation. Do NOT skip extraction just because there
+are no raw memories.
+
+## Final check before output
+
+For each memory, verify:
+
+- It is durable and useful in a future conversation
+- It is not already covered by previous consolidated memories
+- It is not duplicated from the other role
+- Categories are valid and specific
+- pinned is justified
+- No important detail was lost during merging
 """
 
 _CONSOLIDATION_ASSISTANT_SYSTEM_PROMPT = """\
@@ -4194,6 +4357,15 @@ _CONSOLIDATION_ASSISTANT_SYSTEM_PROMPT = """\
 You are a memory consolidation system. Given a conversation summary and
 individual raw memories about the ASSISTANT's actions, synthesize durable
 assistant knowledge that would be valuable in FUTURE conversations.
+
+## Priority order
+
+When sources differ, use this order:
+
+1. Raw memories = primary source for concrete details
+2. Session summary = recover durable facts missing from raw memories
+3. Previously consolidated memories = dedup context only
+4. Other-role consolidated memories = cross-role dedup context only
 
 ## Instructions
 
@@ -4222,6 +4394,29 @@ assistant knowledge that would be valuable in FUTURE conversations.
 - Set importance based on durability and impact (low, normal, high, critical)
 - For memories referencing detailed artifacts, note the artifact source
 - If a raw memory is already well-formed and durable, keep it as-is
+- Set pinned=false by default. Set pinned=true ONLY for essential long-lived
+  identity facts, standing rules, or critical ongoing constraints.
+
+## Attribution rules
+
+- If the same event appears for both roles, do NOT duplicate it across roles.
+- Prefer USER role for decisions, preferences, constraints, goals, and facts
+  about the user.
+- Prefer ASSISTANT role for implementations, commits, deployments, research
+  conclusions, and recommendations made by the assistant.
+- Emit both roles ONLY when they represent two independently useful durable
+  memories, such as a user decision and the assistant implementation of it.
+
+## Recommendation vs implementation rules
+
+- If the assistant recommended an approach and then implemented that same
+  approach in the same session, prefer the IMPLEMENTATION memory.
+- Keep a separate recommendation memory only if the recommendation itself
+  has durable design value that would still matter independently of the
+  implementation.
+- Do not emit both a recommendation and an implementation when the
+  recommendation adds no lasting information beyond what the implementation
+  memory already captures.
 
 ## What to extract
 
@@ -4265,8 +4460,54 @@ assistant knowledge that would be valuable in FUTURE conversations.
   preferred over inventing memories.
 - Each memory must pass the test: "Would knowing this be useful in a
   completely different future conversation?" If not, do not include it.
-- Merge related raw memories into one consolidated memory when they
-  describe the same action or finding from different angles.
+- Merge raw memories ONLY when they are truly redundant (same information,
+  different wording). If memories contain different details or aspects of
+  the same topic, keep them as SEPARATE consolidated memories or ensure
+  the merged version preserves ALL key details. Never lose specific
+  technical details, recommendations, or constraints in a merge.
+- Reclassify categories if the raw memory categories clearly do not match
+  the actual topic. For example, garden/home topics should use "home",
+  not "project". Use "project:<name>" only when the name adds specific
+  scope; if the name merely repeats a broad category, replace it with the
+  broad category instead (for example, use "home" rather than "project:home").
+- Use the MOST SPECIFIC valid category. If "project:<name>" applies, do
+  NOT also output the generic "project" category.
+- Do not omit a durable item merely because another memory covers the same
+  topic. If two memories share a topic but contain different actionable
+  details, keep them separate or merge only if ALL key details survive.
+- A shorter memory is NOT better if it drops a recommendation, constraint,
+  or technical detail.
+- One memory = one durable takeaway. Do not combine multiple distinct
+  recommendations, implementations, conclusions, or outcomes into a single
+  memory unless they are inseparable parts of the same durable fact.
+
+## Event date rules
+
+Use event_date in this order:
+
+1. Explicit date from a raw memory
+2. Explicit date stated in the summary
+3. Session date for same-session decisions/actions/events
+4. null if no date can be determined
+
+## Summary-only extraction
+
+If there are no raw memories but the session summary describes durable
+assistant knowledge (implementations, recommendations, research findings),
+extract those from the summary. The summary is a reliable source — it was
+generated from the full conversation. Do NOT skip extraction just because
+there are no raw memories.
+
+## Final check before output
+
+For each memory, verify:
+
+- It is durable and useful in a future conversation
+- It is not already covered by previous consolidated memories
+- It is not duplicated from the other role
+- Categories are valid and specific
+- pinned is justified
+- No important detail was lost during merging
 """
 
 _CONSOLIDATION_USER_TEMPLATE = """\
@@ -4292,6 +4533,12 @@ Categories found in raw memories: {raw_categories}
 Synthesize the durable knowledge from these memories. Output a JSON object
 with a "memories" array. For episodic memories, use the session date or
 raw memory dates for event_date.
+
+Work in this order:
+1. Identify distinct durable memory candidates from raw memories and summary
+2. Remove anything already covered by previous consolidated memories
+3. Remove cross-role duplicates using the already consolidated other-role section
+4. Output only the final consolidated memories
 """
 
 CONSOLIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -4361,6 +4608,7 @@ def build_consolidation_prompt(
     artifact_memory_ids: set[str] | None = None,
     previous_consolidated: list[dict] | None = None,
     session_date: str | None = None,
+    other_role_consolidated: list[dict] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Build the within-session consolidation prompt for a specific role.
 
@@ -4376,6 +4624,9 @@ def build_consolidation_prompt(
         previous_consolidated: Previously consolidated memories of the SAME
             role from this session (for re-consolidation context).
         session_date: Date of the session (YYYY-MM-DD) for event_date context.
+        other_role_consolidated: Consolidated facts from the other role's
+            pass. Passed as read-only context to prevent cross-role
+            duplication of the same events.
 
     Returns:
         Tuple of (messages, json_schema) for LLM call.
@@ -4448,6 +4699,27 @@ def build_consolidation_prompt(
             f"{prev_wrapped}\n"
         )
 
+    # Format other role's consolidated memories (for cross-role dedup)
+    other_role_section = ""
+    if other_role_consolidated:
+        other_role_name = "assistant" if role == "user" else "user"
+        other_lines = []
+        for f in other_role_consolidated:
+            text = f.get("text", "")
+            if text:
+                other_lines.append(f"- {text}")
+        if other_lines:
+            other_text = "\n".join(other_lines)
+            other_wrapped = wrap_with_boundary(other_text, "other_role")
+            other_role_section = (
+                f"\n## Already Consolidated ({other_role_name} role)\n\n"
+                "These memories were already produced by the other role's\n"
+                "consolidation pass. Do NOT duplicate them. If the same event\n"
+                "appears here (e.g., a commit, deployment, or decision), do\n"
+                "NOT produce another memory for it.\n\n"
+                f"{other_wrapped}\n"
+            )
+
     # Select role-specific system prompt
     system_template = (
         _CONSOLIDATION_ASSISTANT_SYSTEM_PROMPT
@@ -4485,6 +4757,10 @@ def build_consolidation_prompt(
     # Append previous consolidated section if present
     if previous_section:
         user_prompt += previous_section
+
+    # Append cross-role context if present
+    if other_role_section:
+        user_prompt += other_role_section
 
     messages = [
         {"role": "system", "content": system_prompt},
