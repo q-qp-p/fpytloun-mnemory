@@ -397,6 +397,7 @@ class MemoryService:
         event_date: str | None = None,
         session_timezone: str | None = None,
         labels: dict[str, Any] | None = None,
+        _trusted: bool = False,
     ) -> dict:
         """Store a fast memory with metadata.
 
@@ -413,8 +414,9 @@ class MemoryService:
         Args:
             role: Message role controlling fact extraction. "user" (default)
                   extracts facts about the user. "assistant" extracts facts
-                  about the agent (identity, personality, capabilities).
-                  Requires agent_id when set to "assistant".
+                  about the agent (identity, personality, capabilities,
+                  actions, conclusions). Requires agent_id when set to
+                  "assistant".
             event_date: ISO 8601 datetime for when the event occurred. Used to
                   anchor relative time references during extraction and stored
                   as metadata.
@@ -422,6 +424,9 @@ class MemoryService:
                   DEFAULT_TIMEZONE for naive event_date parsing. Priority:
                   explicit tz in event_date > session_timezone > DEFAULT_TIMEZONE
                   > server local.
+            _trusted: Internal-only flag for trusted server-side callers
+                  (consolidation, fsck). Allows infer=False with
+                  role="assistant". Never exposed in MCP tools or REST API.
 
         Returns dict with "results" key containing list of memory actions.
         """
@@ -436,7 +441,9 @@ class MemoryService:
 
         # Agent identity memories must go through LLM extraction to prevent
         # direct injection of arbitrary instructions as agent personality.
-        if role == "assistant" and not infer:
+        # Trusted internal callers (consolidation service) may bypass this
+        # because their content has already been through LLM processing.
+        if role == "assistant" and not infer and not _trusted:
             raise ValueError(
                 "infer=False is not allowed for role='assistant'. "
                 "Agent identity memories must go through fact extraction "

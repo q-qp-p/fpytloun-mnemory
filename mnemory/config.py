@@ -514,6 +514,13 @@ class MemoryConfig:
         default_factory=lambda: _env_int("CONSOLIDATION_MAX_CLUSTERS", 20)
     )
 
+    # Whether client-facing tools (MCP, REST) can use infer=False.
+    # When False, infer is always forced to True for client requests.
+    # Internal callers (consolidation, remember) are unaffected.
+    allow_client_infer: bool = field(
+        default_factory=lambda: _env_bool("ALLOW_CLIENT_INFER", True)
+    )
+
     # Days to retain superseded raw memories before garbage collection.
     # Raw memories with artifacts are always retained regardless.
     consolidation_raw_retention_days: int = field(

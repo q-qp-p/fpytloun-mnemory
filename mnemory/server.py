@@ -498,6 +498,14 @@ async def add_memory(
         collector = get_collector()
         if collector:
             collector.record_operation("add_memory", uid, aid)
+
+        # Server-side infer control: when ALLOW_CLIENT_INFER=False,
+        # always use infer=True regardless of client request.
+        effective_infer = infer
+        if not infer and not _get_config().memory.allow_client_infer:
+            logger.debug("Overriding infer=False to True (ALLOW_CLIENT_INFER=False)")
+            effective_infer = True
+
         service = _get_service()
         result = await asyncio.to_thread(
             service.add_memory,
@@ -508,7 +516,7 @@ async def add_memory(
             categories=categories,
             importance=importance,
             pinned=pinned,
-            infer=infer,
+            infer=effective_infer,
             role=role,
             ttl_days=ttl_days,
             event_date=event_date,
@@ -573,6 +581,12 @@ async def add_memories(
             }
         )
 
+    # Server-side infer control
+    effective_infer = infer
+    if not infer and not _get_config().memory.allow_client_infer:
+        logger.debug("Overriding infer=False to True (ALLOW_CLIENT_INFER=False)")
+        effective_infer = True
+
     service = _get_service()
 
     # Run the entire batch loop in a thread to avoid blocking the event
@@ -603,7 +617,7 @@ async def add_memories(
                     categories=mem.get("categories"),
                     importance=mem.get("importance"),
                     pinned=mem.get("pinned"),
-                    infer=infer,
+                    infer=effective_infer,
                     role=item_role,
                     ttl_days=mem.get("ttl_days"),
                     event_date=mem.get("event_date"),

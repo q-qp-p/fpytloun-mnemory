@@ -106,6 +106,7 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `LABELS_MAX_KEY_LENGTH` | `64` | Max length of a label key (alphanumeric + underscore only) |
 | `LABELS_MAX_VALUE_LENGTH` | `1000` | Max length of a string label value |
 | `LABELS_INDEXES` | | Comma-separated list of label keys to index in Qdrant for fast filtering (e.g., `project,topic,conversation_id`). Only needed for remote Qdrant with large datasets |
+| `ALLOW_CLIENT_INFER` | `true` | Whether client-facing tools (MCP, REST) can use `infer=False`. When `false`, `infer` is always forced to `true` for client requests. Internal callers (consolidation, remember) are unaffected |
 | `CONSOLIDATION_CHECK_INTERVAL` | `300` | How often the consolidation loop checks for idle sessions (seconds). Separate from idle threshold which controls eligibility |
 | `CONSOLIDATION_IDLE_THRESHOLD` | `3600` | Seconds before a session is eligible for within-session consolidation (1 hour) |
 | `CONSOLIDATION_BATCH_SIZE` | `100` | Max raw memories per consolidation LLM call. Sessions with more are split into time-based batches |

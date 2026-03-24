@@ -639,9 +639,6 @@ class ConsolidationService:
                     agent_id if fact.get("role") == "assistant" else None
                 )
 
-                # For assistant role, infer=True is required by add_memory
-                effective_infer = fact.get("role") == "assistant"
-
                 # Use LLM-assigned categories, fall back to raw memory
                 # categories if the LLM returned an empty list
                 categories = fact.get("categories") or fallback_categories
@@ -650,7 +647,8 @@ class ConsolidationService:
                     text,
                     user_id=user_id,
                     agent_id=effective_agent_id,
-                    infer=effective_infer,
+                    infer=False,
+                    _trusted=True,
                     memory_type=fact.get("memory_type", "episodic"),
                     categories=categories,
                     importance=fact.get("importance", "normal"),
