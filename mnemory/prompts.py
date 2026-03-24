@@ -4121,9 +4121,9 @@ knowledge that should be preserved long-term.
 - Use standard memory types: preference, fact, episodic, procedural, context
 - Freely reclassify — e.g., if raw memories are episodic but a stable
   preference emerges, output as preference
-- Assign categories from the predefined set only: personal, preferences,
-  health, work, technical, finance, home, vehicles, travel, entertainment,
-  goals, decisions, project. Use project:<name> for project-scoped memories.
+- Assign categories from the available set provided in the prompt.
+  Preserve project-scoped categories exactly as they appear in the raw
+  memories (e.g., "project:mnemory", NOT just "project").
 - Set importance based on durability and impact (low, normal, high, critical)
 - For memories referencing detailed artifacts, note the artifact source
 - If a raw memory is already well-formed and durable, keep it as-is
@@ -4163,6 +4163,13 @@ _CONSOLIDATION_USER_TEMPLATE = """\
 {memories_wrapped}
 
 {artifact_note}
+
+## Available Categories
+
+Use ONLY these categories. Preserve project-scoped names exactly:
+{available_categories}
+
+Categories found in raw memories: {raw_categories}
 
 Synthesize the durable knowledge from this session. Output a JSON object
 with a "memories" array.
@@ -4266,6 +4273,21 @@ def build_consolidation_prompt(
 
     raw_memories_text = "\n".join(raw_lines) if raw_lines else "(no raw memories)"
 
+    # Collect unique categories from raw memories for the prompt
+    raw_cats: set[str] = set()
+    for mem in raw_memories:
+        meta = mem.get("metadata") or {}
+        for cat in meta.get("categories", []):
+            if cat:
+                raw_cats.add(cat)
+
+    # Build available categories: predefined + any project-scoped from raw
+    from mnemory.categories import PREDEFINED_CATEGORIES
+
+    all_cats = sorted(set(PREDEFINED_CATEGORIES.keys()) | raw_cats)
+    available_categories = ", ".join(all_cats)
+    raw_categories_text = ", ".join(sorted(raw_cats)) if raw_cats else "(none)"
+
     artifact_note = ""
     if artifact_memory_ids:
         artifact_note = (
@@ -4311,6 +4333,8 @@ def build_consolidation_prompt(
         raw_count=len(raw_memories),
         memories_wrapped=memories_wrapped,
         artifact_note=artifact_note,
+        available_categories=available_categories,
+        raw_categories=raw_categories_text,
     )
     # Append previous consolidated section if present
     if previous_section:
