@@ -145,23 +145,14 @@ class ConsolidationService:
             previous_consolidated = []
             prev_consolidated_ids = session.get("consolidated_memory_ids") or []
             if prev_consolidated_ids:
-                try:
-                    prev_results = self._vector._client.retrieve(
-                        collection_name=self._vector._collection_name,
-                        ids=prev_consolidated_ids,
-                        with_payload=True,
-                    )
-                    for point in prev_results:
-                        payload = dict(point.payload or {})
-                        if payload.get("memory"):
-                            previous_consolidated.append(
-                                {
-                                    "id": str(point.id),
-                                    "memory": payload.get("memory", ""),
-                                    "metadata": payload,
-                                }
-                            )
-                except Exception:
+                for prev_id in prev_consolidated_ids:
+                    try:
+                        mem = self._vector.get_by_id(prev_id)
+                        if mem and mem.get("memory"):
+                            previous_consolidated.append(mem)
+                    except Exception:
+                        pass
+                if not previous_consolidated and prev_consolidated_ids:
                     logger.debug(
                         "Could not fetch previous consolidated memories for %s",
                         session_id,
@@ -412,7 +403,7 @@ class ConsolidationService:
         fetch_errors = 0
         for mid in memory_ids:
             try:
-                result = self._vector.get(mid)
+                result = self._vector.get_by_id(mid)
                 if result is None:
                     not_found += 1
                     continue

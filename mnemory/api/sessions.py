@@ -109,7 +109,7 @@ async def delete_session(
         for mid in memory_ids:
             try:
                 # Check if memory exists and is raw before deleting
-                mem = service.vector.get(mid)
+                mem = service.vector.get_by_id(mid)
                 if mem is None:
                     continue
                 meta = mem.get("metadata") or {}

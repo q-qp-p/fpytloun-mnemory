@@ -28,7 +28,7 @@ class TestFetchRawMemories:
     def test_includes_memories_without_layer(self):
         """Memories without memory_layer field should be treated as raw."""
         vector = MagicMock()
-        vector.get.return_value = {
+        vector.get_by_id.return_value = {
             "id": "mem-1",
             "memory": "User likes Python",
             "metadata": {
@@ -44,7 +44,7 @@ class TestFetchRawMemories:
     def test_includes_explicit_raw(self):
         """Memories with memory_layer='raw' should be included."""
         vector = MagicMock()
-        vector.get.return_value = {
+        vector.get_by_id.return_value = {
             "id": "mem-2",
             "memory": "User prefers dark mode",
             "metadata": {"memory_layer": "raw"},
@@ -56,7 +56,7 @@ class TestFetchRawMemories:
     def test_excludes_consolidated(self):
         """Memories with memory_layer='consolidated' should be excluded."""
         vector = MagicMock()
-        vector.get.return_value = {
+        vector.get_by_id.return_value = {
             "id": "mem-3",
             "memory": "User lives in Prague",
             "metadata": {"memory_layer": "consolidated"},
@@ -68,7 +68,7 @@ class TestFetchRawMemories:
     def test_excludes_superseded(self):
         """Superseded raw memories should be excluded."""
         vector = MagicMock()
-        vector.get.return_value = {
+        vector.get_by_id.return_value = {
             "id": "mem-4",
             "memory": "User likes Java",
             "metadata": {
@@ -83,15 +83,15 @@ class TestFetchRawMemories:
     def test_skips_missing_memories(self):
         """Memory IDs that don't exist should be skipped."""
         vector = MagicMock()
-        vector.get.return_value = None
+        vector.get_by_id.return_value = None
         service = _make_service(vector)
         result = service._fetch_raw_memories(["nonexistent"], "user-1")
         assert len(result) == 0
 
     def test_handles_exceptions(self):
-        """Exceptions from vector.get should be caught and skipped."""
+        """Exceptions from vector.get_by_id should be caught and skipped."""
         vector = MagicMock()
-        vector.get.side_effect = [
+        vector.get_by_id.side_effect = [
             Exception("Connection error"),
             {
                 "id": "mem-5",
@@ -107,7 +107,7 @@ class TestFetchRawMemories:
     def test_mixed_memories(self):
         """Test with a mix of raw, consolidated, superseded, and missing."""
         vector = MagicMock()
-        vector.get.side_effect = [
+        vector.get_by_id.side_effect = [
             # raw, no layer field (should include)
             {"id": "m1", "memory": "fact 1", "metadata": {}},
             # explicit raw (should include)

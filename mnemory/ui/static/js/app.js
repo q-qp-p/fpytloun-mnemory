@@ -391,6 +391,57 @@ document.addEventListener('alpine:init', () => {
     },
   });
 
+  // ── Session Delete Modal Store ───────────────────────────────
+  // Global session delete modal — opened from Sessions tab.
+  Alpine.store('sessionDelete', {
+    open: false,
+    session: null,
+    deleteLinkedMemories: false,
+    deleting: false,
+    onDeleted: null,  // callback after successful deletion
+
+    show(session, onDeleted = null) {
+      this.session = session;
+      this.deleteLinkedMemories = false;
+      this.deleting = false;
+      this.onDeleted = onDeleted;
+      this.open = true;
+    },
+
+    close() {
+      this.open = false;
+      this.session = null;
+      this.deleteLinkedMemories = false;
+      this.deleting = false;
+      this.onDeleted = null;
+    },
+
+    async execute() {
+      if (!this.session || this.deleting) return;
+      this.deleting = true;
+      const sid = this.session.session_id;
+      const deleteMems = this.deleteLinkedMemories;
+      try {
+        const qs = deleteMems ? '?delete_memories=true' : '';
+        const result = await MnemoryAPI.del(`/sessions/${sid}${qs}`);
+        const msg = deleteMems
+          ? `Session deleted (${result.deleted_memories || 0} raw memories removed)`
+          : 'Session deleted';
+        Alpine.store('notify').success(msg);
+        if (this.onDeleted) this.onDeleted(sid);
+        this.close();
+      } catch (e) {
+        Alpine.store('notify').error(`Failed to delete session: ${e.message}`);
+        this.deleting = false;
+      }
+    },
+
+    truncate(str, max = 300) {
+      if (!str) return '';
+      return str.length > max ? str.substring(0, max) + '...' : str;
+    },
+  });
+
   // ── Session Detail Modal Store ────────────────────────────────
   // Global session detail modal — opened from Memories tab when
   // clicking a session_id label.
