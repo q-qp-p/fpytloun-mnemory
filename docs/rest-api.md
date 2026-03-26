@@ -15,6 +15,7 @@ Both MCP and REST share the same `MemoryService` backend and authentication midd
 | `/api/memories/core` | GET | Core memories (pinned + recent) |
 | `/api/memories/recent` | GET | Recent memories |
 | `/api/memories` | GET | List memories |
+| `/api/memories/by-ids` | POST | Fetch memories by ID list (batch) |
 | `/api/memories/{id}` | PUT | Update memory |
 | `/api/memories/{id}` | DELETE | Delete memory |
 | `/api/memories/{id}/artifacts` | POST | Save artifact |

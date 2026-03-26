@@ -720,6 +720,29 @@ class VectorStore:
             logger.debug("Memory %s not found", memory_id)
             return None
 
+    def get_by_ids(self, memory_ids: list[str]) -> list[dict]:
+        """Get multiple memories by their IDs.
+
+        Uses Qdrant's batch retrieve for efficient multi-ID lookup.
+        Returns list of memory dicts (in standard format) for IDs that
+        exist.  Missing IDs are silently skipped.
+        """
+        if not memory_ids:
+            return []
+        logger.debug("Retrieving %d memories by IDs", len(memory_ids))
+        try:
+            with _qdrant_timer("retrieve"):
+                result = self._client.retrieve(
+                    collection_name=self.collection_name,
+                    ids=memory_ids,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+            return [self._point_to_memory(p) for p in result]
+        except Exception:
+            logger.warning("Failed to retrieve memories by IDs", exc_info=True)
+            return []
+
     def get_all(
         self,
         *,

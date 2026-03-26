@@ -6300,3 +6300,99 @@ class TestGetProjectCategories:
         result = service._get_project_categories("filip")
         assert "project" not in result
         assert "project:mnemory" in result
+
+
+# ── get_by_ids / get_memories_by_ids ─────────────────────────────────
+
+
+class TestGetByIds:
+    """Test VectorStore.get_by_ids and MemoryService.get_memories_by_ids."""
+
+    @staticmethod
+    def _make_point(point_id: str, user_id: str = "filip"):
+        """Create a mock Qdrant point."""
+        m = MagicMock()
+        m.id = point_id
+        m.payload = {
+            "data": f"Memory {point_id}",
+            "hash": f"hash-{point_id}",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "user_id": user_id,
+            "memory_type": "fact",
+        }
+        return m
+
+    def test_get_by_ids_empty_input(self):
+        """Empty input returns empty list without calling Qdrant."""
+        from mnemory.storage.vector import VectorStore
+
+        store = MagicMock()
+        store.get_by_ids = VectorStore.get_by_ids.__get__(store, VectorStore)
+        result = store.get_by_ids([])
+        assert result == []
+        store._client.retrieve.assert_not_called()
+
+    def test_get_by_ids_returns_found(self):
+        """Found IDs are returned as memory dicts via _point_to_memory."""
+        from mnemory.storage.vector import VectorStore
+
+        store = MagicMock()
+        store.get_by_ids = VectorStore.get_by_ids.__get__(store, VectorStore)
+        store.collection_name = "mnemory"
+
+        p1 = self._make_point("id-1")
+        p2 = self._make_point("id-2")
+        store._client.retrieve.return_value = [p1, p2]
+        store._point_to_memory.side_effect = lambda p: {"id": p.id, "user_id": "filip"}
+
+        result = store.get_by_ids(["id-1", "id-2"])
+
+        assert len(result) == 2
+        store._client.retrieve.assert_called_once()
+        call_kwargs = store._client.retrieve.call_args
+        assert set(call_kwargs.kwargs.get("ids", call_kwargs[1].get("ids", []))) == {
+            "id-1",
+            "id-2",
+        }
+
+    def test_get_by_ids_missing_ids_no_error(self):
+        """Missing IDs are silently skipped (Qdrant returns only found)."""
+        from mnemory.storage.vector import VectorStore
+
+        store = MagicMock()
+        store.get_by_ids = VectorStore.get_by_ids.__get__(store, VectorStore)
+        store.collection_name = "mnemory"
+
+        # Only id-1 found, id-2 missing
+        p1 = self._make_point("id-1")
+        store._client.retrieve.return_value = [p1]
+        store._point_to_memory.side_effect = lambda p: {"id": p.id, "user_id": "filip"}
+
+        result = store.get_by_ids(["id-1", "id-2"])
+        assert len(result) == 1
+        assert result[0]["id"] == "id-1"
+
+    def test_get_memories_by_ids_filters_user(self):
+        """get_memories_by_ids returns only memories owned by the given user."""
+        service = _make_service()
+
+        # Simulate vector.get_by_ids returning memories for different users.
+        # user_id is a TOP-LEVEL field (promoted by _point_to_memory),
+        # NOT inside metadata.
+        service.vector.get_by_ids.return_value = [
+            {"id": "m1", "user_id": "filip", "memory": "A", "metadata": {}},
+            {"id": "m2", "user_id": "other-user", "memory": "B", "metadata": {}},
+            {"id": "m3", "user_id": "filip", "memory": "C", "metadata": {}},
+        ]
+
+        result = service.get_memories_by_ids(["m1", "m2", "m3"], user_id="filip")
+
+        assert len(result) == 2
+        assert {m["id"] for m in result} == {"m1", "m3"}
+
+    def test_get_memories_by_ids_empty_input(self):
+        """Empty ID list returns empty without calling vector store."""
+        service = _make_service()
+        result = service.get_memories_by_ids([], user_id="filip")
+        assert result == []
+        service.vector.get_by_ids.assert_not_called()

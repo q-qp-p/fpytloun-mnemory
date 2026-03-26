@@ -3645,6 +3645,28 @@ class MemoryService:
 
         return {"status": "updated", "memory_id": memory_id}
 
+    # ── Batch Retrieve ──────────────────────────────────────────────────
+
+    def get_memories_by_ids(
+        self,
+        memory_ids: list[str],
+        *,
+        user_id: str,
+    ) -> list[dict]:
+        """Get multiple memories by IDs, filtered to the given user.
+
+        Returns memories matching the provided IDs that belong to *user_id*.
+        Missing or unauthorized IDs are silently skipped.  Used by the
+        Sessions tab to efficiently load linked memories without fetching
+        the entire memory store.
+        """
+        if not memory_ids:
+            return []
+        memories = self.vector.get_by_ids(memory_ids)
+        # Filter to user-owned memories only (user_id is a top-level field
+        # in the dict returned by _point_to_memory).
+        return [m for m in memories if m.get("user_id") == user_id]
+
     # ── Delete Memory ─────────────────────────────────────────────────
 
     def delete_memory(self, memory_id: str, *, user_id: str) -> dict:

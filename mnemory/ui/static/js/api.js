@@ -161,6 +161,10 @@ const MnemoryAPI = {
     return this.get('/memories', params);
   },
 
+  getMemoriesByIds(ids) {
+    return this.post('/memories/by-ids', { ids });
+  },
+
   updateMemory(id, data) {
     return this.put(`/memories/${id}`, data);
   },

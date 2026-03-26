@@ -24,6 +24,8 @@ from mnemory.api.schemas import (
     DownloadTokenRequest,
     DownloadTokenResponse,
     FindMemoriesRequest,
+    GetMemoriesByIdsRequest,
+    GetMemoriesByIdsResponse,
     ListMemoriesResponse,
     RecentMemoriesResponse,
     SaveArtifactRequest,
@@ -415,6 +417,25 @@ def list_memories(
 
     items = [format_memory_item(r) for r in results]
     return ListMemoriesResponse(results=items)
+
+
+@router.post("/by-ids", response_model=GetMemoriesByIdsResponse)
+def get_memories_by_ids(
+    req: GetMemoriesByIdsRequest,
+    ctx: SessionContext = Depends(get_session_context),
+):
+    """Fetch multiple memories by their IDs.
+
+    Returns memories matching the provided IDs that belong to the
+    current user.  Missing or unauthorized IDs are silently skipped.
+    Used by the management UI Sessions tab to efficiently load linked
+    memories without fetching the entire memory store.
+    """
+    _record("get_memories_by_ids", ctx)
+    service = _get_service()
+    results = service.get_memories_by_ids(req.ids, user_id=ctx.user_id)
+    items = [format_memory_item(r) for r in results]
+    return GetMemoriesByIdsResponse(results=items)
 
 
 @router.put("/{memory_id}")

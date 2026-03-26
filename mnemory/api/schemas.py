@@ -228,6 +228,23 @@ class ListMemoriesResponse(BaseModel):
     results: list[MemoryItem]
 
 
+class GetMemoriesByIdsRequest(BaseModel):
+    """Request to fetch multiple memories by their IDs."""
+
+    ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Memory IDs to fetch (max 500)",
+    )
+
+
+class GetMemoriesByIdsResponse(BaseModel):
+    """Response with memories fetched by IDs."""
+
+    results: list[MemoryItem]
+
+
 class RecentMemoriesResponse(BaseModel):
     """Response from get_recent_memories (formatted text)."""
 

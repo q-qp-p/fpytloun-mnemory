@@ -2,11 +2,13 @@
  * mnemory UI — Sessions panel component.
  *
  * Lists persistent session summaries with filtering and expandable details.
- * Linked memories are loaded on expand and shown as full memory cards
- * with edit/delete/artifact actions (same as Memories tab).
+ * Linked memories are loaded on expand via POST /memories/by-ids (batch)
+ * and displayed with client-side "Show More / Show Less" pagination.
  */
 
 function sessionsPanel() {
+  const MEM_PAGE_SIZE = 10;
+
   return {
     sessions: [],
     loading: false,
@@ -24,6 +26,10 @@ function sessionsPanel() {
     sessionConsolidatedMems: {},
     sessionConsolidatedLoading: {},
     consolidating: {},
+
+    // Per-session pagination state (page number, 1-indexed)
+    sessionMemPages: {},
+    sessionConsolidatedPages: {},
 
     async load() {
       this.loading = true;
@@ -72,15 +78,32 @@ function sessionsPanel() {
       }
     },
 
+    /**
+     * Fetch memories by IDs, chunking into batches of 500 to respect
+     * the server's max_length limit on the by-ids endpoint.
+     */
+    async _fetchMemoriesByIds(ids) {
+      const CHUNK = 500;
+      if (ids.length <= CHUNK) {
+        const data = await MnemoryAPI.getMemoriesByIds(ids);
+        return data.results || [];
+      }
+      const all = [];
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const data = await MnemoryAPI.getMemoriesByIds(ids.slice(i, i + CHUNK));
+        all.push(...(data.results || []));
+      }
+      return all;
+    },
+
     async loadSessionMemories(session) {
       const sid = session.session_id;
+      const ids = session.memory_ids || [];
+      if (ids.length === 0) return;
       this.sessionMemLoading[sid] = true;
+      this.sessionMemPages[sid] = 1;
       try {
-        // Fetch all memories and filter by session's memory_ids
-        const data = await MnemoryAPI.listMemories({ limit: 5000 });
-        const allMems = data.results || [];
-        const idSet = new Set(session.memory_ids || []);
-        this.sessionMemories[sid] = allMems.filter(m => idSet.has(m.id));
+        this.sessionMemories[sid] = await this._fetchMemoriesByIds(ids);
       } catch (e) {
         Alpine.store('notify').error(`Failed to load session memories: ${e.message}`);
         this.sessionMemories[sid] = [];
@@ -91,6 +114,37 @@ function sessionsPanel() {
 
     getSessionMemories(sessionId) {
       return this.sessionMemories[sessionId] || [];
+    },
+
+    /** Return paginated slice of raw memories for display. */
+    getPagedSessionMemories(sessionId) {
+      const all = this.sessionMemories[sessionId] || [];
+      const page = this.sessionMemPages[sessionId] || 1;
+      return all.slice(0, page * MEM_PAGE_SIZE);
+    },
+
+    canShowMoreMems(sessionId) {
+      const all = this.sessionMemories[sessionId] || [];
+      const page = this.sessionMemPages[sessionId] || 1;
+      return page * MEM_PAGE_SIZE < all.length;
+    },
+
+    remainingMemCount(sessionId) {
+      const all = this.sessionMemories[sessionId] || [];
+      const page = this.sessionMemPages[sessionId] || 1;
+      return Math.max(0, all.length - page * MEM_PAGE_SIZE);
+    },
+
+    showMoreMems(sessionId) {
+      this.sessionMemPages[sessionId] = (this.sessionMemPages[sessionId] || 1) + 1;
+    },
+
+    showLessMems(sessionId) {
+      this.sessionMemPages[sessionId] = 1;
+    },
+
+    canShowLessMems(sessionId) {
+      return (this.sessionMemPages[sessionId] || 1) > 1;
     },
 
     isMemLoading(sessionId) {
@@ -106,11 +160,9 @@ function sessionsPanel() {
       const cids = session.consolidated_memory_ids || [];
       if (cids.length === 0) return;
       this.sessionConsolidatedLoading[sid] = true;
+      this.sessionConsolidatedPages[sid] = 1;
       try {
-        const data = await MnemoryAPI.listMemories({ limit: 5000 });
-        const allMems = data.results || [];
-        const idSet = new Set(cids);
-        this.sessionConsolidatedMems[sid] = allMems.filter(m => idSet.has(m.id));
+        this.sessionConsolidatedMems[sid] = await this._fetchMemoriesByIds(cids);
       } catch (e) {
         Alpine.store('notify').error(`Failed to load consolidated memories: ${e.message}`);
         this.sessionConsolidatedMems[sid] = [];
@@ -121,6 +173,37 @@ function sessionsPanel() {
 
     getConsolidatedMemories(sessionId) {
       return this.sessionConsolidatedMems[sessionId] || [];
+    },
+
+    /** Return paginated slice of consolidated memories for display. */
+    getPagedConsolidatedMemories(sessionId) {
+      const all = this.sessionConsolidatedMems[sessionId] || [];
+      const page = this.sessionConsolidatedPages[sessionId] || 1;
+      return all.slice(0, page * MEM_PAGE_SIZE);
+    },
+
+    canShowMoreConsolidated(sessionId) {
+      const all = this.sessionConsolidatedMems[sessionId] || [];
+      const page = this.sessionConsolidatedPages[sessionId] || 1;
+      return page * MEM_PAGE_SIZE < all.length;
+    },
+
+    remainingConsolidatedCount(sessionId) {
+      const all = this.sessionConsolidatedMems[sessionId] || [];
+      const page = this.sessionConsolidatedPages[sessionId] || 1;
+      return Math.max(0, all.length - page * MEM_PAGE_SIZE);
+    },
+
+    showMoreConsolidated(sessionId) {
+      this.sessionConsolidatedPages[sessionId] = (this.sessionConsolidatedPages[sessionId] || 1) + 1;
+    },
+
+    showLessConsolidated(sessionId) {
+      this.sessionConsolidatedPages[sessionId] = 1;
+    },
+
+    canShowLessConsolidated(sessionId) {
+      return (this.sessionConsolidatedPages[sessionId] || 1) > 1;
     },
 
     isConsolidatedLoading(sessionId) {
@@ -163,6 +246,8 @@ function sessionsPanel() {
               // Invalidate caches and reload
               delete this.sessionMemories[sid];
               delete this.sessionConsolidatedMems[sid];
+              delete this.sessionMemPages[sid];
+              delete this.sessionConsolidatedPages[sid];
               if (session._expanded) {
                 await this.loadSessionMemories(session);
                 if (data.consolidated_memory_ids?.length > 0) {
@@ -188,6 +273,8 @@ function sessionsPanel() {
         this.sessions = this.sessions.filter(s => s.session_id !== sid);
         delete this.sessionMemories[sid];
         delete this.sessionConsolidatedMems[sid];
+        delete this.sessionMemPages[sid];
+        delete this.sessionConsolidatedPages[sid];
       });
     },
 
@@ -195,10 +282,8 @@ function sessionsPanel() {
 
     openEdit(mem, sessionId) {
       Alpine.store('memoryEdit').show(mem, (payload) => {
-        // Update local memory object
-        const mems = this.sessionMemories[sessionId] || [];
-        const m = mems.find(x => x.id === mem.id);
-        if (m) {
+        // Update local memory object in both raw and consolidated caches
+        const _apply = (m) => {
           if (payload.content !== undefined) m.memory = payload.content;
           if (!m.metadata) m.metadata = {};
           if (payload.memory_type) m.metadata.memory_type = payload.memory_type;
@@ -208,7 +293,11 @@ function sessionsPanel() {
           if (payload.ttl_days !== undefined) m.metadata.ttl_days = payload.ttl_days;
           if (payload.agent_id !== undefined) m.metadata.agent_id = payload.agent_id || null;
           if ('labels' in payload) m.metadata.labels = payload.labels;
-        }
+        };
+        const raw = (this.sessionMemories[sessionId] || []).find(x => x.id === mem.id);
+        if (raw) _apply(raw);
+        const cons = (this.sessionConsolidatedMems[sessionId] || []).find(x => x.id === mem.id);
+        if (cons) _apply(cons);
       });
     },
 
