@@ -55,6 +55,8 @@ The plugin can be configured via OpenClaw's settings UI (the manifest provides a
 | `agentPrefix` | `MNEMORY_AGENT_PREFIX` | `openclaw` | Prefix for agent IDs (e.g., `openclaw:main`) |
 | `autoRecall` | -- | `true` | Auto-inject memories into context |
 | `autoCapture` | -- | `true` | Auto-extract memories from conversations |
+| `recallFindFirst` | -- | `true` | Use AI-powered search on first turn (higher quality, slower) |
+| `recallSearchMode` | -- | `search` | Search mode for subsequent turns: `find` or `search` |
 | `scoreThreshold` | -- | `0.5` | Min relevance score for recalled memories (0.0-1.0) |
 | `includeAssistant` | -- | `true` | Send assistant messages for extraction |
 | `managed` | -- | `true` | Include behavioral instructions in system prompt |
@@ -89,10 +91,10 @@ This gives the LLM access to all 16 MCP tools but does not provide automatic rec
 
 | Hook | Action |
 |---|---|
-| `session_start` | Pre-fetches memories from `/api/recall` (non-blocking) |
-| `before_prompt_build` | Injects recalled memories into the system prompt. Static instructions go to `prependSystemContext` (cacheable), memories go to `appendSystemContext` |
+| `session_start` | Pre-fetches instructions and core memories from `/api/recall` (non-blocking) |
+| `before_prompt_build` | Two-phase recall: awaits init, then sends the user's prompt as a search query for topical memories. First turn uses `find` mode (AI-powered), subsequent turns use `search` mode (fast). Results are replaced each turn. |
 | `agent_end` | Extracts the last user+assistant exchange, strips inbound metadata, sends to `/api/remember` for background extraction |
-| `after_compaction` | Re-fetches memories and resets tracking after context compaction |
+| `after_compaction` | Re-fetches memories and resets turn tracking after context compaction |
 | `session_end` | Cleans up session state |
 
 ### Tools Registered

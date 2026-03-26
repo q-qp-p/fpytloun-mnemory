@@ -21,6 +21,14 @@ export type MnemoryConfig = {
   autoRecall: boolean;
   /** Automatically extract and store memories from conversations. Default: true. */
   autoCapture: boolean;
+  /** Use AI-powered "find" search on the first turn of each session. Default: true.
+   *  When true, the first turn uses multi-query AI search for higher quality results.
+   *  Subsequent turns use the mode specified by recallSearchMode. */
+  recallFindFirst: boolean;
+  /** Search mode for subsequent turns (after the first). Default: "search".
+   *  "find" = AI-powered multi-query search (slower, higher quality, 2 extra LLM calls).
+   *  "search" = fast single vector search (no LLM overhead). */
+  recallSearchMode: "find" | "search";
   /** Minimum relevance score for recalled memories (0.0-1.0). Default: 0.5. */
   scoreThreshold: number;
   /** Send assistant messages to mnemory for extraction. Default: true. */
@@ -106,6 +114,19 @@ export const mnemoryConfigSchema = {
     // autoCapture — default true
     const autoCapture = typeof raw.autoCapture === "boolean" ? raw.autoCapture : true;
 
+    // recallFindFirst — default true
+    const recallFindFirst =
+      typeof raw.recallFindFirst === "boolean" ? raw.recallFindFirst : true;
+
+    // recallSearchMode — default "search", must be "find" or "search"
+    let recallSearchMode: "find" | "search" = "search";
+    if (typeof raw.recallSearchMode === "string") {
+      if (raw.recallSearchMode !== "find" && raw.recallSearchMode !== "search") {
+        throw new Error("mnemory: 'recallSearchMode' must be 'find' or 'search'");
+      }
+      recallSearchMode = raw.recallSearchMode;
+    }
+
     // scoreThreshold — default 0.5, range 0-1
     let scoreThreshold = 0.5;
     if (typeof raw.scoreThreshold === "number") {
@@ -147,6 +168,8 @@ export const mnemoryConfigSchema = {
       "agentPrefix",
       "autoRecall",
       "autoCapture",
+      "recallFindFirst",
+      "recallSearchMode",
       "scoreThreshold",
       "includeAssistant",
       "managed",
@@ -165,6 +188,8 @@ export const mnemoryConfigSchema = {
       agentPrefix,
       autoRecall,
       autoCapture,
+      recallFindFirst,
+      recallSearchMode,
       scoreThreshold,
       includeAssistant,
       managed,

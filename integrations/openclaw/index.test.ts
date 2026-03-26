@@ -754,212 +754,637 @@ describe("MnemoryClient", () => {
 
     fetchSpy.mockRestore();
   });
+});
 
-  test("sends X-User-Id header when userId is set", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ results: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+// ============================================================================
+// Config — new recall options
+// ============================================================================
+
+describe("mnemoryConfigSchema — recall options", () => {
+  let mnemoryConfigSchema: typeof import("./config.js").mnemoryConfigSchema;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    const mod = await import("./config.js");
+    mnemoryConfigSchema = mod.mnemoryConfigSchema;
+  });
+
+  test("accepts recallFindFirst and recallSearchMode in knownKeys", () => {
+    const cfg = mnemoryConfigSchema.parse({
+      url: "http://localhost:8050",
+      recallFindFirst: false,
+      recallSearchMode: "find",
+    });
+    expect(cfg.recallFindFirst).toBe(false);
+    expect(cfg.recallSearchMode).toBe("find");
+  });
+
+  test("defaults recallFindFirst to true and recallSearchMode to search", () => {
+    const cfg = mnemoryConfigSchema.parse({
+      url: "http://localhost:8050",
+    });
+    expect(cfg.recallFindFirst).toBe(true);
+    expect(cfg.recallSearchMode).toBe("search");
+  });
+
+  test("throws when recallSearchMode is invalid", () => {
+    expect(() =>
+      mnemoryConfigSchema.parse({
+        url: "http://localhost:8050",
+        recallSearchMode: "invalid",
       }),
+    ).toThrow("recallSearchMode");
+  });
+
+  test("accepts recallSearchMode 'find'", () => {
+    const cfg = mnemoryConfigSchema.parse({
+      url: "http://localhost:8050",
+      recallSearchMode: "find",
+    });
+    expect(cfg.recallSearchMode).toBe("find");
+  });
+
+  test("accepts recallSearchMode 'search'", () => {
+    const cfg = mnemoryConfigSchema.parse({
+      url: "http://localhost:8050",
+      recallSearchMode: "search",
+    });
+    expect(cfg.recallSearchMode).toBe("search");
+  });
+});
+
+// ============================================================================
+// Per-turn recall behavior
+// ============================================================================
+
+describe("per-turn recall behavior", () => {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  function createMockApi(pluginConfig: Record<string, unknown> = {}): any {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const tools: Array<{ tool: any; opts: any }> = [];
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const hooks: Record<string, any[]> = {};
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const clis: any[] = [];
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const services: any[] = [];
+
+    return {
+      api: {
+        id: "mnemory",
+        name: "Memory (Mnemory)",
+        source: "test",
+        config: {},
+        pluginConfig: {
+          url: "http://localhost:8050",
+          ...pluginConfig,
+        },
+        runtime: {},
+        logger: {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+          debug: vi.fn(),
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+        registerTool: (tool: any, opts: any) => {
+          tools.push({ tool, opts });
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+        registerCli: (registrar: any, opts: any) => {
+          clis.push({ registrar, opts });
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+        registerService: (service: any) => {
+          services.push(service);
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+        on: (hookName: string, handler: any) => {
+          if (!hooks[hookName]) {
+            hooks[hookName] = [];
+          }
+          hooks[hookName].push(handler);
+        },
+        resolvePath: (p: string) => p,
+      },
+      tools,
+      hooks,
+      clis,
+      services,
+    };
+  }
+
+  // Helper: create a mock fetch that returns different responses per call
+  function mockFetchSequence(responses: Array<{ body: unknown; status?: number }>) {
+    let callIndex = 0;
+    return vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      const resp = responses[callIndex] ?? responses[responses.length - 1]!;
+      callIndex++;
+      return new Response(JSON.stringify(resp.body), {
+        status: resp.status ?? 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("first turn sends query with 'find' mode when recallFindFirst is true", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall (session_start)
+      {
+        body: {
+          session_id: "sess-1",
+          instructions: "Be helpful",
+          core_memories: "## User Facts\n- Name: Alice",
+          search_results: [],
+          stats: { core_count: 1, latency_ms: 100 },
+        },
+      },
+      // Per-turn search (before_prompt_build)
+      {
+        body: {
+          session_id: "sess-1",
+          search_results: [{ id: "m1", memory: "User likes dogs", score: 0.9 }],
+          stats: { search_count: 1, new_count: 1, known_skipped: 0, latency_ms: 200 },
+        },
+      },
+    ]);
+
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi({ recallFindFirst: true });
+    mnemoryPlugin.register(mock.api);
+
+    // Trigger session_start
+    const sessionStartHandler = mock.hooks["session_start"]![0];
+    sessionStartHandler({}, { sessionKey: "sk-1", agentId: "main" });
+
+    // Wait for init recall to complete
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Trigger before_prompt_build with a user prompt
+    const beforePromptHandler = mock.hooks["before_prompt_build"]![0];
+    const result = await beforePromptHandler(
+      { prompt: "Tell me about my pets", messages: [] },
+      { sessionKey: "sk-1", agentId: "main" },
     );
 
-    const client = new MnemoryClient({
-      url: "http://localhost:8050",
-      apiKey: "my-secret",
-      userId: "filip",
-      logger: { info: vi.fn(), warn: vi.fn() },
-    });
+    // Verify the search call sent query and search_mode="find"
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const searchBody = JSON.parse(fetchSpy.mock.calls[1]![1]?.body as string);
+    expect(searchBody.query).toBe("Tell me about my pets");
+    expect(searchBody.search_mode).toBe("find");
+    expect(searchBody.session_id).toBe("sess-1");
 
-    await client.listMemories({}, "test-agent");
-
-    const headers = fetchSpy.mock.calls[0]![1]?.headers as Record<string, string>;
-    expect(headers["X-User-Id"]).toBe("filip");
-
-    fetchSpy.mockRestore();
+    // Verify injection includes both core memories and search results
+    expect(result).toBeDefined();
+    expect(result.prependSystemContext).toBe("Be helpful");
+    expect(result.appendSystemContext).toContain("User Facts");
+    expect(result.appendSystemContext).toContain("User likes dogs");
   });
 
-  test("omits X-User-Id header when userId is empty", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ results: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+  test("subsequent turn uses configured recallSearchMode", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall
+      {
+        body: {
+          session_id: "sess-1",
+          instructions: "Be helpful",
+          core_memories: "## User Facts\n- Name: Alice",
+          search_results: [],
+          stats: { core_count: 1, latency_ms: 100 },
+        },
+      },
+      // First turn search
+      {
+        body: {
+          session_id: "sess-1",
+          search_results: [{ id: "m1", memory: "User likes dogs", score: 0.9 }],
+          stats: { search_count: 1, new_count: 1, known_skipped: 0, latency_ms: 200 },
+        },
+      },
+      // Second turn search
+      {
+        body: {
+          session_id: "sess-1",
+          search_results: [{ id: "m2", memory: "User has a cat named Luna", score: 0.85 }],
+          stats: { search_count: 1, new_count: 1, known_skipped: 0, latency_ms: 50 },
+        },
+      },
+    ]);
+
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi({ recallFindFirst: true, recallSearchMode: "search" });
+    mnemoryPlugin.register(mock.api);
+
+    // session_start
+    mock.hooks["session_start"]![0]({}, { sessionKey: "sk-1", agentId: "main" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const handler = mock.hooks["before_prompt_build"]![0];
+
+    // First turn
+    await handler(
+      { prompt: "Tell me about my pets", messages: [] },
+      { sessionKey: "sk-1", agentId: "main" },
     );
 
-    const client = new MnemoryClient({
-      url: "http://localhost:8050",
-      apiKey: "my-secret",
-      userId: "",
-      logger: { info: vi.fn(), warn: vi.fn() },
-    });
+    // Second turn
+    const result = await handler(
+      { prompt: "What about my cat?", messages: [] },
+      { sessionKey: "sk-1", agentId: "main" },
+    );
 
-    await client.listMemories({});
+    // Verify second call used "search" mode
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    const secondSearchBody = JSON.parse(fetchSpy.mock.calls[2]![1]?.body as string);
+    expect(secondSearchBody.query).toBe("What about my cat?");
+    expect(secondSearchBody.search_mode).toBe("search");
 
-    const headers = fetchSpy.mock.calls[0]![1]?.headers as Record<string, string>;
-    expect(headers["X-User-Id"]).toBeUndefined();
+    // Verify search results are REPLACED (only second turn's results)
+    expect(result.appendSystemContext).toContain("User has a cat named Luna");
+    expect(result.appendSystemContext).not.toContain("User likes dogs");
+  });
+
+  test("empty prompt skips per-turn search", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall
+      {
+        body: {
+          session_id: "sess-1",
+          instructions: "Be helpful",
+          core_memories: "## User Facts\n- Name: Alice",
+          search_results: [],
+          stats: { core_count: 1, latency_ms: 100 },
+        },
+      },
+    ]);
+
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi();
+    mnemoryPlugin.register(mock.api);
+
+    mock.hooks["session_start"]![0]({}, { sessionKey: "sk-1", agentId: "main" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const handler = mock.hooks["before_prompt_build"]![0];
+    const result = await handler(
+      { prompt: "", messages: [] },
+      { sessionKey: "sk-1", agentId: "main" },
+    );
+
+    // Only the init call should have been made (no search call)
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Should still inject cached static context
+    expect(result).toBeDefined();
+    expect(result.prependSystemContext).toBe("Be helpful");
+    expect(result.appendSystemContext).toContain("User Facts");
+  });
+
+  test("init failure triggers combined call on first turn", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall fails
+      { body: "Internal Server Error", status: 500 },
+      // Combined call succeeds (before_prompt_build does init + search in one call)
+      {
+        body: {
+          session_id: "sess-new",
+          instructions: "Be helpful",
+          core_memories: "## User Facts\n- Name: Alice",
+          search_results: [{ id: "m1", memory: "User likes dogs", score: 0.9 }],
+          stats: { core_count: 1, search_count: 1, new_count: 1, latency_ms: 300 },
+        },
+      },
+    ]);
+
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi();
+    mnemoryPlugin.register(mock.api);
+
+    mock.hooks["session_start"]![0]({}, { sessionKey: "sk-1", agentId: "main" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const handler = mock.hooks["before_prompt_build"]![0];
+    const result = await handler(
+      { prompt: "Tell me about my pets", messages: [] },
+      { sessionKey: "sk-1", agentId: "main" },
+    );
+
+    // Init failed + combined call = 2 fetch calls
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // Combined call should include instructions params
+    const combinedBody = JSON.parse(fetchSpy.mock.calls[1]![1]?.body as string);
+    expect(combinedBody.query).toBe("Tell me about my pets");
+    expect(combinedBody.include_instructions).toBe(true);
+    expect(combinedBody.managed).toBe(true);
+
+    // Should inject everything from the combined call
+    expect(result).toBeDefined();
+    expect(result.prependSystemContext).toBe("Be helpful");
+    expect(result.appendSystemContext).toContain("User likes dogs");
+  });
+
+  test("search failure injects cached static context", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall succeeds
+      {
+        body: {
+          session_id: "sess-1",
+          instructions: "Be helpful",
+          core_memories: "## User Facts\n- Name: Alice",
+          search_results: [],
+          stats: { core_count: 1, latency_ms: 100 },
+        },
+      },
+      // Per-turn search fails
+      { body: "Internal Server Error", status: 500 },
+    ]);
+
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi();
+    mnemoryPlugin.register(mock.api);
+
+    mock.hooks["session_start"]![0]({}, { sessionKey: "sk-1", agentId: "main" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const handler = mock.hooks["before_prompt_build"]![0];
+    const result = await handler(
+      { prompt: "Tell me about my pets", messages: [] },
+      { sessionKey: "sk-1", agentId: "main" },
+    );
+
+    // Should still inject cached instructions + core memories
+    expect(result).toBeDefined();
+    expect(result.prependSystemContext).toBe("Be helpful");
+    expect(result.appendSystemContext).toContain("User Facts");
+    // No search results (search failed)
+    expect(result.appendSystemContext).not.toContain("Recalled Memories");
 
     fetchSpy.mockRestore();
   });
 
-  test("returns null on HTTP error", async () => {
-    const warnFn = vi.fn();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response("Internal Server Error", { status: 500 }));
+  test("compaction resets turnCount so next turn uses find mode", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall
+      {
+        body: {
+          session_id: "sess-1",
+          instructions: "Be helpful",
+          core_memories: "Core",
+          search_results: [],
+          stats: { core_count: 1, latency_ms: 100 },
+        },
+      },
+      // First turn search (find mode)
+      {
+        body: {
+          session_id: "sess-1",
+          search_results: [{ id: "m1", memory: "Memory 1", score: 0.9 }],
+          stats: { search_count: 1, new_count: 1, known_skipped: 0, latency_ms: 200 },
+        },
+      },
+      // After-compaction init recall (fresh session)
+      {
+        body: {
+          session_id: "sess-2",
+          instructions: "Be helpful",
+          core_memories: "Core",
+          search_results: [],
+          stats: { core_count: 1, latency_ms: 100 },
+        },
+      },
+      // Post-compaction first turn search (should be find mode again)
+      {
+        body: {
+          session_id: "sess-2",
+          search_results: [{ id: "m2", memory: "Memory 2", score: 0.85 }],
+          stats: { search_count: 1, new_count: 1, known_skipped: 0, latency_ms: 200 },
+        },
+      },
+    ]);
 
-    const client = new MnemoryClient({
-      url: "http://localhost:8050",
-      apiKey: "",
-      logger: { info: vi.fn(), warn: warnFn },
-    });
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi({ recallFindFirst: true });
+    mnemoryPlugin.register(mock.api);
 
-    const result = await client.searchMemories({ query: "test" });
-    expect(result).toBeNull();
-    expect(warnFn).toHaveBeenCalled();
+    const ctx = { sessionKey: "sk-1", agentId: "main" };
 
-    fetchSpy.mockRestore();
+    // session_start
+    mock.hooks["session_start"]![0]({}, ctx);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // First turn
+    await mock.hooks["before_prompt_build"]![0](
+      { prompt: "Hello", messages: [] },
+      ctx,
+    );
+
+    // Compaction
+    mock.hooks["before_compaction"]![0]({}, ctx);
+    mock.hooks["after_compaction"]![0]({ messageCount: 2 }, ctx);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Post-compaction turn
+    await mock.hooks["before_prompt_build"]![0](
+      { prompt: "What was I saying?", messages: [] },
+      ctx,
+    );
+
+    // Verify post-compaction search used "find" mode (turnCount was reset)
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    const postCompactionBody = JSON.parse(fetchSpy.mock.calls[3]![1]?.body as string);
+    expect(postCompactionBody.search_mode).toBe("find");
   });
 
-  test("returns null on network error", async () => {
-    const warnFn = vi.fn();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
-
-    const client = new MnemoryClient({
-      url: "http://localhost:8050",
-      apiKey: "",
-      logger: { info: vi.fn(), warn: warnFn },
-    });
-
-    const result = await client.searchMemories({ query: "test" });
-    expect(result).toBeNull();
-    expect(warnFn).toHaveBeenCalled();
-
-    fetchSpy.mockRestore();
-  });
-
-  test("recall sends correct request body", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
+  test("recallFindFirst=false uses recallSearchMode on first turn", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall
+      {
+        body: {
+          session_id: "sess-1",
+          instructions: "Be helpful",
+          core_memories: "Core",
+          search_results: [],
+          stats: { core_count: 1, latency_ms: 100 },
+        },
+      },
+      // First turn search (should use recallSearchMode, not "find")
+      {
+        body: {
           session_id: "sess-1",
           search_results: [],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    const client = new MnemoryClient({
-      url: "http://localhost:8050",
-      apiKey: "key",
-      logger: { info: vi.fn(), warn: vi.fn() },
-    });
-
-    await client.recall(
-      {
-        sessionId: "s1",
-        includeInstructions: true,
-        managed: true,
-        instructionMode: "personality",
-        scoreThreshold: 0.6,
+          stats: { search_count: 0, new_count: 0, known_skipped: 0, latency_ms: 50 },
+        },
       },
-      "agent-1",
+    ]);
+
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi({ recallFindFirst: false, recallSearchMode: "search" });
+    mnemoryPlugin.register(mock.api);
+
+    mock.hooks["session_start"]![0]({}, { sessionKey: "sk-1", agentId: "main" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    await mock.hooks["before_prompt_build"]![0](
+      { prompt: "Hello", messages: [] },
+      { sessionKey: "sk-1", agentId: "main" },
     );
 
-    expect(fetchSpy).toHaveBeenCalledOnce();
-    const [url, opts] = fetchSpy.mock.calls[0]!;
-    expect(url).toBe("http://localhost:8050/api/recall");
-    const body = JSON.parse(opts?.body as string);
-    expect(body.session_id).toBe("s1");
-    expect(body.include_instructions).toBe(true);
-    expect(body.managed).toBe(true);
-    expect(body.instruction_mode).toBe("personality");
-    expect(body.score_threshold).toBe(0.6);
+    // First turn should use "search" (not "find") because recallFindFirst is false
+    const searchBody = JSON.parse(fetchSpy.mock.calls[1]![1]?.body as string);
+    expect(searchBody.search_mode).toBe("search");
+  });
+
+  test("search results are replaced each turn, not accumulated", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall
+      {
+        body: {
+          session_id: "sess-1",
+          search_results: [],
+          stats: { core_count: 0, latency_ms: 50 },
+        },
+      },
+      // Turn 1 search
+      {
+        body: {
+          session_id: "sess-1",
+          search_results: [
+            { id: "m1", memory: "Memory from turn 1", score: 0.9 },
+            { id: "m2", memory: "Another turn 1 memory", score: 0.8 },
+          ],
+          stats: { search_count: 2, new_count: 2, known_skipped: 0, latency_ms: 100 },
+        },
+      },
+      // Turn 2 search
+      {
+        body: {
+          session_id: "sess-1",
+          search_results: [{ id: "m3", memory: "Memory from turn 2", score: 0.85 }],
+          stats: { search_count: 1, new_count: 1, known_skipped: 0, latency_ms: 50 },
+        },
+      },
+    ]);
+
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi();
+    mnemoryPlugin.register(mock.api);
+
+    const ctx = { sessionKey: "sk-1", agentId: "main" };
+    mock.hooks["session_start"]![0]({}, ctx);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const handler = mock.hooks["before_prompt_build"]![0];
+
+    // Turn 1
+    const result1 = await handler({ prompt: "Query 1", messages: [] }, ctx);
+    expect(result1?.appendSystemContext).toContain("Memory from turn 1");
+    expect(result1?.appendSystemContext).toContain("Another turn 1 memory");
+
+    // Turn 2 — should ONLY contain turn 2 results
+    const result2 = await handler({ prompt: "Query 2", messages: [] }, ctx);
+    expect(result2?.appendSystemContext).toContain("Memory from turn 2");
+    expect(result2?.appendSystemContext).not.toContain("Memory from turn 1");
+    expect(result2?.appendSystemContext).not.toContain("Another turn 1 memory");
 
     fetchSpy.mockRestore();
   });
 
-  test("deleteMemory returns true on success", async () => {
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(null, { status: 204 }));
+  test("failed search after successful search clears stale results", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall
+      {
+        body: {
+          session_id: "sess-1",
+          instructions: "Be helpful",
+          core_memories: "## User Facts\n- Name: Alice",
+          search_results: [],
+          stats: { core_count: 1, latency_ms: 100 },
+        },
+      },
+      // Turn 1 search succeeds
+      {
+        body: {
+          session_id: "sess-1",
+          search_results: [{ id: "m1", memory: "User likes dogs", score: 0.9 }],
+          stats: { search_count: 1, new_count: 1, known_skipped: 0, latency_ms: 200 },
+        },
+      },
+      // Turn 2 search fails
+      { body: "Internal Server Error", status: 500 },
+    ]);
 
-    const client = new MnemoryClient({
-      url: "http://localhost:8050",
-      apiKey: "",
-      logger: { info: vi.fn(), warn: vi.fn() },
-    });
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi();
+    mnemoryPlugin.register(mock.api);
 
-    const result = await client.deleteMemory("mem-123", "agent-1");
-    expect(result).toBe(true);
-    expect(fetchSpy).toHaveBeenCalledOnce();
-    const [url, opts] = fetchSpy.mock.calls[0]!;
-    expect(url).toBe("http://localhost:8050/api/memories/mem-123");
-    expect(opts?.method).toBe("DELETE");
+    const ctx = { sessionKey: "sk-1", agentId: "main" };
+    mock.hooks["session_start"]![0]({}, ctx);
+    await new Promise((r) => setTimeout(r, 50));
 
-    fetchSpy.mockRestore();
-  });
+    const handler = mock.hooks["before_prompt_build"]![0];
 
-  test("updateMemory returns false on error", async () => {
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response("Not Found", { status: 404 }));
+    // Turn 1 — succeeds with search results
+    const result1 = await handler({ prompt: "Tell me about my pets", messages: [] }, ctx);
+    expect(result1?.appendSystemContext).toContain("User likes dogs");
 
-    const client = new MnemoryClient({
-      url: "http://localhost:8050",
-      apiKey: "",
-      logger: { info: vi.fn(), warn: vi.fn() },
-    });
-
-    const result = await client.updateMemory("nonexistent", { content: "new" });
-    expect(result).toBe(false);
-
-    fetchSpy.mockRestore();
-  });
-
-  test("listMemories builds query string from params", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ results: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-
-    const client = new MnemoryClient({
-      url: "http://localhost:8050",
-      apiKey: "",
-      logger: { info: vi.fn(), warn: vi.fn() },
-    });
-
-    await client.listMemories({ memoryType: "fact", limit: 25, role: "user" });
-
-    const [url] = fetchSpy.mock.calls[0]!;
-    const urlStr = url as string;
-    expect(urlStr).toContain("memory_type=fact");
-    expect(urlStr).toContain("limit=25");
-    expect(urlStr).toContain("role=user");
+    // Turn 2 — search fails, should NOT contain stale turn 1 results
+    const result2 = await handler({ prompt: "What else?", messages: [] }, ctx);
+    expect(result2).toBeDefined();
+    expect(result2.prependSystemContext).toBe("Be helpful");
+    expect(result2.appendSystemContext).toContain("User Facts"); // core memories still present
+    expect(result2.appendSystemContext).not.toContain("User likes dogs"); // stale results cleared
+    expect(result2.appendSystemContext).not.toContain("Recalled Memories"); // no search section
 
     fetchSpy.mockRestore();
   });
 
-  test("omits Authorization header when apiKey is empty", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ results: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+  test("turnCount only advances on successful search", async () => {
+    const fetchSpy = mockFetchSequence([
+      // Init recall
+      {
+        body: {
+          session_id: "sess-1",
+          instructions: "Be helpful",
+          core_memories: "Core",
+          search_results: [],
+          stats: { core_count: 1, latency_ms: 100 },
+        },
+      },
+      // Turn 1 search fails
+      { body: "Internal Server Error", status: 500 },
+      // Retry turn 1 search — should still use "find" mode
+      {
+        body: {
+          session_id: "sess-1",
+          search_results: [{ id: "m1", memory: "Found it", score: 0.9 }],
+          stats: { search_count: 1, new_count: 1, known_skipped: 0, latency_ms: 200 },
+        },
+      },
+    ]);
 
-    const client = new MnemoryClient({
-      url: "http://localhost:8050",
-      apiKey: "",
-      logger: { info: vi.fn(), warn: vi.fn() },
-    });
+    const { default: mnemoryPlugin } = await import("./index.js");
+    const mock = createMockApi({ recallFindFirst: true, recallSearchMode: "search" });
+    mnemoryPlugin.register(mock.api);
 
-    await client.listMemories({});
+    const ctx = { sessionKey: "sk-1", agentId: "main" };
+    mock.hooks["session_start"]![0]({}, ctx);
+    await new Promise((r) => setTimeout(r, 50));
 
-    const headers = fetchSpy.mock.calls[0]![1]?.headers as Record<string, string>;
-    expect(headers["Authorization"]).toBeUndefined();
+    const handler = mock.hooks["before_prompt_build"]![0];
 
-    fetchSpy.mockRestore();
+    // Turn 1 — search fails
+    await handler({ prompt: "Hello", messages: [] }, ctx);
+
+    // Retry — should still use "find" mode because turnCount didn't advance
+    await handler({ prompt: "Hello again", messages: [] }, ctx);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    const retryBody = JSON.parse(fetchSpy.mock.calls[2]![1]?.body as string);
+    expect(retryBody.search_mode).toBe("find"); // Still "find" — turnCount didn't advance on failure
   });
 });

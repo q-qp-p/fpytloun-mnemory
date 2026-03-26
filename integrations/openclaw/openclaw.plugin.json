@@ -26,6 +26,16 @@
       "label": "Auto-Capture",
       "help": "Automatically extract and store memories from conversations"
     },
+    "recallFindFirst": {
+      "label": "AI Search on First Turn",
+      "help": "Use AI-powered multi-query search on the first turn of each session for higher quality results. Subsequent turns use the mode set by Recall Search Mode. Default: true",
+      "advanced": true
+    },
+    "recallSearchMode": {
+      "label": "Recall Search Mode",
+      "help": "Search mode for subsequent turns: 'find' (AI-powered, slower, higher quality) or 'search' (fast vector search, no LLM). Default: search",
+      "advanced": true
+    },
     "scoreThreshold": {
       "label": "Score Threshold",
       "placeholder": "0.5",
@@ -73,6 +83,13 @@
       },
       "autoCapture": {
         "type": "boolean"
+      },
+      "recallFindFirst": {
+        "type": "boolean"
+      },
+      "recallSearchMode": {
+        "type": "string",
+        "enum": ["find", "search"]
       },
       "scoreThreshold": {
         "type": "number",

@@ -23,10 +23,18 @@ type SessionState = {
   mnemorySessionId: string | null;
   /** Number of messages already processed for auto-capture. */
   lastMessageCount: number;
+  /** Conversation turn counter (0 = first turn). Used to select search mode. */
+  turnCount: number;
   /** In-flight recall promise (allows non-blocking pre-fetch). */
   recallPromise: Promise<RecallResponse | null> | null;
-  /** Cached recall result (used after first resolution). */
+  /** Cached init result (instructions + core_memories from first recall). */
   recallResult: RecallResponse | null;
+  /** Per-turn search results. REPLACED (not accumulated) each turn.
+   *  Server tracks known_ids per session, so replaced results won't be
+   *  re-returned on subsequent turns. This is intentional — conversation
+   *  history provides continuity. After compaction, mnemorySessionId resets
+   *  and memories can be re-discovered. */
+  lastSearchResults: RecallResponse["search_results"] | null;
 };
 
 // ============================================================================
@@ -53,8 +61,10 @@ function createSessionStore() {
     state = {
       mnemorySessionId: null,
       lastMessageCount: 0,
+      turnCount: 0,
       recallPromise: null,
       recallResult: null,
+      lastSearchResults: null,
     };
     sessions.set(sessionKey, state);
     return state;
@@ -240,9 +250,15 @@ const mnemoryPlugin = {
       return lastAgentId;
     };
 
-    // Helper: start a non-blocking recall (stores promise in session state)
-    const startRecall = (state: SessionState, agentId: string): void => {
+    // Helper: start a non-blocking init recall (instructions + core memories, no query).
+    // The per-turn search with query happens in before_prompt_build.
+    const startInitRecall = (state: SessionState, agentId: string): void => {
+      const isNew = !state.mnemorySessionId;
       state.recallResult = null;
+      state.lastSearchResults = null;
+      api.logger.info?.(
+        `mnemory: recall init started (sessionKey=${agentId}, new_session=${isNew})`,
+      );
       state.recallPromise = client
         .recall(
           {
@@ -258,11 +274,19 @@ const mnemoryPlugin = {
           if (result) {
             state.mnemorySessionId = result.session_id;
             state.recallResult = result;
+            const stats = result.stats;
+            api.logger.info?.(
+              `mnemory: recall init complete (mnemory_session=${result.session_id}, ` +
+                `has_instructions=${!!result.instructions}, ` +
+                `has_core=${!!result.core_memories}, ` +
+                `core_count=${stats?.core_count ?? 0}, ` +
+                `latency=${stats?.latency_ms ?? 0}ms)`,
+            );
           }
           return result;
         })
         .catch((err) => {
-          api.logger.warn(`mnemory: recall failed: ${String(err)}`);
+          api.logger.warn(`mnemory: recall init failed: ${String(err)}`);
           return null;
         });
     };
@@ -1267,16 +1291,19 @@ const mnemoryPlugin = {
     // ========================================================================
 
     if (cfg.autoRecall) {
-      // Start non-blocking recall on session start
+      // Start non-blocking init recall on session start (instructions + core memories).
+      // Per-turn search with the user's query happens in before_prompt_build.
       api.on("session_start", (_event, ctx) => {
         const sessionKey = ctx.sessionKey;
         if (!sessionKey) return;
         const agentId = resolveAgentId(ctx);
         const state = store.getOrCreate(sessionKey);
-        startRecall(state, agentId);
+        startInitRecall(state, agentId);
       });
 
-      // Inject recalled memories into the system prompt before each agent turn
+      // Inject recalled memories into the system prompt before each agent turn.
+      // Two-phase recall: init (session_start pre-fetch for instructions + core memories)
+      // + per-turn search (here, with the user's query for topical memories).
       api.on("before_prompt_build", async (event, ctx) => {
         const sessionKey = ctx.sessionKey;
         if (!sessionKey) return;
@@ -1284,39 +1311,133 @@ const mnemoryPlugin = {
         const state = store.getOrCreate(sessionKey);
         const agentId = resolveAgentId(ctx);
 
-        // If no recall has started yet (e.g., resumed session), start one now
+        // If no init recall has started yet (e.g., resumed session), start one now
         if (!state.recallPromise && !state.recallResult) {
-          startRecall(state, agentId);
+          startInitRecall(state, agentId);
         }
 
-        // Await the recall promise if it hasn't resolved yet (~1-2s on first call)
+        // Await the init recall promise if it hasn't resolved yet (~1-2s on first call)
         if (state.recallPromise && !state.recallResult) {
           try {
             await state.recallPromise;
           } catch {
-            // Already logged in startRecall
+            // Already logged in startInitRecall
           }
         }
 
-        if (!state.recallResult) return;
+        // Extract the current user message for per-turn search.
+        // The OpenClaw plugin SDK provides event.prompt (the user's prompt for this run)
+        // via PluginHookBeforePromptBuildEvent. See openclaw/src/plugins/types.ts.
+        const prompt = (event as { prompt?: string }).prompt?.trim() ?? "";
+        if (!prompt) {
+          api.logger.info?.(
+            "mnemory: no prompt in before_prompt_build event, skipping per-turn search",
+          );
+        }
 
-        const systemText = buildSystemText(state.recallResult);
-        if (!systemText) return;
+        // Per-turn search: send the user's query to /api/recall for topical memories
+        if (prompt) {
+          const isFirstTurn = state.turnCount === 0;
+          const searchMode: "find" | "search" =
+            isFirstTurn && cfg.recallFindFirst ? "find" : cfg.recallSearchMode;
+
+          api.logger.info?.(
+            `mnemory: recall search (mode=${searchMode}, query_len=${prompt.length}, ` +
+              `turn=${state.turnCount}, sessionKey=${sessionKey}, ` +
+              `mnemory_session=${state.mnemorySessionId ?? "none"})`,
+          );
+
+          // Clear previous search results before attempting a new search.
+          // On failure, we fall back to cached static context (instructions +
+          // core_memories) without stale topical results from a prior turn.
+          state.lastSearchResults = null;
+
+          try {
+            // If init completed, do a search-only call with session_id.
+            // If init failed (no recallResult), do a combined call that also
+            // fetches instructions + core_memories in one round-trip.
+            const needsInit = !state.recallResult;
+            const searchResult = await client.recall(
+              {
+                sessionId: state.mnemorySessionId ?? undefined,
+                query: prompt,
+                searchMode,
+                scoreThreshold: cfg.scoreThreshold,
+                ...(needsInit
+                  ? {
+                      includeInstructions: cfg.managed,
+                      managed: cfg.managed,
+                      instructionMode: "personality",
+                    }
+                  : {}),
+              },
+              agentId,
+            );
+
+            if (searchResult) {
+              // Update session ID (may be new if init failed)
+              state.mnemorySessionId = searchResult.session_id;
+
+              // If this was a combined call (init failed), cache the static parts
+              if (needsInit) {
+                state.recallResult = searchResult;
+              }
+
+              // REPLACE per-turn search results (never accumulate).
+              // Server tracks known_ids per session, so replaced results won't be
+              // re-returned on subsequent turns. This is intentional — conversation
+              // history provides continuity. After compaction, mnemorySessionId
+              // resets and memories can be re-discovered.
+              state.lastSearchResults = searchResult.search_results ?? [];
+
+              // Only advance turnCount on success so a transient failure on the
+              // first turn doesn't skip the intended "find" mode on retry.
+              state.turnCount++;
+
+              const stats = searchResult.stats;
+              api.logger.info?.(
+                `mnemory: recall search complete (search_count=${stats?.search_count ?? 0}, ` +
+                  `new_count=${stats?.new_count ?? 0}, ` +
+                  `known_skipped=${stats?.known_skipped ?? 0}, ` +
+                  `latency=${stats?.latency_ms ?? 0}ms)`,
+              );
+            } else {
+              api.logger.warn("mnemory: recall search returned null (API error)");
+            }
+          } catch (err) {
+            api.logger.warn(`mnemory: recall search failed: ${String(err)}`);
+          }
+        }
+
+        // Build injection from cached init result + per-turn search results
+        if (!state.recallResult && !state.lastSearchResults?.length) return;
+
+        const searchResults = state.lastSearchResults ?? [];
+        const instructions = state.recallResult?.instructions ?? undefined;
+
+        // Build the appendSystemContext from core_memories + search results
+        const appendText = buildSystemText({
+          session_id: state.mnemorySessionId ?? "",
+          instructions: undefined, // Instructions go in prependSystemContext
+          core_memories: state.recallResult?.core_memories,
+          search_results: searchResults,
+        });
 
         api.logger.info?.(
-          `mnemory: injecting ${state.recallResult.search_results?.length ?? 0} memories into context`,
+          `mnemory: injecting context (instructions=${!!instructions}, ` +
+            `core_memories=${!!state.recallResult?.core_memories}, ` +
+            `search_results=${searchResults.length}, ` +
+            `turn=${state.turnCount}, sessionKey=${sessionKey}, ` +
+            `mnemory_session=${state.mnemorySessionId ?? "none"})`,
         );
 
         return {
           // Static behavioral instructions go at the top of the system prompt (cacheable).
-          prependSystemContext: state.recallResult.instructions ?? undefined,
+          prependSystemContext: instructions,
           // Core memories + recalled search results go at the end of the system prompt.
           // Using appendSystemContext (not prependContext) avoids polluting user messages —
           // prependContext would prepend to the user message text and accumulate in history.
-          appendSystemContext: buildSystemText({
-            ...state.recallResult,
-            instructions: undefined, // Already in prependSystemContext
-          }),
+          appendSystemContext: appendText || undefined,
         };
       });
 
@@ -1330,7 +1451,7 @@ const mnemoryPlugin = {
         const state = store.getOrCreate(sessionKey);
         const afterEvent = event as { messageCount?: number };
         state.lastMessageCount = afterEvent.messageCount ?? 0;
-        startRecall(state, agentId);
+        startInitRecall(state, agentId);
       });
 
       // Reset session state before compaction so after_compaction gets a fresh
@@ -1341,6 +1462,8 @@ const mnemoryPlugin = {
         const state = store.getOrCreate(sessionKey);
         state.recallResult = null;
         state.recallPromise = null;
+        state.lastSearchResults = null;
+        state.turnCount = 0;
         // Force a fresh mnemory session — the old one tracked which memories
         // were already sent, but after compaction the agent's context is wiped
         // so core memories and previously recalled memories must be re-injected.

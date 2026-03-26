@@ -51,6 +51,8 @@ In your `openclaw.json`:
 | `agentPrefix` | `MNEMORY_AGENT_PREFIX` | `openclaw` | Prefix for agent IDs (e.g., `openclaw:main`) |
 | `autoRecall` | -- | `true` | Auto-inject memories into context |
 | `autoCapture` | -- | `true` | Auto-extract memories from conversations |
+| `recallFindFirst` | -- | `true` | Use AI-powered search on first turn (higher quality, slower) |
+| `recallSearchMode` | -- | `search` | Search mode for subsequent turns: `find` or `search` |
 | `scoreThreshold` | -- | `0.5` | Min relevance score for recalled memories (0.0-1.0) |
 | `includeAssistant` | -- | `true` | Send assistant messages for extraction |
 | `managed` | -- | `true` | Include behavioral instructions in system prompt |
@@ -60,10 +62,15 @@ Config values support `${ENV_VAR}` syntax for environment variable resolution.
 
 ## How It Works
 
-1. **`session_start`**: Pre-fetches memories from `/api/recall` (non-blocking)
-2. **`before_prompt_build`**: Injects recalled memories into the system prompt. Static instructions go to `prependSystemContext` (cacheable), memories go to `appendSystemContext`
+1. **`session_start`**: Pre-fetches instructions and core memories from `/api/recall` (non-blocking)
+2. **`before_prompt_build`**: Two-phase recall per turn:
+   - Awaits the init recall (instructions + core memories) if still pending
+   - Sends the current user prompt as a search query to `/api/recall` for topical memories
+   - First turn uses AI-powered `find` mode (configurable via `recallFindFirst`), subsequent turns use fast `search` mode (configurable via `recallSearchMode`)
+   - Search results are **replaced** each turn (not accumulated) — the server deduplicates via session tracking
+   - Injects instructions via `prependSystemContext` (cacheable), core memories + search results via `appendSystemContext`
 3. **`agent_end`**: Extracts the last user+assistant exchange, strips inbound metadata, sends to `/api/remember` for background extraction
-4. **`after_compaction`**: Re-fetches memories and resets tracking after context compaction
+4. **`after_compaction`**: Re-fetches memories and resets turn tracking after context compaction
 5. **`session_end`**: Cleans up session state
 
 ## Memory Slot
