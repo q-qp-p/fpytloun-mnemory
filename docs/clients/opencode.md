@@ -1,17 +1,74 @@
 # OpenCode
 
-OpenCode has full MCP support and a plugin system that enables automatic memory recall and storage via lifecycle hooks.
+OpenCode has full MCP support and a plugin system that enables automatic memory recall and storage via lifecycle hooks, plus 16 built-in memory tools.
 
 ## Integration Options
 
 | Method | What it does | Setup effort |
 |---|---|---|
-| **MCP only** | LLM-driven memory via tool calls | Add MCP config |
-| **MCP + Plugin** (recommended) | Automatic recall/remember via hooks + LLM tools for explicit ops | Copy plugin + MCP config |
+| **Plugin** (recommended) | Automatic recall/remember + 16 built-in tools. No MCP needed. | Install npm package |
+| **MCP only** | LLM-driven memory via MCP tool calls | Add MCP config |
 
-## MCP Setup
+## Plugin Setup (Recommended)
+
+The plugin handles everything automatically — memory recall, per-turn search, and storage. It also registers 16 memory tools for explicit operations (search, add, update, delete, artifacts).
+
+### Install from npm
 
 Add to your `opencode.json` (project) or `~/.config/opencode/opencode.json` (global):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@fpytloun/opencode-mnemory"]
+}
+```
+
+Set environment variables:
+
+```bash
+export MNEMORY_URL=http://localhost:8050
+export MNEMORY_API_KEY=your-api-key  # if auth is enabled
+```
+
+### Install from local files
+
+```bash
+# Global (recommended)
+cp integrations/opencode/*.ts ~/.config/opencode/plugins/
+
+# Or project-level
+cp integrations/opencode/*.ts .opencode/plugins/
+```
+
+### How the Plugin Works
+
+| Phase | Hook | Action |
+|---|---|---|
+| Session start | `session.created` | Pre-fetches core memories and instructions (non-blocking) |
+| Each user message | `chat.message` | Starts semantic search with user's query (non-blocking) |
+| Before each LLM call | `experimental.chat.system.transform` | Injects instructions + core memories + search results into system prompt |
+| After each exchange | `session.idle` | Sends last exchange to mnemory for memory extraction (fire-and-forget) |
+| On compaction | `experimental.session.compacting` | Preserves core memories across context window compaction |
+| After compaction | `session.compacted` | Resets state and re-fetches memories |
+
+### Configuration
+
+All configuration is via environment variables. See [`integrations/opencode/README.md`](../../integrations/opencode/README.md) for the full list.
+
+Key variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `MNEMORY_URL` | `http://localhost:8050` | Mnemory server URL |
+| `MNEMORY_API_KEY` | (empty) | Bearer token for authentication |
+| `MNEMORY_AGENT_ID` | `opencode` | Agent ID sent to mnemory |
+| `MNEMORY_MANAGED` | `true` | Include behavioral instructions in system prompt |
+| `MNEMORY_FIND_FIRST` | `true` | Use AI-powered search on first turn |
+
+## MCP Setup (Alternative)
+
+If you prefer MCP-only (without the plugin), add to your `opencode.json`:
 
 ```json
 {
@@ -28,42 +85,11 @@ Add to your `opencode.json` (project) or `~/.config/opencode/opencode.json` (glo
 }
 ```
 
-## Plugin Setup (Recommended)
-
-The plugin hooks into OpenCode's session lifecycle for automatic recall/remember. See [`integrations/opencode/`](../../integrations/opencode/) for the plugin code and detailed setup instructions.
-
-### Quick Install
-
-1. Set environment variables:
-   ```bash
-   export MNEMORY_URL=http://localhost:8050
-   export MNEMORY_API_KEY=your-api-key
-   ```
-
-2. Copy the plugin:
-   ```bash
-   # Global (recommended)
-   mkdir -p ~/.config/opencode/plugins
-   cp integrations/opencode/mnemory.ts ~/.config/opencode/plugins/
-
-   # Or project-level
-   mkdir -p .opencode/plugins
-   cp integrations/opencode/mnemory.ts .opencode/plugins/
-   ```
-
-3. Add the MCP config above for explicit tool access.
-
-### How the Plugin Works
-
-| Hook | Action |
-|---|---|
-| `session.created` | Pre-fetches memories from `/api/recall` (non-blocking) |
-| `experimental.chat.system.transform` | Injects memories into system prompt before each LLM call |
-| `session.idle` | Calls `/api/remember` with the last exchange (fire-and-forget) |
-| `experimental.session.compacting` | Preserves memories across session compaction |
+Note: With MCP-only, memory recall and storage are LLM-driven (the LLM must call tools explicitly). The plugin approach is recommended for automatic recall/remember.
 
 ## Tips
 
-- The plugin and MCP tools work together -- plugin handles automatic parts, MCP tools handle explicit search/update/delete
+- The plugin registers 16 memory tools — no separate MCP config needed
 - Memory persists across session compaction
-- See the [coding assistant system prompt guide](../system-prompts/claude-code.md) for tips on what gets remembered
+- First turn uses AI-powered search for higher quality results; subsequent turns use fast vector search
+- If the mnemory server is offline, the plugin degrades gracefully — the LLM works normally without memory context

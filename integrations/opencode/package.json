@@ -1,0 +1,42 @@
+{
+  "name": "@fpytloun/opencode-mnemory",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for mnemory — persistent AI memory with auto-recall, auto-capture, and explicit memory tools",
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "*.ts",
+    "!*.test.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "plugin",
+    "memory",
+    "mnemory",
+    "semantic-memory",
+    "long-term-memory"
+  ],
+  "license": "Apache-2.0",
+  "author": "Filip Pytloun <filip@pytloun.cz>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fpytloun/mnemory.git",
+    "directory": "integrations/opencode"
+  },
+  "homepage": "https://github.com/fpytloun/mnemory/tree/main/integrations/opencode",
+  "bugs": {
+    "url": "https://github.com/fpytloun/mnemory/issues"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.1.0",
+    "@types/bun": "^1.3.0"
+  }
+}

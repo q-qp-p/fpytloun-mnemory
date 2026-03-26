@@ -1,12 +1,4 @@
 {
-  "mcp": {
-    "mnemory": {
-      "type": "remote",
-      "url": "http://localhost:8050/mcp",
-      "headers": {
-        "Authorization": "Bearer your-api-key",
-        "X-Agent-Id": "opencode"
-      }
-    }
-  }
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@fpytloun/opencode-mnemory"]
 }

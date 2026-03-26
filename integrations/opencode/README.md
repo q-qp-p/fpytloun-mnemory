@@ -1,102 +1,139 @@
-# OpenCode Plugin — Automatic Memory
+# @fpytloun/opencode-mnemory
 
-A plugin for [OpenCode](https://opencode.ai) that automatically recalls memories at session start, stores new memories after each exchange, and preserves memory context across session compaction.
+OpenCode plugin for [mnemory](https://github.com/fpytloun/mnemory) — persistent AI memory with automatic recall, automatic capture, and 16 explicit memory tools.
+
+**No MCP server configuration needed.** All memory tools are built into the plugin.
 
 ## How It Works
 
-1. **`session.created`**: Pre-fetches memories from `/api/recall` (non-blocking).
-2. **`experimental.chat.system.transform`**: Injects recalled memories and behavioral instructions into the system prompt before each LLM call. On the first call, awaits the pre-fetch (~1-2s). On subsequent calls, uses the cached result (instant). Also handles resumed sessions where `session.created` didn't fire.
-3. **`session.idle`**: After each LLM exchange, extracts the last user + assistant messages and calls `/api/remember` to store new memories (fire-and-forget).
-4. **`experimental.session.compacting`**: Re-injects core memories into the compaction context so they survive session compaction.
-
-The plugin injects both memory content and behavioral instructions (what to do automatically vs. what to leave for explicit user requests) directly into the system prompt. No separate rules file is needed.
-
-The LLM also has access to mnemory MCP tools for explicit operations (search, update, delete). The plugin handles the automatic parts.
-
-## Setup
-
-### 1. Environment Variables
-
-The plugin makes direct HTTP calls to the mnemory REST API. These environment variables **must be set** for the plugin to work — without them, API calls fail silently:
-
-```bash
-export MNEMORY_URL=http://localhost:8050
-export MNEMORY_API_KEY=your-api-key        # required if mnemory uses MCP_API_KEYS
-export MNEMORY_AGENT_ID=opencode           # optional, defaults to "opencode"
-export MNEMORY_USER_ID=your-username       # optional if using API key mapping
-export MNEMORY_SCORE_THRESHOLD=0.5         # optional, min relevance score (0.0-1.0)
-```
-
-| Variable | Default | Description |
+| Phase | Hook | Action |
 |---|---|---|
-| `MNEMORY_URL` | `http://localhost:8050` | mnemory server URL |
-| `MNEMORY_API_KEY` | (empty) | API key for authentication. **Required** if mnemory has `MCP_API_KEYS` set. |
-| `MNEMORY_AGENT_ID` | `opencode` | Agent ID sent to mnemory |
-| `MNEMORY_USER_ID` | (empty) | User ID (optional if API key maps to a user) |
-| `MNEMORY_SCORE_THRESHOLD` | `0.5` | Minimum relevance score for recalled memories. Higher = fewer but more relevant. Prevents context bloat from weak matches. |
+| **Session start** | `session.created` | Pre-fetches core memories and instructions from mnemory (non-blocking) |
+| **Each user message** | `chat.message` | Starts a semantic search with the user's query (non-blocking) |
+| **Before each LLM call** | `experimental.chat.system.transform` | Injects instructions + core memories + search results into system prompt |
+| **After each exchange** | `session.idle` | Extracts the last user+assistant exchange and sends to mnemory for memory extraction (fire-and-forget) |
+| **On compaction** | `experimental.session.compacting` | Preserves core memories across context window compaction |
+| **After compaction** | `session.compacted` | Resets state and re-fetches memories |
+| **Session cleanup** | `session.deleted` | Cleans up session state |
 
-### 2. Install the Plugin
+The LLM also has access to 16 memory tools for explicit operations (search, add, update, delete, artifacts).
 
-Copy `mnemory.ts` to your OpenCode plugins directory:
+## Installation
 
-```bash
-# Global (recommended — memory works across all projects)
-mkdir -p ~/.config/opencode/plugins
-cp mnemory.ts ~/.config/opencode/plugins/
+### From npm (recommended)
 
-# Or project-level
-mkdir -p .opencode/plugins
-cp mnemory.ts .opencode/plugins/
-```
-
-Local plugins are loaded automatically — no config entry needed.
-
-### 3. Configure OpenCode
-
-Add the MCP server to your `~/.config/opencode/opencode.json` (global) or `opencode.json` (project):
+Add to your `opencode.json` (project) or `~/.config/opencode/opencode.json` (global):
 
 ```json
 {
-  "mcp": {
-    "mnemory": {
-      "type": "remote",
-      "url": "http://localhost:8050/mcp",
-      "headers": {
-        "Authorization": "Bearer your-api-key",
-        "X-Agent-Id": "opencode"
-      }
-    }
-  }
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@fpytloun/opencode-mnemory"]
 }
 ```
 
-That's it. The plugin injects behavioral instructions into the system prompt automatically — no rules file or `"instructions"` config needed.
+Set environment variables:
 
-See `opencode.json` in this directory for a complete example.
+```bash
+export MNEMORY_URL=http://localhost:8050
+export MNEMORY_API_KEY=your-api-key  # if auth is enabled
+```
 
-## Hybrid Approach
+### From local files (for development)
 
-The plugin and MCP server work together:
+```bash
+# Global
+cp integrations/opencode/*.ts ~/.config/opencode/plugins/
 
-| Component | Handles |
+# Or project-level
+cp integrations/opencode/*.ts .opencode/plugins/
+```
+
+## Configuration
+
+All configuration is via environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `MNEMORY_URL` | `http://localhost:8050` | Mnemory server URL |
+| `MNEMORY_API_KEY` | (empty) | Bearer token for authentication |
+| `MNEMORY_AGENT_ID` | `opencode` | Agent ID sent to mnemory |
+| `MNEMORY_USER_ID` | (empty) | User ID (optional if API key maps to user) |
+| `MNEMORY_SCORE_THRESHOLD` | `0.5` | Minimum relevance score for recalled memories (0.0-1.0) |
+| `MNEMORY_INCLUDE_ASSISTANT` | `false` | Include assistant messages in remember calls |
+| `MNEMORY_SEARCH_MODE` | `search` | Default search mode for subsequent turns: `find` (AI-powered) or `search` (fast vector) |
+| `MNEMORY_FIND_FIRST` | `true` | Use AI-powered search on the first turn of each session |
+| `MNEMORY_MANAGED` | `true` | Include mnemory behavioral instructions in the system prompt |
+| `MNEMORY_TIMEOUT` | `30000` | HTTP request timeout in milliseconds |
+
+## Tools
+
+The plugin registers 16 tools that the LLM can call for explicit memory operations:
+
+| Tool | Description |
 |---|---|
-| **Plugin** (automatic) | Recall at session start, remember after each exchange, system prompt injection, compaction persistence |
-| **MCP tools** (LLM-driven) | Explicit search, add, update, delete when the user asks |
+| `memory_search` | Semantic search across memories |
+| `memory_find` | AI-powered multi-query search with LLM reranking |
+| `memory_ask` | Ask a question and get a synthesized answer from memories |
+| `memory_add` | Store a new memory (auto-extracts facts, deduplicates) |
+| `memory_add_batch` | Store multiple memories in one call |
+| `memory_update` | Update existing memory content or metadata |
+| `memory_delete` | Delete a memory by ID |
+| `memory_delete_batch` | Delete multiple memories |
+| `memory_list` | List memories with optional filters |
+| `memory_categories` | List available predefined categories |
+| `memory_recent` | Get recent memories from last N days |
+| `memory_save_artifact` | Attach artifact (report, code, data) to a memory |
+| `memory_get_artifact` | Retrieve artifact content |
+| `memory_get_artifact_url` | Generate signed download URL for large/binary artifacts |
+| `memory_list_artifacts` | List artifacts attached to a memory |
+| `memory_delete_artifact` | Delete an artifact |
 
-The plugin injects managed instructions into the system prompt that tell the LLM which operations are automatic and which it can use explicitly. This prevents the LLM from calling `initialize_memory` or `add_memory` when the plugin already handles those.
+## Architecture
 
-## Compaction
+```
+index.ts        Plugin entry point — wires hooks + tools
+hooks.ts        Lifecycle hooks — auto-recall, auto-remember, compaction
+tools.ts        16 custom tool definitions
+client.ts       HTTP client for mnemory REST API
+helpers.ts      Config, session store, escaping, text extraction
+```
 
-OpenCode compacts long sessions to stay within context limits. The plugin handles this in two ways:
+### Two-Phase Recall
 
-1. **System prompt injection**: Since memories are injected via `experimental.chat.system.transform`, they are automatically present on every LLM call — including after compaction. No special handling needed.
-2. **Compaction context**: The `experimental.session.compacting` hook also pushes core memories into the compaction context, ensuring the compaction summary preserves memory-related information.
+1. **Init recall** (`session.created`): Pre-fetches instructions + core memories (no query). Cached for session lifetime.
+2. **Per-turn search** (`chat.message` → `system.transform`): On each user message, starts a search with the user's query. Results are awaited and injected before the LLM call.
 
-On `session.compacted`, the plugin resets its cache and pre-fetches fresh memories for the next LLM call.
+First turn uses `find` mode (AI-powered multi-query search, higher quality). Subsequent turns use `search` mode (fast vector search, no LLM overhead). Configurable via `MNEMORY_SEARCH_MODE` and `MNEMORY_FIND_FIRST`.
+
+### Graceful Degradation
+
+- If the mnemory server is offline, the plugin logs a warning and the LLM works normally without memory context.
+- All API calls have timeouts and never throw — errors are logged via OpenCode's structured logging.
+- Per-turn search has an 8-second timeout in `system.transform` to avoid blocking the LLM call.
 
 ## Troubleshooting
 
-- **No memories appearing**: Check that `MNEMORY_URL` and `MNEMORY_API_KEY` are set. The plugin fails silently without them. Look for "Plugin initialized" in OpenCode logs (`--print-logs`).
-- **Memories lost after compaction**: Ensure the plugin is loaded (check logs). The system prompt injection and compaction hook should preserve memories automatically.
-- **LLM still calls initialize_memory**: The plugin injects managed instructions that override MCP tool descriptions. If the LLM still calls init tools, check that the plugin is loaded and the mnemory server is reachable (instructions come from the `/api/recall` response).
-- **Duplicate memory storage**: The extraction pipeline deduplicates against existing memories. If you see duplicates, check that the mnemory server is reachable for the remember calls.
+**Memories not appearing?**
+- Check that `MNEMORY_URL` is correct and the server is running
+- Look for `mnemory:` messages in OpenCode logs
+- Verify the API key is valid (if auth is enabled)
+
+**Search results not relevant?**
+- Try lowering `MNEMORY_SCORE_THRESHOLD` (e.g., `0.3`)
+- Use `MNEMORY_FIND_FIRST=true` for AI-powered search on the first turn
+
+**Too much latency on first turn?**
+- Set `MNEMORY_FIND_FIRST=false` to use fast vector search on all turns
+- The init recall runs in the background and shouldn't add latency
+
+## Development
+
+```bash
+# Run tests
+cd integrations/opencode
+bun test
+```
+
+## License
+
+Apache 2.0
