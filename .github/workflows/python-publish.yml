@@ -18,6 +18,8 @@ permissions:
 jobs:
   release-build:
     runs-on: ubuntu-latest
+    # Only publish for mnemory Python releases (v*), not integration tags (openclaw-v*, etc.)
+    if: startsWith(github.event.release.tag_name, 'v')
 
     steps:
       - uses: actions/checkout@v4
