@@ -2,6 +2,77 @@
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-03-26
+
+### Two-Layer Memory System
+
+- **Raw and consolidated memory layers**: Memories now have a `memory_layer` field — `raw` (provisional evidence from the `remember` endpoint) or `consolidated` (durable knowledge from `add_memory`, consolidation, or pre-existing memories). The `remember` endpoint writes `memory_layer=raw` and its dedup only searches against other raw memories, never modifying consolidated knowledge. This fixes the C1 dedup isolation problem where remember calls could overwrite manually stored memories ([`0638e93`](https://github.com/fpytloun/mnemory/commit/0638e93))
+- **Session summary persistence**: Session summaries are now persisted to a dedicated `_mnemory_sessions` Qdrant collection. Summaries are updated on each `remember` call and survive server restarts. New REST endpoints for listing and querying session summaries ([`0638e93`](https://github.com/fpytloun/mnemory/commit/0638e93))
+- **6-category extraction model**: Extraction prompts enhanced with a 6-category model (Topic, Exploration, Decision, Fact, Action, Preference/Workflow) to guide what to extract from conversations, improving extraction quality and classification accuracy ([`0638e93`](https://github.com/fpytloun/mnemory/commit/0638e93))
+- **Layer-aware recall ranking**: Search results are reranked by memory layer — raw memories are penalized (-0.05) and superseded raw memories are further penalized (-0.15), ensuring consolidated knowledge surfaces first ([`944807d`](https://github.com/fpytloun/mnemory/commit/944807d))
+- **`memory_layer` filter**: `list_memories` MCP tool and REST endpoint accept a `memory_layer` filter (raw/consolidated) for browsing by layer ([`944807d`](https://github.com/fpytloun/mnemory/commit/944807d))
+- **Data migrations**: Automatic migrations for `_mnemory_sessions` collection creation and `memory_layer` payload index ([`0638e93`](https://github.com/fpytloun/mnemory/commit/0638e93))
+
+### Within-Session Consolidation Service
+
+- **ConsolidationService**: New background service that consolidates raw memories into durable knowledge after sessions go idle. State machine (idle → consolidating → consolidated/failed) with output validation and crash recovery. Wired into the existing `MaintenanceService` periodic loop ([`944807d`](https://github.com/fpytloun/mnemory/commit/944807d))
+- **Role-separated consolidation**: User and assistant memories are consolidated independently with separate LLM calls and role-specific system prompts. User consolidation focuses on decisions, preferences, facts, and goals. Assistant consolidation focuses on implementations, deployments, research findings, and recommendations ([`edfec56`](https://github.com/fpytloun/mnemory/commit/edfec56))
+- **Append-only re-consolidation**: When new raw memories arrive after consolidation, the session resets to idle and becomes eligible for re-consolidation. New consolidated memories are appended alongside existing ones (no data loss). Previous consolidated memories are passed as read-only context to prevent duplication ([`1c4da6a`](https://github.com/fpytloun/mnemory/commit/1c4da6a))
+- **Time-based batching**: Large sessions are split into batches (`CONSOLIDATION_BATCH_SIZE`, default 100) with accumulated context from prior batches to prevent cross-batch duplication ([`1c4da6a`](https://github.com/fpytloun/mnemory/commit/1c4da6a))
+- **Manual consolidation trigger**: `POST /api/sessions/{id}/consolidate` endpoint for on-demand consolidation with 409 race guard and failed-state reset. Fire-and-forget (returns 202 immediately, runs in background) ([`da514a4`](https://github.com/fpytloun/mnemory/commit/da514a4), [`b3cb51f`](https://github.com/fpytloun/mnemory/commit/b3cb51f))
+- **Session delete**: `DELETE /api/sessions/{id}` endpoint with optional `delete_memories=true` to also delete linked raw memories ([`007e730`](https://github.com/fpytloun/mnemory/commit/007e730))
+- **Dedicated consolidation model**: `CONSOLIDATION_LLM_MODEL` and `CONSOLIDATION_REASONING_EFFORT` config options (falls back to `FSCK_LLM_MODEL`, then `LLM_MODEL`) for using a stronger model for synthesis while keeping extraction lightweight ([`9a11e3b`](https://github.com/fpytloun/mnemory/commit/9a11e3b))
+- **GC for superseded raw memories**: Fsck now garbage-collects superseded raw memories without artifacts ([`944807d`](https://github.com/fpytloun/mnemory/commit/944807d))
+- **Consolidation metrics**: New Prometheus counters and gauges — runs, produced, superseded, duration, validation failures, pending sessions ([`944807d`](https://github.com/fpytloun/mnemory/commit/944807d))
+
+### Security
+
+- **`_trusted` bypass for internal callers**: New internal-only `_trusted` parameter on `add_memory` allows `infer=False` with `role='assistant'` for trusted server-side callers (consolidation, fsck). Never exposed in MCP tools or REST API ([`2e06181`](https://github.com/fpytloun/mnemory/commit/2e06181))
+- **`ALLOW_CLIENT_INFER` config**: When set to `false`, client-facing tools always force `infer=True`, preventing untrusted clients from bypassing LLM extraction. Internal callers unaffected. Default: `true` ([`2e06181`](https://github.com/fpytloun/mnemory/commit/2e06181))
+
+### Integrations
+
+- **OpenClaw plugin** (`@fpytloun/openclaw-mnemory`): New standalone plugin for automatic memory recall/capture in OpenClaw. Ships as npm package with 15 tools, CLI commands, config schema, two-phase recall (init at session start + per-turn topical search), and comprehensive test suite ([`b2147ac`](https://github.com/fpytloun/mnemory/commit/b2147ac), [`c2ed398`](https://github.com/fpytloun/mnemory/commit/c2ed398))
+- **OpenCode plugin rewrite** (`@fpytloun/opencode-mnemory`): Rewritten from single-file plugin (382 lines) to multi-file npm package (~2750 lines). Adds per-turn semantic search (old plugin only recalled at session start), 16 custom tools via plugin API (eliminates separate MCP server config), prompt injection escaping, session cleanup with AbortController, and unit tests ([`c6d9e20`](https://github.com/fpytloun/mnemory/commit/c6d9e20))
+- **OpenWebUI filter improvements**: Fixed static context (instructions + core memories) lost on subsequent turns by caching from first turn. Fixed pending session handling, tool stripping for both `tool_ids` and `tools` fields. Added debug valve for diagnostic status messages. Bumped to v0.2.0 ([`e3a3f72`](https://github.com/fpytloun/mnemory/commit/e3a3f72), [`9d750ce`](https://github.com/fpytloun/mnemory/commit/9d750ce))
+
+### Management UI
+
+- **Sessions tab**: New tab for viewing persistent session summaries with memory cards, session detail modal, consolidation status, and "Consolidate Now" button for idle/failed sessions. Agent filter dropdown, delete with optional raw memory cleanup ([`b044e27`](https://github.com/fpytloun/mnemory/commit/b044e27), [`da514a4`](https://github.com/fpytloun/mnemory/commit/da514a4), [`007e730`](https://github.com/fpytloun/mnemory/commit/007e730))
+- **Memory layer filter**: Browse and Search tabs now include a layer filter dropdown (All/Raw/Consolidated) with `raw`, `superseded`, and `consolidated` badges on memory cards ([`da514a4`](https://github.com/fpytloun/mnemory/commit/da514a4), [`b3cb51f`](https://github.com/fpytloun/mnemory/commit/b3cb51f))
+- **Expanded memory details**: `superseded_by` and `derived_from` fields shown in expanded memory details ([`da514a4`](https://github.com/fpytloun/mnemory/commit/da514a4))
+
+### Prompt & Extraction Improvements
+
+- **Stronger summary prompts**: Per-turn summaries now explicitly capture assistant work (implementations, designs, research, deployments). Trivial exchanges produce minimal output instead of inflated "User asked..." statements ([`e5fccbe`](https://github.com/fpytloun/mnemory/commit/e5fccbe))
+- **Broader agent extraction**: Agent extraction prompt expanded to also extract actions with lasting impact, conclusions/decisions, and recommendations — not just identity facts ([`c62e8a0`](https://github.com/fpytloun/mnemory/commit/c62e8a0))
+- **Conservative consolidation**: Consolidation prompts require the "valuable in FUTURE conversations" test. Preferences require explicit statement or repeated pattern. Empty output allowed for sessions with no durable knowledge ([`853ac3f`](https://github.com/fpytloun/mnemory/commit/853ac3f))
+- **Category enforcement**: Consolidated memories now reliably have categories via three-layer fix — prompt instruction, schema `minItems=1` constraint, and code fallback inheriting from source raw memories ([`99e6b0a`](https://github.com/fpytloun/mnemory/commit/99e6b0a), [`17f12b8`](https://github.com/fpytloun/mnemory/commit/17f12b8))
+- **TTL and event_date in consolidation**: Consolidation output includes memory_type TTL guidance and event_date support for episodic memories ([`25091c6`](https://github.com/fpytloun/mnemory/commit/25091c6))
+
+### Bug Fixes
+
+- **Null text in dedup response**: Handle `{"text": null}` in LLM dedup decisions that caused `AttributeError` on `.strip()` ([`5fdaa33`](https://github.com/fpytloun/mnemory/commit/5fdaa33))
+- **Deterministic session point IDs**: Session IDs are now converted to UUID5 for Qdrant compatibility (session ID strings are not valid Qdrant point IDs) ([`a681c22`](https://github.com/fpytloun/mnemory/commit/a681c22))
+- **Corrupted session entries**: Stricter filtering requires both `session_id` and `summary` in payload, with deduplication by session_id ([`d1fe2fa`](https://github.com/fpytloun/mnemory/commit/d1fe2fa), [`8debe74`](https://github.com/fpytloun/mnemory/commit/8debe74))
+- **Consolidation validation**: Lowered ratio threshold from 0.2 to 0.05 and made validation non-blocking (warns instead of failing) to prevent valid consolidation output from being rejected ([`61efb45`](https://github.com/fpytloun/mnemory/commit/61efb45))
+- **VectorStore method**: Fixed `AttributeError` where consolidation code called non-existent `get()` method instead of `get_by_id()` ([`6e08d93`](https://github.com/fpytloun/mnemory/commit/6e08d93))
+
+### Testing
+
+- **Consolidation unit tests**: Comprehensive test suite for the consolidation service — role-separated prompts, state machine, re-consolidation, batch processing, validation, and raw memory fetching ([`944807d`](https://github.com/fpytloun/mnemory/commit/944807d), various fixes)
+- **Two-layer e2e tests**: End-to-end tests for memory layer assignment, C1 dedup isolation, session summary persistence, and 6-category extraction model ([`dcf7b80`](https://github.com/fpytloun/mnemory/commit/dcf7b80))
+
+### Documentation
+
+- **Two-layer memory system docs**: Updated architecture, memory model, configuration, monitoring, REST API, MCP tools, and management UI documentation for the new two-layer system and consolidation service ([`2bbb041`](https://github.com/fpytloun/mnemory/commit/2bbb041))
+- **OpenClaw client guide**: New `docs/clients/openclaw.md` setup guide ([`b2147ac`](https://github.com/fpytloun/mnemory/commit/b2147ac))
+
+### CI
+
+- **npm publishing workflow**: New GitHub Actions workflow for publishing OpenCode and OpenClaw plugins as npm packages on tag push (`opencode-v*`, `openclaw-v*`) ([`de73102`](https://github.com/fpytloun/mnemory/commit/de73102))
+- **Selective Python publishing**: Python publish workflow now skips non-mnemory release tags ([`23d7c0a`](https://github.com/fpytloun/mnemory/commit/23d7c0a))
+
 ## [1.8.3] — 2026-03-23
 
 ### Bug Fixes
