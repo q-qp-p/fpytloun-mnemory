@@ -22,8 +22,8 @@ Give your AI agents persistent memory. mnemory is a self-hosted [MCP](https://mo
 - **Memory health checks** — Built-in three-phase consistency checker (fsck) detects duplicates, contradictions, quality issues, and prompt injection. Run manually or on a schedule with auto-fix.
 - **10+ client support** — Claude Code, ChatGPT, Open WebUI, OpenClaw, Cursor, Windsurf, Cline, OpenCode, and more. Native plugins available for automatic recall/remember.
 - **Built-in management UI** — Dashboard, semantic search, memory browser with full CRUD, relationship graph visualization, and health check interface. No extra tools needed.
-- **Production ready** — Qdrant for vectors, S3/MinIO for artifacts, API key authentication, per-user isolation, Kubernetes-friendly stateless HTTP.
-- **Secure by default** — API key authentication with session-level identity binding, per-user memory isolation, anti-injection safeguards in extraction prompts.
+- **Production ready** — Qdrant for vectors, S3/MinIO for artifacts, API key or Cognis JWT authentication, per-user isolation, Kubernetes-friendly stateless HTTP.
+- **Secure by default** — API key or Cognis JWT authentication with session-level identity binding, per-user memory isolation, anti-injection safeguards in extraction prompts.
 - **REST API + MCP** — Dual interface with the same backend. 16 MCP tools + full REST API with OpenAPI spec. Build plugins, integrations, or use directly.
 - **Prometheus monitoring** — Built-in `/metrics` endpoint with operation counters and memory gauges. Pre-built Grafana dashboard included.
 

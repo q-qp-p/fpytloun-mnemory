@@ -67,6 +67,8 @@ docker push genunix/mnemory:latest
 
 ## Authentication
 
+mnemory can be deployed either as a standalone service (API keys) or behind Cognis (JWT service auth).
+
 ### Single API Key
 
 For simple setups, set a single shared API key:
@@ -89,6 +91,26 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 - `"key": "*"` — authenticates only (wildcard), `user_id` must come from identity headers or tool parameter
 
 See [Configuration](configuration.md#authentication) for full identity resolution details.
+
+### Cognis JWT Service Auth
+
+When Cognis is the client, configure Mnemory to trust Cognis-issued ES256 JWTs:
+
+```bash
+export MNEMORY_JWT_PUBLIC_KEY=/path/to/cognis-public.pem
+# or
+export MNEMORY_JWKS_URL=https://cognis.example.com/.well-known/jwks.json
+```
+
+Mnemory expects:
+
+- `Authorization: Bearer <jwt>`
+- `iss="cognis"`
+- `aud` includes `"mnemory"`
+- `sub` = user identity
+- optional `agent_id` claim (falls back to `X-Agent-Id` header)
+
+API keys remain supported for backward compatibility with standalone clients.
 
 ## Kubernetes
 

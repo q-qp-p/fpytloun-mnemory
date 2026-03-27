@@ -29,6 +29,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from jwt import InvalidTokenError
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
@@ -39,6 +40,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 
 from mnemory import __version__
+from mnemory.auth import get_jwt_validator, looks_like_jwt
 from mnemory.config import load_config
 from mnemory.instructions import VALID_MODES, build_instructions
 from mnemory.memory import MemoryService
@@ -124,6 +126,15 @@ def _get_signing_key() -> bytes:
         from mnemory.tokens import derive_signing_key
 
         cfg = _get_config().server
+        if (
+            not cfg.api_key
+            and not cfg.api_keys
+            and (cfg.jwt_public_key or cfg.jwks_url)
+        ):
+            logger.warning(
+                "JWT auth is enabled without API keys; artifact download tokens "
+                "remain ephemeral across restarts in this stage-0 implementation"
+            )
         _signing_key = derive_signing_key(
             api_key=cfg.api_key,
             api_keys=cfg.api_keys,
@@ -1711,22 +1722,25 @@ def _format_memories(memories: list[dict]) -> str:
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
-    """API key authentication and session identity middleware.
+    """JWT/API-key authentication and session identity middleware.
 
     Authentication:
-    1. Check token against MCP_API_KEYS (JSON dict: key -> user_id)
-    2. Check token against MCP_API_KEY (single key, backward compat)
-    3. If neither is configured, auth is disabled
-    4. If configured but no match, return 401
+    1. If Cognis JWT validation is configured, try Bearer JWT validation first
+    2. Check token against MCP_API_KEYS (JSON dict: key -> user_id)
+    3. Check token against MCP_API_KEY (single key, backward compat)
+    4. If neither JWT nor API key auth is configured, auth is disabled
+    5. If configured but no match, return 401
 
     Identity resolution (set as contextvars for tool handlers):
-    - user_id: from API key mapping (non-wildcard) or X-User-Id header
-    - agent_id: from X-Agent-Id header
+    - user_id: from JWT `sub`, API key mapping, or identity headers
+    - agent_id: from JWT `agent_id` or X-Agent-Id header fallback
     """
 
     async def dispatch(self, request: Request, call_next):
         cfg = _get_config().server
-        has_auth = bool(cfg.api_keys or cfg.api_key)
+        validator = get_jwt_validator(cfg.jwt_public_key, cfg.jwks_url)
+        has_api_key_auth = bool(cfg.api_keys or cfg.api_key)
+        has_auth = has_api_key_auth or validator is not None
 
         # Skip auth for UI static files — no sensitive data.
         # Auth is enforced on all /api/ calls from the browser.
@@ -1786,6 +1800,37 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             if not token:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
+            auth_header = request.headers.get("authorization", "")
+            header_agent_id = request.headers.get("x-agent-id", "").strip() or None
+            header_tz = request.headers.get("x-timezone", "").strip() or None
+
+            if (
+                validator is not None
+                and auth_header.lower().startswith("bearer ")
+                and looks_like_jwt(token)
+            ):
+                try:
+                    auth_ctx = validator.validate(
+                        token, header_agent_id=header_agent_id
+                    )
+                except InvalidTokenError:
+                    logger.info("JWT auth rejected; falling back to API key auth")
+                else:
+                    logger.info("Auth resolved via JWT for user=%s", auth_ctx.user_id)
+                    _session_user_id.set(auth_ctx.user_id)
+                    _session_user_bound.set(True)
+                    if auth_ctx.agent_id:
+                        _session_agent_id.set(auth_ctx.agent_id)
+                    if header_tz:
+                        _session_timezone.set(header_tz)
+                    try:
+                        return await call_next(request)
+                    finally:
+                        _session_user_id.set(None)
+                        _session_agent_id.set(None)
+                        _session_timezone.set(None)
+                        _session_user_bound.set(False)
+
             # Try MCP_API_KEYS first (key -> user_id mapping)
             mapped_user_id = None
             if cfg.api_keys:
@@ -1797,6 +1842,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 else:
                     # Token not in api_keys — try legacy single key
                     if cfg.api_key and hmac.compare_digest(token, cfg.api_key):
+                        logger.info("Auth resolved via legacy API key")
                         pass  # Auth OK, no user mapping
                     else:
                         return JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -1804,9 +1850,15 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 # Only legacy single key configured
                 if not hmac.compare_digest(token, cfg.api_key):
                     return JSONResponse({"error": "Unauthorized"}, status_code=401)
+                logger.info("Auth resolved via single API key")
+            else:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
             # Set session identity
             if mapped_user_id:
+                logger.info(
+                    "Auth resolved via mapped API key for user=%s", mapped_user_id
+                )
                 _session_user_id.set(mapped_user_id)
                 _session_user_bound.set(True)
             else:

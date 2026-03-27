@@ -146,3 +146,19 @@ class TestConfigValidation:
         monkeypatch.setenv("SESSION_PATH", "/tmp/custom_sessions.db")
         config = load_config()
         assert config.memory.session_path == "/tmp/custom_sessions.db"
+
+    def test_jwt_verifier_sources_are_mutually_exclusive(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        public_key = tmp_path / "public.pem"
+        public_key.write_text("test", encoding="utf-8")
+        monkeypatch.setenv("MNEMORY_JWT_PUBLIC_KEY", str(public_key))
+        monkeypatch.setenv("MNEMORY_JWKS_URL", "https://example.com/jwks.json")
+        with pytest.raises(ValueError, match="Configure only one JWT verifier source"):
+            load_config()
+
+    def test_missing_jwt_public_key_path_raises(self, monkeypatch):
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("MNEMORY_JWT_PUBLIC_KEY", "/tmp/does-not-exist.pem")
+        monkeypatch.delenv("MNEMORY_JWKS_URL", raising=False)
+        with pytest.raises(ValueError, match="does not exist"):
+            load_config()

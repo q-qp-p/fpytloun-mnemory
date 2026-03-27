@@ -46,8 +46,8 @@ def get_session_context() -> SessionContext:
     if not user_id:
         raise HTTPException(
             status_code=401,
-            detail="user_id could not be resolved. Set it via API key mapping, "
-            "X-User-Id header, or X-OpenWebUI-User-Email header.",
+            detail="user_id could not be resolved. Authenticate with a Cognis JWT, "
+            "an API key mapping, X-User-Id header, or X-OpenWebUI-User-Email header.",
         )
 
     return SessionContext(

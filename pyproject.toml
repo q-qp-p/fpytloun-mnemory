@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     "mcp>=1.6.0",
     "openai>=1.0.0",
+    "PyJWT[crypto]>=2.8.0",
     "qdrant-client>=1.14.0",
     "uvicorn>=0.30.0",
     "starlette>=0.38.0",

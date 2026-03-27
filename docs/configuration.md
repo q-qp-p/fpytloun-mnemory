@@ -44,6 +44,8 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `MCP_PORT` | `8050` | Listen port |
 | `MCP_API_KEY` | | Single API key for authentication (empty = no auth) |
 | `MCP_API_KEYS` | | JSON dict mapping API keys to user IDs (see [Authentication](#authentication) below) |
+| `MNEMORY_JWT_PUBLIC_KEY` | | Path to a Cognis ES256 public key PEM for JWT validation |
+| `MNEMORY_JWKS_URL` | | JWKS URL for Cognis-issued JWT validation (mutually exclusive with `MNEMORY_JWT_PUBLIC_KEY`) |
 | `INSTRUCTION_MODE` | `proactive` | LLM behavioral instructions: `passive`, `proactive`, or `personality` (see [Instruction Modes](#instruction-modes) below) |
 | `ENABLE_DELETE_ALL` | `false` | Enable the `delete_all_memories` tool (destructive, disabled by default) |
 | `ENABLE_METRICS` | `true` | Enable the `/metrics` Prometheus endpoint |
@@ -134,6 +136,29 @@ To activate personality behavior for a **specific agent** while keeping the serv
 
 ## Authentication
 
+mnemory supports two authentication modes:
+
+- **Standalone mode** — API keys via `MCP_API_KEY` / `MCP_API_KEYS`
+- **Cognis integration mode** — ES256 JWTs signed by Cognis via `Authorization: Bearer <jwt>`
+
+JWT validation is optional and additive. If both JWT validation and API keys are configured, mnemory tries JWT validation first for Bearer tokens and falls back to API key matching if JWT validation fails.
+
+### Cognis JWT Validation
+
+Configure one verifier source:
+
+```bash
+MNEMORY_JWT_PUBLIC_KEY=/path/to/cognis-public.pem
+# or
+MNEMORY_JWKS_URL=https://cognis.example.com/.well-known/jwks.json
+```
+
+- Verifies `iss="cognis"`
+- Requires `aud` to include `"mnemory"`
+- Binds `user_id` from JWT `sub`
+- Uses JWT `agent_id` when present, otherwise falls back to `X-Agent-Id`
+- Rejects requests when JWT `agent_id` and `X-Agent-Id` disagree
+
 ### Session-Level Identity (`MCP_API_KEYS`)
 
 Map API keys to user IDs so the LLM doesn't need to pass `user_id` in every tool call:
@@ -146,10 +171,11 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 - `"key": "*"` — authenticates only (wildcard), `user_id` must come from identity headers or tool parameter
 
 **Identity resolution priority (user_id):**
-1. API key mapping (non-wildcard) — most secure, cannot be overridden
-2. `X-User-Id` HTTP header — explicit identity header
-3. `X-OpenWebUI-User-Email` HTTP header — automatic Open WebUI integration
-4. Tool parameter — backward compatible fallback
+1. Cognis JWT `sub` claim — most secure, cannot be overridden
+2. API key mapping (non-wildcard) — cannot be overridden
+3. `X-User-Id` HTTP header — explicit identity header
+4. `X-OpenWebUI-User-Email` HTTP header — automatic Open WebUI integration
+5. Tool parameter — backward compatible fallback
 
 **Agent ID** is set via the `X-Agent-Id` HTTP header per client connection:
 - Open WebUI: `X-Agent-Id: open-webui`
@@ -158,6 +184,8 @@ MCP_API_KEYS='{"mnm-key-for-filip": "filip", "mnm-shared-service-key": "*"}'
 **Timezone** is set via the `X-Timezone` HTTP header per client connection. This overrides the `DEFAULT_TIMEZONE` env var for the session, affecting how naive `event_date` values are interpreted. Use an IANA timezone name (e.g., `Europe/Prague`, `America/New_York`).
 
 `MCP_API_KEY` (single key) is kept for backward compatibility — it authenticates but does not bind to a user. If both `MCP_API_KEYS` and `MCP_API_KEY` are set, `MCP_API_KEYS` is checked first, then `MCP_API_KEY` as fallback.
+
+When mnemory runs in JWT-only mode without API keys, artifact download tokens keep their existing ephemeral signing behavior across restarts. This is acceptable for Stage 0 Cognis integration, but production deployments that need stable raw artifact URLs should continue to configure an API key until a dedicated download-token signing secret is introduced.
 
 ## Management Port
 

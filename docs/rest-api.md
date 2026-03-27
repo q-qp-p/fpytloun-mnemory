@@ -2,7 +2,7 @@
 
 mnemory exposes a full REST API alongside the MCP server. The FastAPI sub-app is mounted at `/api/` with auto-generated OpenAPI spec at `/api/openapi.json` and Swagger UI at `/api/docs`.
 
-Both MCP and REST share the same `MemoryService` backend and authentication middleware.
+Both MCP and REST share the same `MemoryService` backend and authentication middleware. Authentication may use API keys (`Authorization: Bearer <key>` / `X-API-Key`) or Cognis-issued ES256 JWTs (`Authorization: Bearer <jwt>` with `aud=mnemory`).
 
 ## Memory CRUD
 

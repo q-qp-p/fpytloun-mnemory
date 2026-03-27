@@ -184,6 +184,8 @@ class ServerConfig:
     api_keys: dict[str, str] = field(
         default_factory=lambda: _parse_api_keys(_env("MCP_API_KEYS"))
     )
+    jwt_public_key: str = field(default_factory=lambda: _env("MNEMORY_JWT_PUBLIC_KEY"))
+    jwks_url: str = field(default_factory=lambda: _env("MNEMORY_JWKS_URL"))
     enable_delete_all: bool = field(
         default_factory=lambda: _env_bool("ENABLE_DELETE_ALL", False)
     )
@@ -611,6 +613,17 @@ class Config:
             )
         if self.memory.session_backend == "redis" and not self.memory.redis_url:
             raise ValueError("REDIS_URL is required when SESSION_BACKEND=redis")
+        if self.server.jwt_public_key and self.server.jwks_url:
+            raise ValueError(
+                "Configure only one JWT verifier source: "
+                "MNEMORY_JWT_PUBLIC_KEY or MNEMORY_JWKS_URL"
+            )
+        if self.server.jwt_public_key and not os.path.isfile(
+            self.server.jwt_public_key
+        ):
+            raise ValueError(
+                f"MNEMORY_JWT_PUBLIC_KEY={self.server.jwt_public_key} does not exist"
+            )
 
 
 def load_config() -> Config:
