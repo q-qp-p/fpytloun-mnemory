@@ -264,8 +264,7 @@ function fsckTab() {
     async _loadAgentIds() {
       try {
         const data = await MnemoryAPI.stats();
-        const agents = data.agents || [];
-        this.availableAgentIds = agents.map((a) => a.agent_id).filter(Boolean);
+        this.availableAgentIds = (data.agents || []).filter(Boolean);
       } catch { /* ignore */ }
     },
 

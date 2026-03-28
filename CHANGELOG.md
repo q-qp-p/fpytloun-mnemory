@@ -13,6 +13,13 @@
 - **Sessions tab pagination** -- Linked memories and consolidated memories in expanded sessions are now paginated (10 per page) with "Show More / Show Less" controls, preventing large sessions from overwhelming the page.
 - **Sessions tab performance** -- Memory loading now uses the batch endpoint instead of fetching all memories and filtering client-side, drastically reducing API payload and load time.
 - **Compact session layout** -- Tighter spacing and consolidated/raw memory counts in expanded session details.
+- **Sessions tab browsing** -- The top-level Sessions list now supports server-side pagination, search over session summaries/IDs, last-activity vs created-date sorting, asc/desc ordering, page-size selection, and accurate total counts with truncation warnings for very large result sets.
+- **Dashboard layer visibility** -- The Dashboard now shows raw vs consolidated memory totals and a dedicated memory-layer chart, including per-user filtered views.
+
+### Bug Fixes
+
+- **Management UI tab regression** -- Fixed broken HTML nesting in the Sessions tab that prevented the User, Graph, and Check tabs from rendering correctly.
+- **Check tab agent filter** -- Fixed agent loading in the Check tab after `/api/stats` started returning `agents` as a flat string list.
 
 ## [1.9.0] — 2026-03-26
 

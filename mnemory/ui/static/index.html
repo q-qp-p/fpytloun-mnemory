@@ -151,10 +151,18 @@
         </div>
 
         <!-- Stat Cards -->
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8" x-show="data">
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-4 mb-8" x-show="data">
           <div class="stat-card border-l-4 border-l-brand-accent">
             <div class="stat-value" x-text="displayTotals?.memories ?? '-'"></div>
             <div class="stat-label">Total Memories</div>
+          </div>
+          <div class="stat-card border-l-4 border-l-amber-500">
+            <div class="stat-value" x-text="displayTotals?.raw ?? '-' "></div>
+            <div class="stat-label">Raw</div>
+          </div>
+          <div class="stat-card border-l-4 border-l-emerald-500">
+            <div class="stat-value" x-text="displayTotals?.consolidated ?? '-'"></div>
+            <div class="stat-label">Consolidated</div>
           </div>
           <div class="stat-card border-l-4 border-l-blue-500">
             <div class="stat-value" x-text="displayTotals?.pinned ?? '-'"></div>
@@ -185,7 +193,7 @@
         </div>
 
         <!-- Charts Row -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8" x-show="data">
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-8" x-show="data">
           <div class="card">
             <h3 class="text-sm font-medium text-secondary mb-4">By Type</h3>
             <div class="relative" style="height: 220px;">
@@ -196,6 +204,12 @@
             <h3 class="text-sm font-medium text-secondary mb-4">By Category</h3>
             <div class="relative" style="height: 220px;">
               <canvas id="chart-by-category"></canvas>
+            </div>
+          </div>
+          <div class="card">
+            <h3 class="text-sm font-medium text-secondary mb-4">By Layer</h3>
+            <div class="relative" style="height: 220px;">
+              <canvas id="chart-by-layer"></canvas>
             </div>
           </div>
           <div class="card">
@@ -869,32 +883,87 @@
 
       <!-- ── Sessions Tab ──────────────────────────────────── -->
       <div x-show="$store.nav.activeTab === 'sessions'" x-cloak>
-        <div x-data="sessionsPanel()" x-init="load()">
+        <div x-data="sessionsPanel()" x-init="init()">
           <!-- Header -->
-          <div class="flex items-center justify-between mb-6">
-            <div>
-              <h2 class="text-xl font-semibold text-primary">Session Summaries</h2>
-              <p class="text-sm text-secondary mt-1">
-                Conversation summaries persisted by the remember endpoint
-              </p>
+          <div class="flex flex-col gap-4 mb-6">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <h2 class="text-xl font-semibold text-primary">Session Summaries</h2>
+                <p class="text-sm text-secondary mt-1">
+                  Conversation summaries persisted by the remember endpoint
+                </p>
+              </div>
+              <div class="flex items-center gap-2">
+                <button @click="load()" class="btn-secondary text-sm">
+                  Refresh
+                </button>
+              </div>
             </div>
-            <div class="flex items-center gap-2">
-              <select class="select text-sm" x-model="agentFilter">
-                <option value="">All agents</option>
-                <template x-for="agent in uniqueAgents" :key="agent">
-                  <option :value="agent" x-text="agent"></option>
-                </template>
-              </select>
-              <select class="select text-sm" x-model="stateFilter" @change="load()">
-                <option value="">All states</option>
-                <option value="idle">Idle</option>
-                <option value="consolidating">Consolidating</option>
-                <option value="consolidated">Consolidated</option>
-                <option value="failed">Failed</option>
-              </select>
-              <button @click="load()" class="btn-secondary text-sm">
-                Refresh
-              </button>
+
+            <div class="card-elevated flex flex-wrap items-end gap-3">
+              <div class="min-w-[220px] flex-1">
+                <label class="block text-xs text-secondary mb-1">Search summaries</label>
+                <div class="flex gap-2">
+                  <input type="text"
+                         x-model="queryInput"
+                         @keydown.enter.prevent="applySearch()"
+                         class="input text-sm"
+                         placeholder="Search session summary text or ID">
+                  <button @click="applySearch()" class="btn-primary text-sm">Search</button>
+                  <button x-show="query" @click="clearSearch()" class="btn-ghost text-sm">Clear</button>
+                </div>
+              </div>
+              <div>
+                <label class="block text-xs text-secondary mb-1">Agent</label>
+                <select class="select text-sm" x-model="agentFilter">
+                  <option value="">All agents</option>
+                  <template x-for="agent in uniqueAgents" :key="agent">
+                    <option :value="agent" x-text="agent"></option>
+                  </template>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-secondary mb-1">State</label>
+                <select class="select text-sm" x-model="stateFilter" @change="resetPaging(); load()">
+                  <option value="">All states</option>
+                  <option value="idle">Idle</option>
+                  <option value="consolidating">Consolidating</option>
+                  <option value="consolidated">Consolidated</option>
+                  <option value="failed">Failed</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-secondary mb-1">Sort by</label>
+                <select class="select text-sm" x-model="sortBy" @change="updateSort($event.target.value)">
+                  <option value="updated_at">Last activity</option>
+                  <option value="created_at">Created</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-secondary mb-1">Direction</label>
+                <button @click="toggleSortDir()" class="btn-secondary text-sm min-w-[72px]" x-text="sortDir === 'desc' ? 'Desc' : 'Asc'"></button>
+              </div>
+              <div>
+                <label class="block text-xs text-secondary mb-1">Page size</label>
+                <select class="select text-sm" x-model.number="pageSize" @change="updatePageSize()">
+                  <option :value="10">10</option>
+                  <option :value="25">25</option>
+                  <option :value="50">50</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <p class="text-sm text-secondary">
+                <span x-text="filteredSessions.length > 0 ? `Showing ${rangeStart}-${rangeEnd}` : 'Showing 0'"></span>
+                <span> of </span>
+                <span x-text="total"></span>
+                <span> sessions</span>
+                <span x-show="query" class="text-muted">for “<span x-text="query"></span>”</span>
+              </p>
+              <p x-show="totalTruncated" class="text-xs text-amber-400 mt-1">
+                Results were truncated after scanning 5000 session summaries.
+              </p>
             </div>
           </div>
 
@@ -1152,10 +1221,19 @@
                 </div>
               </div>
             </template>
+
+            <div class="card-elevated flex flex-wrap items-center justify-between gap-3 mt-4">
+              <div class="text-sm text-secondary">
+                Page <span x-text="page"></span> of <span x-text="totalPages"></span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button @click="prevPage()" class="btn-secondary text-sm" :disabled="page <= 1 || loading">Previous</button>
+                <button @click="nextPage()" class="btn-secondary text-sm" :disabled="!hasMore || loading">Next</button>
+              </div>
+            </div>
           </div>
         </div>
 
-      </div><!-- closes x-data="sessionsPanel()" -->
       </div><!-- closes sessions tab x-show -->
 
       <!-- User Tab -->

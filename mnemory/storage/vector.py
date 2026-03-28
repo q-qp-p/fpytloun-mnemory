@@ -14,7 +14,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -1419,6 +1419,8 @@ class SessionSummaryStore:
     """
 
     COLLECTION = "_mnemory_sessions"
+    _LIST_BATCH_SIZE = 256
+    _LIST_SAFETY_CAP = 5000
 
     def __init__(self, client: QdrantClient):
         self._client = client
@@ -1632,16 +1634,29 @@ class SessionSummaryStore:
         *,
         limit: int = 50,
         consolidation_state: str | None = None,
-    ) -> list[dict]:
+        offset: int = 0,
+        q: str | None = None,
+        sort_by: Literal["updated_at", "created_at"] = "updated_at",
+        sort_dir: Literal["asc", "desc"] = "desc",
+        include_metadata: bool = False,
+    ) -> list[dict] | dict[str, Any]:
         """List session summaries for a user.
 
         Args:
             user_id: Filter by user.
             limit: Maximum results.
             consolidation_state: Optional filter by state.
+            offset: Zero-based starting offset into the filtered result set.
+            q: Optional case-insensitive substring match against session
+                summary, session_id, and agent_id.
+            sort_by: Field to sort by.
+            sort_dir: Sort direction.
+            include_metadata: When True, return paging metadata alongside
+                the session page for API consumers.
 
         Returns:
-            List of session dicts, ordered by updated_at descending.
+            Either a list of session dicts, or a metadata envelope when
+            include_metadata=True.
         """
         must_conditions = [
             FieldCondition(key="user_id", match=MatchValue(value=user_id)),
@@ -1654,31 +1669,108 @@ class SessionSummaryStore:
                 )
             )
 
-        result = self._client.scroll(
-            collection_name=self.COLLECTION,
-            scroll_filter=Filter(must=must_conditions),
-            limit=limit,
-            with_payload=True,
-        )
-
-        sessions = []
+        sessions: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
-        for p in result[0]:
-            payload = dict(p.payload or {})
-            # Skip entries with empty/corrupted payload
-            if (
-                not payload
-                or not payload.get("session_id")
-                or not payload.get("summary")
-            ):
-                logger.debug("Skipping corrupted session entry (point_id=%s)", p.id)
-                continue
-            sid = payload["session_id"]
-            # Skip duplicates (can happen from legacy data)
-            if sid in seen_ids:
-                continue
-            seen_ids.add(sid)
-            sessions.append(payload)
-        # Sort by updated_at descending
-        sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
-        return sessions
+        scroll_filter = Filter(must=must_conditions)
+        scroll_offset = None
+        total_truncated = False
+        started_at = time.monotonic()
+        query = (q or "").strip().lower()
+
+        try:
+            while True:
+                points, next_offset = self._client.scroll(
+                    collection_name=self.COLLECTION,
+                    scroll_filter=scroll_filter,
+                    limit=self._LIST_BATCH_SIZE,
+                    offset=scroll_offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+
+                for point in points:
+                    payload = dict(point.payload or {})
+                    # Skip entries with empty/corrupted payload
+                    if (
+                        not payload
+                        or not payload.get("session_id")
+                        or not payload.get("summary")
+                    ):
+                        logger.debug(
+                            "Skipping corrupted session entry (point_id=%s)", point.id
+                        )
+                        continue
+
+                    sid = payload["session_id"]
+                    if sid in seen_ids:
+                        continue
+                    seen_ids.add(sid)
+
+                    if query:
+                        search_haystack = " ".join(
+                            [
+                                str(payload.get("summary") or ""),
+                                str(sid),
+                                str(payload.get("agent_id") or ""),
+                            ]
+                        ).lower()
+                        if query not in search_haystack:
+                            continue
+
+                    sessions.append(payload)
+
+                    if (
+                        len(seen_ids) >= self._LIST_SAFETY_CAP
+                        and next_offset is not None
+                    ):
+                        total_truncated = True
+                        break
+
+                if total_truncated or next_offset is None:
+                    break
+                scroll_offset = next_offset
+        except Exception as exc:
+            logger.exception("Failed to list session summaries for user %s", user_id)
+            raise RuntimeError("Failed to list session summaries") from exc
+
+        elapsed = time.monotonic() - started_at
+        if elapsed > 2.0:
+            logger.warning(
+                "Session summary listing was slow for user %s: %.2fs (%d matched%s)",
+                user_id,
+                elapsed,
+                len(sessions),
+                ", truncated" if total_truncated else "",
+            )
+
+        if sort_dir == "asc":
+            sessions.sort(
+                key=lambda session: (
+                    not bool(session.get(sort_by)),
+                    str(session.get(sort_by) or ""),
+                )
+            )
+        else:
+            sessions.sort(
+                key=lambda session: (
+                    bool(session.get(sort_by)),
+                    str(session.get(sort_by) or ""),
+                ),
+                reverse=True,
+            )
+
+        total = len(sessions)
+        page = sessions[offset : offset + limit]
+        has_more = offset + limit < total
+
+        if include_metadata:
+            return {
+                "sessions": page,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "has_more": has_more,
+                "total_truncated": total_truncated,
+            }
+
+        return page

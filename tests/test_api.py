@@ -581,11 +581,32 @@ class TestStatsEndpoint:
             "artifact_backend": "filesystem",
             "active_sessions": 2,
             "users": ["filip", "bob"],
-            "totals": {"memories": 42, "pinned": 5, "decayed": 3, "with_artifacts": 1},
+            "totals": {
+                "memories": 42,
+                "raw": 12,
+                "consolidated": 30,
+                "pinned": 5,
+                "decayed": 3,
+                "with_artifacts": 1,
+            },
             "by_type": {"fact": 20, "preference": 10, "episodic": 12},
             "by_category": {"personal": 15, "work": 27},
+            "by_layer": {"raw": 12, "consolidated": 30},
             "by_role": {"user": 35, "assistant": 7},
-            "by_user": {},
+            "by_user": {
+                "filip": {
+                    "total": 42,
+                    "raw": 12,
+                    "consolidated": 30,
+                    "pinned": 5,
+                    "decayed": 3,
+                    "with_artifacts": 1,
+                    "by_type": {"fact": 20},
+                    "by_category": {"work": 27},
+                    "by_layer": {"raw": 12, "consolidated": 30},
+                    "by_role": {"user": 35, "assistant": 7},
+                }
+            },
             "operations": {},
         }
 
@@ -594,6 +615,9 @@ class TestStatsEndpoint:
 
         assert result["version"] == __version__
         assert result["totals"]["memories"] == 42
+        assert result["totals"]["raw"] == 12
+        assert result["totals"]["consolidated"] == 30
+        assert result["by_layer"]["raw"] == 12
         assert result["users"] == ["filip", "bob"]
         assert result["active_sessions"] == 2
         mock_collector.get_stats_json.assert_called_once()

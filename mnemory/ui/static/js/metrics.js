@@ -117,7 +117,14 @@ function metricsTab() {
      */
     get displayTotals() {
       const u = this._userSlice();
-      return u ? { memories: u.total, pinned: u.pinned, decayed: u.decayed, with_artifacts: u.with_artifacts }
+      return u ? {
+                 memories: u.total,
+                 raw: u.raw,
+                 consolidated: u.consolidated,
+                 pinned: u.pinned,
+                 decayed: u.decayed,
+                 with_artifacts: u.with_artifacts,
+               }
                : (this.data?.totals ?? {});
     },
 
@@ -189,6 +196,14 @@ function metricsTab() {
         catColors[key] = brandPalette[i % brandPalette.length];
       });
       this._renderDonut('chart-by-category', byCategory, catColors);
+
+      // By layer
+      const byLayer = u?.by_layer ?? this.data.by_layer;
+      const layerColors = {
+        raw: '#F59E0B',
+        consolidated: '#10B981',
+      };
+      this._renderDonut('chart-by-layer', byLayer, layerColors);
 
       // By role
       const byRole = u?.by_role ?? this.data.by_role;

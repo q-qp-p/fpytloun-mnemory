@@ -8,13 +8,25 @@
 
 function sessionsPanel() {
   const MEM_PAGE_SIZE = 10;
+  const DEFAULT_PAGE_SIZE = 25;
 
   return {
     sessions: [],
     loading: false,
     error: '',
+    initialized: false,
+    _listenersRegistered: false,
+    queryInput: '',
+    query: '',
     stateFilter: '',
     agentFilter: '',
+    sortBy: 'updated_at',
+    sortDir: 'desc',
+    page: 1,
+    pageSize: DEFAULT_PAGE_SIZE,
+    total: 0,
+    hasMore: false,
+    totalTruncated: false,
 
     // Per-session state for memory loading and expansion
     sessionMemories: {},   // session_id → memory[]
@@ -31,18 +43,107 @@ function sessionsPanel() {
     sessionMemPages: {},
     sessionConsolidatedPages: {},
 
+    init() {
+      this.initialized = true;
+      this.load();
+
+      if (!this._listenersRegistered) {
+        this._listenersRegistered = true;
+
+        window.addEventListener('mnemory:user-changed', () => {
+          this.page = 1;
+          this.load();
+        });
+
+        window.addEventListener('mnemory:tab-changed', (e) => {
+          if (e.detail.tab === 'sessions' && !this.loading) {
+            this.load();
+          }
+        });
+      }
+    },
+
+    resetPaging() {
+      this.page = 1;
+    },
+
+    applySearch() {
+      this.query = this.queryInput.trim();
+      this.resetPaging();
+      this.load();
+    },
+
+    clearSearch() {
+      if (!this.queryInput && !this.query) return;
+      this.queryInput = '';
+      this.query = '';
+      this.resetPaging();
+      this.load();
+    },
+
+    updateSort(sortBy = this.sortBy) {
+      this.sortBy = sortBy;
+      this.resetPaging();
+      this.load();
+    },
+
+    toggleSortDir() {
+      this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc';
+      this.resetPaging();
+      this.load();
+    },
+
+    updatePageSize() {
+      this.resetPaging();
+      this.load();
+    },
+
+    async prevPage() {
+      if (this.page <= 1 || this.loading) return;
+      this.page -= 1;
+      await this.load();
+    },
+
+    async nextPage() {
+      if (!this.hasMore || this.loading) return;
+      this.page += 1;
+      await this.load();
+    },
+
     async load() {
       this.loading = true;
       this.error = '';
       try {
+        const expanded = new Map(
+          this.sessions
+            .filter(s => s._expanded)
+            .map(s => [s.session_id, true])
+        );
         const params = {};
+        params.offset = (this.page - 1) * this.pageSize;
+        params.limit = this.pageSize;
         if (this.stateFilter) {
           params.consolidation_state = this.stateFilter;
         }
+        if (this.query) {
+          params.q = this.query;
+        }
+        params.sort_by = this.sortBy;
+        params.sort_dir = this.sortDir;
         const data = await MnemoryAPI.get('/sessions', params);
-        this.sessions = (data.sessions || []).map(s => ({ ...s, _expanded: false }));
+        this.total = data.total || 0;
+        this.hasMore = !!data.has_more;
+        this.totalTruncated = !!data.total_truncated;
+        this.sessions = (data.sessions || []).map(s => ({
+          ...s,
+          _expanded: expanded.get(s.session_id) || false,
+        }));
       } catch (e) {
         this.error = e.message || 'Failed to load sessions';
+        this.sessions = [];
+        this.total = 0;
+        this.hasMore = false;
+        this.totalTruncated = false;
       } finally {
         this.loading = false;
       }
@@ -62,6 +163,20 @@ function sessionsPanel() {
         if (s.agent_id) agents.add(s.agent_id);
       }
       return [...agents].sort();
+    },
+
+    get rangeStart() {
+      if (this.total === 0 || this.filteredSessions.length === 0) return 0;
+      return (this.page - 1) * this.pageSize + 1;
+    },
+
+    get rangeEnd() {
+      if (this.total === 0 || this.filteredSessions.length === 0) return 0;
+      return (this.page - 1) * this.pageSize + this.filteredSessions.length;
+    },
+
+    get totalPages() {
+      return this.pageSize > 0 ? Math.max(1, Math.ceil(this.total / this.pageSize)) : 1;
     },
 
     async toggleSession(session) {
@@ -271,10 +386,15 @@ function sessionsPanel() {
       Alpine.store('sessionDelete').show(session, (sid) => {
         // Remove from local list after successful deletion
         this.sessions = this.sessions.filter(s => s.session_id !== sid);
+        this.total = Math.max(0, this.total - 1);
         delete this.sessionMemories[sid];
         delete this.sessionConsolidatedMems[sid];
         delete this.sessionMemPages[sid];
         delete this.sessionConsolidatedPages[sid];
+        if (this.sessions.length === 0 && this.page > 1) {
+          this.page -= 1;
+          void this.load();
+        }
       });
     },
 

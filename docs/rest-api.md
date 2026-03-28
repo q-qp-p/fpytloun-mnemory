@@ -32,10 +32,37 @@ Persistent session summaries from the remember endpoint, used by the consolidati
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/sessions` | GET | List session summaries (optional `consolidation_state` filter) |
+| `/api/sessions` | GET | List session summaries with pagination, search, and sorting (`offset`, `limit`, `consolidation_state`, `q`, `sort_by`, `sort_dir`) |
 | `/api/sessions/{id}` | GET | Get a single session summary |
 | `/api/sessions/{id}` | DELETE | Delete a session summary (optional `delete_memories=true` to also delete linked raw memories) |
 | `/api/sessions/{id}/consolidate` | POST | Trigger consolidation for a specific session (returns result) |
+
+`GET /api/sessions` returns:
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "ses_...",
+      "summary": "...",
+      "created_at": "2026-03-28T10:00:00+00:00",
+      "updated_at": "2026-03-28T10:05:00+00:00",
+      "consolidation_state": "idle"
+    }
+  ],
+  "total": 123,
+  "offset": 0,
+  "limit": 25,
+  "has_more": true,
+  "total_truncated": false
+}
+```
+
+- `q`: case-insensitive substring match against the stored session summary text and session ID
+- `sort_by`: `updated_at` (default) or `created_at`
+- `sort_dir`: `desc` (default) or `asc`
+- `total`: count after all filters/search are applied, before paging
+- `total_truncated`: true if the server hit its internal safety cap while scanning very large session sets
 
 ## Memory Check (fsck)
 

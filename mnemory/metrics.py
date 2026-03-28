@@ -168,6 +168,12 @@ class MetricsCollector:
             ["user_id", "category"],
             registry=self._registry,
         )
+        self._memories_by_layer = Gauge(
+            "mnemory_memories_by_layer_total",
+            "Total memories by memory layer",
+            ["user_id", "memory_layer"],
+            registry=self._registry,
+        )
         self._memories_with_artifacts = Gauge(
             "mnemory_memories_with_artifacts_total",
             "Total memories that have artifacts attached",
@@ -533,9 +539,17 @@ class MetricsCollector:
 
         from mnemory import __version__
 
-        totals = {"memories": 0, "pinned": 0, "decayed": 0, "with_artifacts": 0}
+        totals = {
+            "memories": 0,
+            "raw": 0,
+            "consolidated": 0,
+            "pinned": 0,
+            "decayed": 0,
+            "with_artifacts": 0,
+        }
         by_type: dict[str, int] = defaultdict(int)
         by_category: dict[str, int] = defaultdict(int)
+        by_layer: dict[str, int] = defaultdict(int)
         by_role: dict[str, int] = defaultdict(int)
         users: set[str] = set()
         agents: set[str] = set()
@@ -545,11 +559,14 @@ class MetricsCollector:
             if uid not in by_user:
                 by_user[uid] = {
                     "total": 0,
+                    "raw": 0,
+                    "consolidated": 0,
                     "pinned": 0,
                     "decayed": 0,
                     "with_artifacts": 0,
                     "by_type": {},
                     "by_category": {},
+                    "by_layer": {},
                     "by_role": {},
                 }
             return by_user[uid]
@@ -616,6 +633,22 @@ class MetricsCollector:
                 u["by_category"][cat] = u["by_category"].get(cat, 0) + count
         except Exception:
             logger.debug("Failed to read _memories_by_category gauge", exc_info=True)
+
+        # Read by_layer gauge: labels are (user_id, memory_layer)
+        try:
+            for labels, metric in self._memories_by_layer._metrics.items():
+                uid, layer = labels
+                count = int(metric._value.get())
+                by_layer[layer] += count
+                if layer in {"raw", "consolidated"}:
+                    totals[layer] += count
+                users.add(uid)
+                u = _ensure_user(uid)
+                u["by_layer"][layer] = u["by_layer"].get(layer, 0) + count
+                if layer in {"raw", "consolidated"}:
+                    u[layer] += count
+        except Exception:
+            logger.debug("Failed to read _memories_by_layer gauge", exc_info=True)
 
         # Read operations counter: labels are (operation, user_id, agent_id)
         operations: dict[str, dict] = {}
@@ -724,6 +757,10 @@ class MetricsCollector:
             "by_category": dict(
                 sorted(by_category.items(), key=lambda x: x[1], reverse=True)
             ),
+            "by_layer": {
+                "raw": by_layer.get("raw", 0),
+                "consolidated": by_layer.get("consolidated", 0),
+            },
             "by_role": dict(by_role),
             "by_user": {
                 uid: {
@@ -740,6 +777,10 @@ class MetricsCollector:
                             reverse=True,
                         )
                     ),
+                    "by_layer": {
+                        "raw": udata["by_layer"].get("raw", 0),
+                        "consolidated": udata["by_layer"].get("consolidated", 0),
+                    },
                     "by_role": dict(udata["by_role"]),
                 }
                 for uid, udata in sorted(by_user.items())
@@ -790,6 +831,8 @@ class MetricsCollector:
         with_artifacts: dict[tuple[str, str], int] = defaultdict(int)
         # (user_id, category) -> count
         by_category: dict[tuple[str, str], int] = defaultdict(int)
+        # (user_id, memory_layer) -> count
+        by_layer: dict[tuple[str, str], int] = defaultdict(int)
 
         # Scroll all points (no vectors, payloads only)
         offset = None
@@ -811,6 +854,7 @@ class MetricsCollector:
                 agent_id = payload.get("agent_id", "") or ""
                 memory_type = payload.get("memory_type", "unknown")
                 role = payload.get("role", "user")
+                memory_layer = payload.get("memory_layer") or "consolidated"
 
                 # Total by dimensions
                 total[(user_id, agent_id, memory_type, role)] += 1
@@ -833,6 +877,8 @@ class MetricsCollector:
                 for cat in categories:
                     by_category[(user_id, cat)] += 1
 
+                by_layer[(user_id, memory_layer)] += 1
+
             if next_offset is None:
                 break
             offset = next_offset
@@ -842,6 +888,7 @@ class MetricsCollector:
         self._memories_decayed._metrics.clear()
         self._memories_pinned._metrics.clear()
         self._memories_by_category._metrics.clear()
+        self._memories_by_layer._metrics.clear()
         self._memories_with_artifacts._metrics.clear()
 
         # Set new values
@@ -871,6 +918,12 @@ class MetricsCollector:
                 category=cat,
             ).set(count)
 
+        for (uid, layer), count in by_layer.items():
+            self._memories_by_layer.labels(
+                user_id=uid,
+                memory_layer=layer,
+            ).set(count)
+
         for (uid, aid), count in with_artifacts.items():
             self._memories_with_artifacts.labels(
                 user_id=uid,
@@ -883,6 +936,7 @@ class MetricsCollector:
             + len(decayed)
             + len(pinned)
             + len(by_category)
+            + len(by_layer)
             + len(with_artifacts),
             sum(total.values()),
         )

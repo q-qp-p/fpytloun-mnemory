@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -26,8 +27,12 @@ def _get_service():
 
 @router.get("/sessions")
 async def list_sessions(
+    offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     consolidation_state: str | None = Query(None),
+    q: str | None = Query(None),
+    sort_by: Literal["updated_at", "created_at"] = Query("updated_at"),
+    sort_dir: Literal["asc", "desc"] = Query("desc"),
     ctx: SessionContext = Depends(get_session_context),
 ) -> dict:
     """List persistent session summaries for the current user.
@@ -38,16 +43,22 @@ async def list_sessions(
     """
     service = _get_service()
 
-    sessions = service._session_summary_store.list_for_user(
-        ctx.user_id,
-        limit=limit,
-        consolidation_state=consolidation_state,
-    )
+    try:
+        result = service._session_summary_store.list_for_user(
+            ctx.user_id,
+            offset=offset,
+            limit=limit,
+            consolidation_state=consolidation_state,
+            q=q,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            include_metadata=True,
+        )
+    except RuntimeError as exc:
+        logger.exception("Failed to list sessions for user %s", ctx.user_id)
+        raise HTTPException(status_code=503, detail="Failed to list sessions") from exc
 
-    return {
-        "sessions": sessions,
-        "total": len(sessions),
-    }
+    return result
 
 
 @router.get("/sessions/{session_id}")
