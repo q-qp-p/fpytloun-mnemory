@@ -195,7 +195,9 @@ function metricsTab() {
       catKeys.forEach((key, i) => {
         catColors[key] = brandPalette[i % brandPalette.length];
       });
-      this._renderDonut('chart-by-category', byCategory, catColors);
+      this._renderDonut('chart-by-category', byCategory, catColors, {
+        htmlLegendId: 'chart-by-category-legend',
+      });
 
       // By layer
       const byLayer = u?.by_layer ?? this.data.by_layer;
@@ -221,9 +223,10 @@ function metricsTab() {
      * @param {Object<string,number>} dataset - label -> value mapping
      * @param {Object<string,string>} colorMap - label -> hex color mapping
      */
-    _renderDonut(canvasId, dataset, colorMap) {
+    _renderDonut(canvasId, dataset, colorMap, options = {}) {
       const canvas = document.getElementById(canvasId);
       if (!canvas) return;
+      this._clearHtmlLegend(options.htmlLegendId);
 
       // Destroy previous instance to allow clean re-render
       if (this.chartInstances[canvasId]) {
@@ -238,6 +241,10 @@ function metricsTab() {
       if (labels.length === 0) return;
 
       const colors = labels.map((l) => colorMap[l] || '#64748B');
+
+      if (options.htmlLegendId) {
+        this._renderHtmlLegend(options.htmlLegendId, labels, values, colors);
+      }
 
       this.chartInstances[canvasId] = new Chart(canvas, {
         type: 'doughnut',
@@ -255,6 +262,7 @@ function metricsTab() {
           cutout: '60%',
           plugins: {
             legend: {
+              display: !options.htmlLegendId,
               position: 'bottom',
               labels: {
                 color: '#CBD5E1',       // slate-300 — readable on dark bg
@@ -275,6 +283,43 @@ function metricsTab() {
           // Transparent canvas background (inherits page/card bg)
           backgroundColor: 'transparent',
         },
+      });
+    },
+
+    _clearHtmlLegend(legendId) {
+      if (!legendId) return;
+      const legend = document.getElementById(legendId);
+      if (legend) legend.innerHTML = '';
+    },
+
+    _renderHtmlLegend(legendId, labels, values, colors) {
+      const legend = document.getElementById(legendId);
+      if (!legend) return;
+
+      labels.forEach((label, index) => {
+        const row = document.createElement('div');
+        row.className = 'flex items-start gap-2 text-xs text-secondary py-1';
+
+        const dot = document.createElement('span');
+        dot.className = 'w-2.5 h-2.5 rounded-full mt-1 shrink-0';
+        dot.style.backgroundColor = colors[index] || '#64748B';
+
+        const textWrap = document.createElement('div');
+        textWrap.className = 'min-w-0 flex-1';
+
+        const labelEl = document.createElement('div');
+        labelEl.className = 'text-[#E6EDF3] break-words';
+        labelEl.textContent = label;
+
+        const valueEl = document.createElement('div');
+        valueEl.className = 'text-muted';
+        valueEl.textContent = String(values[index] ?? 0);
+
+        textWrap.appendChild(labelEl);
+        textWrap.appendChild(valueEl);
+        row.appendChild(dot);
+        row.appendChild(textWrap);
+        legend.appendChild(row);
       });
     },
 

@@ -52,6 +52,14 @@ function graphTab() {
     /** Max memories to fetch for graph rendering */
     nodeLimit: 100,
 
+    /** Server-backed filters */
+    filterMemoryLayer: '',
+    selectedCategories: [],
+    availableCategories: [],
+
+    /** Debounce handle for server-backed filter changes */
+    _reloadTimer: null,
+
     /** Toggle visibility per memory type */
     typeFilters: {
       fact:       true,
@@ -80,6 +88,8 @@ function graphTab() {
      * 'graph' tab becomes active for the first time (lazy load).
      */
     init() {
+      this.loadCategories();
+
       window.addEventListener('mnemory:tab-changed', (e) => {
         if (e.detail.tab === 'graph') {
           this.loadAndRender();
@@ -88,12 +98,26 @@ function graphTab() {
 
       window.addEventListener('mnemory:user-changed', () => {
         // Reset state so the next activation rebuilds from scratch
+        if (this._reloadTimer) {
+          clearTimeout(this._reloadTimer);
+          this._reloadTimer = null;
+        }
         this.initialized = false;
         this.selectedNode = null;
         if (Alpine.store('nav').activeTab === 'graph') {
           this.loadAndRender();
         }
       });
+    },
+
+    async loadCategories() {
+      try {
+        const data = await MnemoryAPI.categories();
+        this.availableCategories = (data.categories || []).map((c) => c.name || c);
+      } catch (err) {
+        console.warn('Failed to load graph categories:', err);
+        this.availableCategories = [];
+      }
     },
 
     // ── Data fetching ──────────────────────────────────────────
@@ -103,8 +127,18 @@ function graphTab() {
      */
     async loadAndRender() {
       this.loading = true;
+      if (this._reloadTimer) {
+        clearTimeout(this._reloadTimer);
+        this._reloadTimer = null;
+      }
       try {
-        const result = await MnemoryAPI.listMemories({ limit: this.nodeLimit });
+        const params = { limit: this.nodeLimit };
+        if (this.filterMemoryLayer) params.memory_layer = this.filterMemoryLayer;
+        if (this.selectedCategories.length > 0) {
+          params.categories = this.selectedCategories.join(',');
+        }
+
+        const result = await MnemoryAPI.listMemories(params);
         // listMemories returns { results: [...] }
         this.memories = result.results || [];
         this.$nextTick(() => this.buildGraph());
@@ -133,9 +167,7 @@ function graphTab() {
       const height = container.clientHeight || 600;
 
       // ── Filter memories by active type toggles ───────────
-      const filtered = this.memories.filter(
-        (m) => this.typeFilters[(m.metadata || {}).memory_type] !== false
-      );
+      const filtered = this.memories.filter((m) => this._memoryMatchesFilters(m));
 
       if (filtered.length === 0) {
         // Nothing to draw — show empty state SVG
@@ -162,6 +194,7 @@ function graphTab() {
           content:    text.slice(0, 50) + (text.length > 50 ? '...' : ''),
           type:       meta.memory_type || 'context',
           importance: meta.importance || 'normal',
+          layer:      meta.memory_layer || 'consolidated',
           pinned:     !!meta.pinned,
           categories: meta.categories || [],
           fullData:   m,
@@ -436,6 +469,41 @@ function graphTab() {
       }
     },
 
+    updateServerFilters() {
+      if (this._reloadTimer) {
+        clearTimeout(this._reloadTimer);
+      }
+
+      this._reloadTimer = setTimeout(() => {
+        this._reloadTimer = null;
+        this.loadAndRender();
+      }, 250);
+    },
+
+    _memoryMatchesFilters(memory) {
+      const meta = memory.metadata || {};
+      const memoryType = meta.memory_type || 'context';
+      const memoryLayer = meta.memory_layer || 'consolidated';
+      const memoryCategories = meta.categories || [];
+
+      if (this.typeFilters[memoryType] === false) {
+        return false;
+      }
+
+      if (this.filterMemoryLayer && memoryLayer !== this.filterMemoryLayer) {
+        return false;
+      }
+
+      if (
+        this.selectedCategories.length > 0
+        && !this.selectedCategories.some((category) => memoryCategories.includes(category))
+      ) {
+        return false;
+      }
+
+      return true;
+    },
+
     /**
      * Switch to the search tab and trigger a search for the given
      * memory's content. Dispatches a custom event that the search
@@ -489,6 +557,10 @@ function graphTab() {
      * Called when the component is removed from the DOM.
      */
     destroy() {
+      if (this._reloadTimer) {
+        clearTimeout(this._reloadTimer);
+        this._reloadTimer = null;
+      }
       this._teardownGraph();
       this.memories = [];
       this.initialized = false;

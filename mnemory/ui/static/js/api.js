@@ -145,6 +145,19 @@ const MnemoryAPI = {
     return this.get('/categories');
   },
 
+  getCoreMemories(params = {}, agentId = '') {
+    const query = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== null && v !== undefined && v !== '') {
+        query.set(k, String(v));
+      }
+    }
+    const qs = query.toString();
+    return this._fetch(`/memories/core${qs ? '?' + qs : ''}`, {
+      headers: agentId ? { 'X-Agent-Id': agentId } : {},
+    });
+  },
+
   searchMemories(query, filters = {}) {
     return this.post('/memories/search', { query, ...filters });
   },

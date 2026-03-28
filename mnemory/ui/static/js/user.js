@@ -1,244 +1,193 @@
 /**
  * mnemory UI — User tab Alpine.js component.
  *
- * Shows core memories organized into sections matching the
- * get_core_memories format: User Facts, User Preferences,
- * User Context, and Recent Activity.
- *
- * Fetches structured memory data via GET /api/memories and
- * organizes client-side (since get_core_memories returns
- * pre-formatted text, not structured data).
- *
- * Agent filter uses dual-scope logic: when an agent is selected,
- * shows memories visible to that agent (agent_id matches OR no
- * agent_id set). When "All" is selected, shows everything.
+ * Shows a read-only preview of the exact default core context returned by
+ * GET /api/memories/core. This matches what an agent receives from
+ * get_core_memories, including agent-specific sections when an agent is
+ * selected.
  */
+
+// Known core-memory headings currently emitted by MemoryService.get_core_memories():
+// - ## Agent Identity
+// - ## Agent Knowledge
+// - ## Agent Instructions
+// - ## User Facts
+// - ## User Preferences
+// - ## Other User Memories
+// - ## Recent Context
+// - ### User Activity
+// - ### Agent Activity
 
 function userTab() {
   return {
-    // ── State ──────────────────────────────────────────────────
-    memories: [],
     loading: false,
     initialized: false,
     recentDays: 7,
-    expandedId: null,
-    deleteConfirm: null,
-
-    /** Client-side agent filter (dual-scope: selected + shared) */
     filterAgentId: '',
-
-    /** All known agent IDs (loaded from stats API) */
     availableAgentIds: [],
-
-    /** Memory types considered "recent activity" */
-    _recentTypes: ['episodic', 'context', 'procedural'],
-
-    // ── Lifecycle ──────────────────────────────────────────────
+    rawCoreText: '',
+    parsedCore: { preamble: [], sections: [] },
+    fallbackRawText: '',
 
     init() {
       window.addEventListener('mnemory:tab-changed', (e) => {
         if (e.detail.tab === 'user' && !this.initialized) {
           this.initialized = true;
-          this.loadData();
+          this._loadAgentIds().finally(() => this.loadData());
         }
       });
 
-      window.addEventListener('mnemory:user-changed', () => {
+      window.addEventListener('mnemory:user-changed', async () => {
         if (this.initialized) {
+          this.filterAgentId = '';
+          await this._loadAgentIds();
           this.loadData();
         }
-        this._loadAgentIds();
       });
-
-      this._loadAgentIds();
     },
-
-    // ── Data Loading ──────────────────────────────────────────
 
     async loadData() {
       this.loading = true;
+      this.fallbackRawText = '';
+      this.parsedCore = { preamble: [], sections: [] };
+
       try {
-        const data = await MnemoryAPI.listMemories({
-          limit: 5000,
-          include_decayed: false,
-        });
-        this.memories = data.results || [];
+        const data = await MnemoryAPI.getCoreMemories(
+          { recent_days: this.recentDays },
+          this.filterAgentId,
+        );
+        this.rawCoreText = String(data?.text || '');
+        this._parseCoreText();
       } catch (err) {
-        Alpine.store('notify').error(`Failed to load memories: ${err.message}`);
-        this.memories = [];
+        Alpine.store('notify').error(`Failed to load core memories: ${err.message}`);
+        this.rawCoreText = '';
+        this.parsedCore = { preamble: [], sections: [] };
+        this.fallbackRawText = '';
       } finally {
         this.loading = false;
       }
     },
 
-    /** Load all known agent IDs from the stats API */
     async _loadAgentIds() {
       try {
-        const data = await MnemoryAPI.stats();
-        this.availableAgentIds = data.agents || [];
-      } catch {
+        const data = await MnemoryAPI.listMemories({
+          limit: 5000,
+          include_decayed: false,
+          sort: 'newest',
+        });
+        const ids = new Set();
+        for (const memory of data.results || []) {
+          const agentId = memory.metadata?.agent_id;
+          if (agentId) ids.add(agentId);
+        }
+        this.availableAgentIds = [...ids];
+      } catch (err) {
+        console.warn('Failed to load user-scoped agent IDs:', err);
         this.availableAgentIds = [];
       }
     },
 
-    // ── Agent Filter ──────────────────────────────────────────
+    _parseCoreText() {
+      const text = this.rawCoreText.trim();
+      if (!text || text === 'No core memories found.') {
+        this.parsedCore = { preamble: [], sections: [] };
+        this.fallbackRawText = '';
+        return;
+      }
 
-    /**
-     * Dual-scope agent visibility check.
-     * When an agent is selected, a memory is visible if:
-     *   - it has no agent_id (shared), OR
-     *   - its agent_id matches the selected agent
-     * When no agent is selected ("All"), everything is visible.
-     */
-    _isVisibleToAgent(m) {
-      if (!this.filterAgentId) return true;
-      const aid = m.metadata?.agent_id;
-      return !aid || aid === this.filterAgentId;
-    },
+      const result = { preamble: [], sections: [] };
+      let currentSection = null;
+      let currentSubsection = null;
 
-    // ── Computed Sections ─────────────────────────────────────
+      for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
 
-    /** Pinned facts (role=user only, agent-filtered) */
-    get pinnedFacts() {
-      return this.memories.filter(m =>
-        m.metadata?.pinned &&
-        m.metadata?.memory_type === 'fact' &&
-        m.metadata?.role !== 'assistant' &&
-        this._isVisibleToAgent(m)
-      );
-    },
-
-    /** Pinned preferences (role=user only, agent-filtered) */
-    get pinnedPreferences() {
-      return this.memories.filter(m =>
-        m.metadata?.pinned &&
-        m.metadata?.memory_type === 'preference' &&
-        m.metadata?.role !== 'assistant' &&
-        this._isVisibleToAgent(m)
-      );
-    },
-
-    /** Pinned memories that are not fact or preference (role=user only, agent-filtered) */
-    get pinnedOther() {
-      return this.memories.filter(m =>
-        m.metadata?.pinned &&
-        m.metadata?.memory_type !== 'fact' &&
-        m.metadata?.memory_type !== 'preference' &&
-        m.metadata?.role !== 'assistant' &&
-        this._isVisibleToAgent(m)
-      );
-    },
-
-    /** Recent non-pinned memories of episodic/context/procedural type, within recentDays */
-    get recentMemories() {
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - this.recentDays);
-      return this.memories.filter(m => {
-        if (m.metadata?.pinned) return false;
-        if (m.metadata?.role === 'assistant') return false;
-        if (!this._isVisibleToAgent(m)) return false;
-        if (!this._recentTypes.includes(m.metadata?.memory_type)) return false;
-        const created = m.metadata?.created_at_utc;
-        if (!created) return false;
-        return new Date(created) >= cutoff;
-      }).sort((a, b) => {
-        const da = a.metadata?.created_at_utc || '';
-        const db = b.metadata?.created_at_utc || '';
-        return db.localeCompare(da);
-      });
-    },
-
-    /** Whether any section has content */
-    get hasContent() {
-      return this.pinnedFacts.length > 0 ||
-        this.pinnedPreferences.length > 0 ||
-        this.pinnedOther.length > 0 ||
-        this.recentMemories.length > 0;
-    },
-
-    // ── Interactions ──────────────────────────────────────────
-
-    toggleExpand(id) {
-      this.expandedId = this.expandedId === id ? null : id;
-    },
-
-    openEdit(mem) {
-      Alpine.store('memoryEdit').show(mem, (payload) => {
-        const idx = this.memories.findIndex(m => m.id === mem.id);
-        if (idx !== -1) {
-          const m = this.memories[idx];
-          if (payload.content !== undefined) m.memory = payload.content;
-          if (!m.metadata) m.metadata = {};
-          if (payload.memory_type) m.metadata.memory_type = payload.memory_type;
-          if (payload.categories) m.metadata.categories = payload.categories;
-          if (payload.importance) m.metadata.importance = payload.importance;
-          if (payload.pinned !== undefined) m.metadata.pinned = payload.pinned;
-          if (payload.ttl_days !== undefined) m.metadata.ttl_days = payload.ttl_days;
-          if (payload.agent_id !== undefined) m.metadata.agent_id = payload.agent_id || null;
+        if (line.startsWith('## ')) {
+          currentSection = {
+            title: line.slice(3).trim(),
+            lines: [],
+            subsections: [],
+          };
+          result.sections.push(currentSection);
+          currentSubsection = null;
+          continue;
         }
-      });
-    },
 
-    openArtifacts(mem) {
-      Alpine.store('artifactMgr').show(mem);
-    },
+        if (line.startsWith('### ')) {
+          if (!currentSection) continue;
+          currentSubsection = {
+            title: line.slice(4).trim(),
+            lines: [],
+          };
+          currentSection.subsections.push(currentSubsection);
+          continue;
+        }
 
-    async deleteMemory(id) {
-      try {
-        await MnemoryAPI.deleteMemory(id);
-        this.memories = this.memories.filter(m => m.id !== id);
-        this.deleteConfirm = null;
-        Alpine.store('notify').success('Memory deleted');
-      } catch (err) {
-        this.deleteConfirm = null;
-        Alpine.store('notify').error(`Failed to delete: ${err.message}`);
+        const entry = this._parseCoreLine(line);
+        if (!entry.text) continue;
+
+        if (currentSubsection) {
+          currentSubsection.lines.push(entry);
+        } else if (currentSection) {
+          currentSection.lines.push(entry);
+        } else {
+          result.preamble.push(entry);
+        }
+      }
+
+      this.parsedCore = result;
+
+      if (result.preamble.length === 0 && result.sections.length === 0) {
+        this.fallbackRawText = text;
+        console.warn('Core memories parser fell back to raw text:', text.slice(0, 200));
       }
     },
 
-    copyId(id) {
-      navigator.clipboard.writeText(id).then(
-        () => Alpine.store('notify').success('ID copied to clipboard'),
-        () => Alpine.store('notify').error('Failed to copy ID'),
-      );
-    },
-
-    // ── Display Helpers ───────────────────────────────────────
-
-    typeBadgeClass(type) {
-      const classes = {
-        fact: 'badge-fact',
-        preference: 'badge-preference',
-        episodic: 'badge-episodic',
-        procedural: 'badge-procedural',
-        context: 'badge-context',
+    _parseCoreLine(line) {
+      const bullet = line.startsWith('- ');
+      const text = bullet ? line.slice(2).trim() : line.trim();
+      return {
+        bullet,
+        text: bullet ? text.replace(/⟨\/?memory_item⟩/gu, '').trim() : text,
       };
-      return classes[type] || 'badge-context';
     },
 
-    importanceBadgeClass(importance) {
-      const classes = {
-        low: 'badge-low',
-        normal: 'badge-normal',
-        high: 'badge-high',
-        critical: 'badge-critical',
+    get hasContent() {
+      return this.parsedCore.preamble.length > 0 || this.parsedCore.sections.length > 0;
+    },
+
+    get emptyState() {
+      return this.rawCoreText.trim() || 'No core memories found.';
+    },
+
+    get scopeDescription() {
+      if (this.filterAgentId) {
+        return `Previewing the exact default core context returned for agent ${this.filterAgentId}.`;
+      }
+      return 'Previewing the shared user core context returned when no specific agent is selected.';
+    },
+
+    get agentSourceNote() {
+      if (this.availableAgentIds.length === 0) return '';
+      return 'Agent options are derived from your newest visible memories.';
+    },
+
+    onAgentChange() {
+      this.loadData();
+    },
+
+    sectionIcon(title) {
+      const icons = {
+        'Agent Identity': '🧠',
+        'Agent Knowledge': '📚',
+        'Agent Instructions': '🧭',
+        'User Facts': '👤',
+        'User Preferences': '⚙️',
+        'Other User Memories': '📝',
+        'Recent Context': '🕒',
       };
-      return classes[importance] || 'badge-normal';
-    },
-
-    truncate(str, max = 120) {
-      if (!str) return '';
-      return str.length > max ? str.substring(0, max) + '...' : str;
-    },
-
-    formatDate(dateStr) {
-      if (!dateStr) return '';
-      try {
-        const d = new Date(dateStr);
-        return d.toLocaleString(undefined, {
-          year: 'numeric', month: 'short', day: 'numeric',
-          hour: '2-digit', minute: '2-digit',
-        });
-      } catch { return dateStr; }
+      return icons[title] || '•';
     },
   };
 }

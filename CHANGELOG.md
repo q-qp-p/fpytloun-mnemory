@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Improved
+
+- **Dashboard category legend** -- The By Category chart now uses a right-side scrollable legend so large project/category sets stay readable.
+- **Graph filters** -- The Graph tab now supports category and memory-layer filters in addition to the existing type toggles.
+- **Core context preview** -- The User tab now shows a read-only preview of the exact default `get_core_memories` context an agent receives, including agent-specific scope when an agent is selected.
+
 ## [1.10.0] — 2026-03-28
 
 ### Improved
