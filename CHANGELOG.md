@@ -1,17 +1,18 @@
 # Changelog
 
-## [Unreleased]
+## [1.9.1] — 2026-03-28
 
-### Management UI
+### Added
 
-- **Sessions tab pagination**: Linked memories and consolidated memories in expanded sessions are now paginated (10 per page) with "Show More / Show Less" controls, preventing large sessions from overwhelming the page
-- **Sessions tab performance**: Memory loading now uses a new `POST /api/memories/by-ids` batch endpoint instead of fetching all memories and filtering client-side, drastically reducing API payload and load time
-- **Consolidated/raw counts**: The Consolidated timestamp now shows memory counts (e.g., "15 consolidated out of 53 raw") for at-a-glance consolidation progress
-- **Compact session layout**: Tighter spacing throughout expanded session details for better information density
+- **Root redirect** -- Navigating to `/` now redirects to `/ui/` for better discoverability of the management UI.
+- **Cognis JWT authentication** -- ES256 JWT validation alongside existing API key auth for Cognis controller integration.
+- **`POST /api/memories/by-ids`** -- New endpoint to fetch multiple memories by their IDs in a single request (max 500 IDs). Returns user-scoped results with silent skip for missing IDs.
 
-### REST API
+### Improved
 
-- **`POST /api/memories/by-ids`**: New endpoint to fetch multiple memories by their IDs in a single request (max 500 IDs). Returns user-scoped results with silent skip for missing IDs. Used by the Sessions tab but available for any client
+- **Sessions tab pagination** -- Linked memories and consolidated memories in expanded sessions are now paginated (10 per page) with "Show More / Show Less" controls, preventing large sessions from overwhelming the page.
+- **Sessions tab performance** -- Memory loading now uses the batch endpoint instead of fetching all memories and filtering client-side, drastically reducing API payload and load time.
+- **Compact session layout** -- Tighter spacing and consolidated/raw memory counts in expanded session details.
 
 ## [1.9.0] — 2026-03-26
 
