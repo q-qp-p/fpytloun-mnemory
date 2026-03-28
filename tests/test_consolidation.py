@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from mnemory.consolidation import ConsolidationService
 
 
@@ -682,7 +680,7 @@ class TestConsolidationAlwaysRunsBothPasses:
         service._llm.generate.return_value = json.dumps({"memories": []})
         service._memory.add_memory.return_value = {"results": []}
 
-        result = service.consolidate_session("ses-1")
+        service.consolidate_session("ses-1")
 
         # LLM should be called exactly once (user pass only, no assistant pass)
         assert service._llm.generate.call_count == 1
