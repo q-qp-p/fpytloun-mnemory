@@ -1742,9 +1742,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         has_api_key_auth = bool(cfg.api_keys or cfg.api_key)
         has_auth = has_api_key_auth or validator is not None
 
-        # Skip auth for UI static files — no sensitive data.
+        # Skip auth for UI static files and root redirect — no sensitive data.
         # Auth is enforced on all /api/ calls from the browser.
-        if request.url.path.startswith("/ui"):
+        if request.url.path == "/" or request.url.path.startswith("/ui"):
             self._set_identity_from_headers(request)
             try:
                 return await call_next(request)
@@ -2185,6 +2185,10 @@ def create_app() -> Starlette:
         async def _ui_redirect(request: Request) -> RedirectResponse:
             return RedirectResponse("/ui/", status_code=301)
 
+        async def _root_redirect(request: Request) -> RedirectResponse:
+            return RedirectResponse("/ui/", status_code=301)
+
+        routes.append(Route("/", _root_redirect))
         routes.append(Route("/ui", _ui_redirect))
         routes.append(Mount("/ui", app=StaticFiles(directory=ui_static_dir, html=True)))
 
