@@ -751,6 +751,7 @@ class VectorStore:
         shared_only: bool = False,
         filters: dict | None = None,
         labels_filter: dict | None = None,
+        exclude_layers: list[str] | None = None,
         limit: int = 100,
         order_by: OrderBy | None = None,
     ) -> dict:
@@ -764,6 +765,7 @@ class VectorStore:
                 dual-scope list to avoid leaking sub-agent memories.
             filters: Metadata filters. Scalar values use exact match,
                 list values use any-of match (MatchAny).
+            exclude_layers: Memory layers to exclude from results.
             limit: Maximum results.
             order_by: Optional Qdrant OrderBy for server-side sorting.
                 When set, results are returned in the specified order.
@@ -797,9 +799,23 @@ class VectorStore:
         if labels_filter:
             must_conditions.extend(_build_labels_conditions(labels_filter))
 
+        must_not_conditions: list = []
+        if exclude_layers:
+            for layer in exclude_layers:
+                must_not_conditions.append(
+                    FieldCondition(key="memory_layer", match=MatchValue(value=layer))
+                )
+            if "consolidated" in exclude_layers:
+                must_not_conditions.append(
+                    IsEmptyCondition(is_empty=PayloadField(key="memory_layer"))
+                )
+
         scroll_kwargs: dict[str, Any] = {
             "collection_name": self.collection_name,
-            "scroll_filter": Filter(must=must_conditions),
+            "scroll_filter": Filter(
+                must=must_conditions,
+                must_not=must_not_conditions if must_not_conditions else None,
+            ),
             "limit": limit,
             "with_payload": True,
             "with_vectors": False,
@@ -1141,6 +1157,7 @@ class VectorStore:
         limit: int = 50,
         memory_types: list[str] | None = None,
         importance_levels: list[str] | None = None,
+        exclude_layers: list[str] | None = None,
     ) -> list[dict]:
         """Get memories created after a given timestamp.
 
@@ -1155,6 +1172,7 @@ class VectorStore:
             memory_types: If set, filter to only these memory types.
             importance_levels: If set, filter to only these importance levels
                 (e.g., ["normal", "high", "critical"]).
+            exclude_layers: Memory layers to exclude from results.
 
         Returns memories ordered by created_at descending (most recent first).
         """
@@ -1198,9 +1216,23 @@ class VectorStore:
                 FieldCondition(key="importance", match=MatchAny(any=importance_levels))
             )
 
+        must_not_conditions: list = []
+        if exclude_layers:
+            for layer in exclude_layers:
+                must_not_conditions.append(
+                    FieldCondition(key="memory_layer", match=MatchValue(value=layer))
+                )
+            if "consolidated" in exclude_layers:
+                must_not_conditions.append(
+                    IsEmptyCondition(is_empty=PayloadField(key="memory_layer"))
+                )
+
         points, _ = self._client.scroll(
             collection_name=self.collection_name,
-            scroll_filter=Filter(must=must_conditions),
+            scroll_filter=Filter(
+                must=must_conditions,
+                must_not=must_not_conditions if must_not_conditions else None,
+            ),
             limit=limit,
             with_payload=True,
         )
@@ -1218,6 +1250,7 @@ class VectorStore:
         user_id: str,
         agent_id: str | None = None,
         exclude_agent: bool = False,
+        exclude_layers: list[str] | None = None,
     ) -> list[dict]:
         """Get pinned memories, optionally filtering by agent scope.
 
@@ -1226,9 +1259,15 @@ class VectorStore:
             agent_id: If set, also include agent-specific pinned memories.
             exclude_agent: If True, only return memories WITHOUT agent_id
                           (user-scoped memories shared across agents).
+            exclude_layers: Memory layers to exclude from results.
         """
         # Fetch all pinned memories for the user
-        all_pinned = self.get_all(user_id=user_id, filters={"pinned": True}, limit=500)
+        all_pinned = self.get_all(
+            user_id=user_id,
+            filters={"pinned": True},
+            exclude_layers=exclude_layers,
+            limit=500,
+        )
         results = all_pinned.get("results", [])
 
         filtered = []

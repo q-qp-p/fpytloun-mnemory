@@ -638,6 +638,73 @@ class TestStatsEndpoint:
             assert "Metrics disabled" in exc_info.value.detail
 
 
+class TestCoreMemoriesEndpoint:
+    """Tests for GET /api/memories/core endpoint behavior."""
+
+    def test_core_endpoint_default_response_omits_stats(self):
+        """Default core response should remain text-only."""
+        from unittest.mock import MagicMock, patch
+
+        from mnemory.api.deps import SessionContext
+        from mnemory.api.memories import get_core_memories
+        from mnemory.memory import CoreMemoriesResult, CoreMemoriesStats
+
+        mock_service = MagicMock()
+        mock_service.get_core_memories.return_value = CoreMemoriesResult(
+            text="core text",
+            stats=CoreMemoriesStats(memory_count=2, estimated_tokens=3, char_count=10),
+        )
+
+        ctx = SessionContext(user_id="filip", agent_id="bot", timezone=None)
+        with patch("mnemory.api.memories._get_service", return_value=mock_service):
+            result = get_core_memories(recent_days=7, include_stats=False, ctx=ctx)
+
+        assert result.model_dump(exclude_none=True) == {"text": "core text"}
+
+    def test_core_endpoint_include_stats_returns_structured_payload(self):
+        """include_stats should expose structured core-memory stats."""
+        from unittest.mock import MagicMock, patch
+
+        from mnemory.api.deps import SessionContext
+        from mnemory.api.memories import get_core_memories
+        from mnemory.memory import CoreMemoriesResult, CoreMemoriesStats
+
+        mock_service = MagicMock()
+        mock_service.get_core_memories.return_value = CoreMemoriesResult(
+            text="core text",
+            stats=CoreMemoriesStats(
+                memory_count=2,
+                char_count=40,
+                estimated_tokens=10,
+                by_type={"fact": 1, "preference": 1},
+                by_role={"user": 2},
+                by_section={"user_facts": 1, "user_preferences": 1},
+                section_labels={
+                    "user_facts": "User Facts",
+                    "user_preferences": "User Preferences",
+                },
+                sections={
+                    "user_facts": ["m1"],
+                    "user_preferences": ["m2"],
+                },
+                memory_ids=["m1", "m2"],
+            ),
+        )
+
+        ctx = SessionContext(user_id="filip", agent_id="bot", timezone=None)
+        with patch("mnemory.api.memories._get_service", return_value=mock_service):
+            result = get_core_memories(recent_days=7, include_stats=True, ctx=ctx)
+
+        assert result.text == "core text"
+        assert result.stats is not None
+        assert result.stats.memory_count == 2
+        assert result.stats.estimated_tokens == 10
+        assert result.stats.by_section["user_facts"] == 1
+        assert result.stats.section_labels["user_facts"] == "User Facts"
+        assert result.stats.sections["user_preferences"] == ["m2"]
+        assert result.stats.memory_ids == ["m1", "m2"]
+
+
 class TestPrometheusMetricsInternalAPI:
     """Validate that prometheus_client internal _metrics dict API works.
 

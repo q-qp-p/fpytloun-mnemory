@@ -282,10 +282,42 @@ class UpdateMemoryRequest(BaseModel):
     )
 
 
+class CoreMemoriesStatsResponse(BaseModel):
+    """Structured stats describing the assembled core context."""
+
+    memory_count: int = Field(..., description="Number of included memories")
+    char_count: int = Field(..., description="Character count of the formatted text")
+    estimated_tokens: int = Field(
+        ..., description="Approximate token count estimated from text length"
+    )
+    by_type: dict[str, int] = Field(
+        default_factory=dict, description="Counts by memory type"
+    )
+    by_role: dict[str, int] = Field(default_factory=dict, description="Counts by role")
+    by_section: dict[str, int] = Field(
+        default_factory=dict, description="Counts by stable section key"
+    )
+    section_labels: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of stable section keys to display labels",
+    )
+    sections: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Ordered memory IDs grouped by stable section key",
+    )
+    memory_ids: list[str] = Field(
+        default_factory=list,
+        description="Ordered flattened memory IDs included in the core text",
+    )
+
+
 class CoreMemoriesResponse(BaseModel):
     """Response from get_core_memories."""
 
     text: str = Field(..., description="Formatted core memories text")
+    stats: CoreMemoriesStatsResponse | None = Field(
+        None, description="Optional structured stats for the assembled core memories"
+    )
 
 
 class RecentMemoriesRequest(BaseModel):

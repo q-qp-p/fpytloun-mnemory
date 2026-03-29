@@ -68,6 +68,46 @@ logger = logging.getLogger(__name__)
 # Max length for user_id and agent_id to prevent abuse
 _MAX_ID_LENGTH = 256
 
+# Core context never includes provisional raw-layer memories.
+_CORE_EXCLUDE_LAYERS = ["raw"]
+
+_CORE_SECTION_LABELS = {
+    "agent_identity": "Agent Identity",
+    "agent_knowledge": "Agent Knowledge",
+    "agent_instructions": "Agent Instructions",
+    "user_facts": "User Facts",
+    "user_preferences": "User Preferences",
+    "other_user_memories": "Other User Memories",
+    "recent_user_activity": "User Activity",
+    "recent_agent_activity": "Agent Activity",
+}
+
+_CORE_SECTION_ORDER = [
+    "agent_identity",
+    "agent_knowledge",
+    "agent_instructions",
+    "user_facts",
+    "user_preferences",
+    "other_user_memories",
+    "recent_user_activity",
+    "recent_agent_activity",
+]
+
+
+@dataclass
+class CoreMemoriesStats:
+    """Structured metadata describing the assembled core context."""
+
+    memory_count: int = 0
+    char_count: int = 0
+    estimated_tokens: int = 0
+    by_type: dict[str, int] = dataclass_field(default_factory=dict)
+    by_role: dict[str, int] = dataclass_field(default_factory=dict)
+    by_section: dict[str, int] = dataclass_field(default_factory=dict)
+    section_labels: dict[str, str] = dataclass_field(default_factory=dict)
+    sections: dict[str, list[str]] = dataclass_field(default_factory=dict)
+    memory_ids: list[str] = dataclass_field(default_factory=list)
+
 
 @dataclass
 class CoreMemoriesResult:
@@ -81,6 +121,7 @@ class CoreMemoriesResult:
 
     text: str
     memory_ids: set[str] = dataclass_field(default_factory=set)
+    stats: CoreMemoriesStats | None = None
 
 
 def _validate_id(value: str, name: str) -> str:
@@ -2900,6 +2941,7 @@ class MemoryService:
         Returns a CoreMemoriesResult with:
         - text: Structured markdown with pinned + top-N + recent memories
         - memory_ids: Set of all memory IDs included (for dedup vs search)
+        - stats: Structured summary of the included memories for UI display
 
         Sections:
         1. Pinned agent memories (identity, knowledge) — if agent_id provided
@@ -2933,13 +2975,20 @@ class MemoryService:
         max_per_section = self._config.memory.core_max_per_section
 
         sections: list[str] = []
+        memory_by_id: dict[str, dict] = {}
 
         # IDs of memories included in main sections — built after per-section
         # limits are applied so only surviving memories are tracked.
         included_ids: set[str] = set()
 
         # ── 1. Fetch all pinned memories in a single query ────────────
-        all_pinned = self.vector.get_pinned_memories(user_id=user_id)
+        all_pinned = self.vector.get_pinned_memories(
+            user_id=user_id,
+            exclude_layers=_CORE_EXCLUDE_LAYERS,
+        )
+        for memory in all_pinned:
+            if memory.get("id"):
+                memory_by_id[memory["id"]] = memory
 
         # Split into agent-scoped and shared user memories
         agent_pinned = (
@@ -2965,6 +3014,7 @@ class MemoryService:
                         user_id=user_id,
                         agent_id=agent_id,
                         filters={"pinned": False, "importance": imp_levels},
+                        exclude_layers=_CORE_EXCLUDE_LAYERS,
                         limit=top_n * 3,
                     )
                 futures["user"] = pool.submit(
@@ -2972,11 +3022,18 @@ class MemoryService:
                     user_id=user_id,
                     shared_only=True,
                     filters={"pinned": False, "importance": imp_levels},
+                    exclude_layers=_CORE_EXCLUDE_LAYERS,
                     limit=top_n * 3,
                 )
                 if "agent" in futures:
                     agent_non_pinned_raw = futures["agent"].result()
                 user_non_pinned_raw = futures["user"].result()
+        for memory in agent_non_pinned_raw.get("results", []):
+            if memory.get("id"):
+                memory_by_id[memory["id"]] = memory
+        for memory in user_non_pinned_raw.get("results", []):
+            if memory.get("id"):
+                memory_by_id[memory["id"]] = memory
 
         # Section buckets store (formatted_line, memory_id) tuples so that
         # per-section limits can be applied before collecting included_ids.
@@ -3104,6 +3161,7 @@ class MemoryService:
                 limit=limit_user,
                 memory_types=self.RECENT_MEMORY_TYPES,
                 importance_levels=recent_imp_levels,
+                exclude_layers=_CORE_EXCLUDE_LAYERS,
             )
             f_agent_recent = None
             if agent_id:
@@ -3115,9 +3173,16 @@ class MemoryService:
                     limit=limit_agent,
                     memory_types=self.RECENT_MEMORY_TYPES,
                     importance_levels=recent_imp_levels,
+                    exclude_layers=_CORE_EXCLUDE_LAYERS,
                 )
             user_recent_raw = f_user_recent.result()
             agent_recent_raw = f_agent_recent.result() if f_agent_recent else []
+        for memory in user_recent_raw:
+            if memory.get("id"):
+                memory_by_id[memory["id"]] = memory
+        for memory in agent_recent_raw:
+            if memory.get("id"):
+                memory_by_id[memory["id"]] = memory
 
         user_recent = [
             m
@@ -3147,8 +3212,37 @@ class MemoryService:
         recent_user_lines = [line for line, _ in recent_user_pairs]
         recent_agent_lines = [line for line, _ in recent_agent_pairs]
 
+        def _ordered_ids(entries: list[tuple[str, str | None]]) -> list[str]:
+            return [memory_id for _, memory_id in entries if memory_id]
+
+        stats_sections = {
+            "agent_identity": _ordered_ids(
+                agent_sections["identity"] if agent_id else []
+            ),
+            "agent_knowledge": _ordered_ids(
+                agent_sections["knowledge"] if agent_id else []
+            ),
+            "agent_instructions": _ordered_ids(
+                agent_sections["instructions"] if agent_id else []
+            ),
+            "user_facts": _ordered_ids(user_sections["facts"]),
+            "user_preferences": _ordered_ids(user_sections["prefs"]),
+            "other_user_memories": _ordered_ids(user_sections["other"]),
+            "recent_user_activity": _ordered_ids(recent_user_pairs),
+            "recent_agent_activity": _ordered_ids(recent_agent_pairs),
+        }
+
         if not sections and not recent_user_lines and not recent_agent_lines:
-            result = CoreMemoriesResult(text="No core memories found.")
+            result = CoreMemoriesResult(
+                text="No core memories found.",
+                stats=CoreMemoriesStats(
+                    char_count=0,
+                    estimated_tokens=0,
+                    section_labels=dict(_CORE_SECTION_LABELS),
+                    by_section={key: 0 for key in _CORE_SECTION_ORDER},
+                    sections={key: [] for key in _CORE_SECTION_ORDER},
+                ),
+            )
             self._core_cache.set(cache_key, result)
             return result
 
@@ -3197,7 +3291,52 @@ class MemoryService:
         # per-section limits (core_max_per_section) and recent context
         # trimming above. All sections are always fully included.
 
-        result = CoreMemoriesResult(text=output, memory_ids=included_ids)
+        stats_sections["recent_user_activity"] = _ordered_ids(recent_user_pairs)
+        stats_sections["recent_agent_activity"] = _ordered_ids(recent_agent_pairs)
+
+        ordered_memory_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for section_key in _CORE_SECTION_ORDER:
+            for memory_id in stats_sections.get(section_key, []):
+                if memory_id not in seen_ids:
+                    seen_ids.add(memory_id)
+                    ordered_memory_ids.append(memory_id)
+
+        by_type: dict[str, int] = {}
+        by_role: dict[str, int] = {}
+        for memory_id in ordered_memory_ids:
+            memory = memory_by_id.get(memory_id, {})
+            metadata = memory.get("metadata", {})
+            memory_type = metadata.get("memory_type") or "context"
+            role = metadata.get("role") or "user"
+            by_type[memory_type] = by_type.get(memory_type, 0) + 1
+            by_role[role] = by_role.get(role, 0) + 1
+
+        visible_sections = {key: ids for key, ids in stats_sections.items() if ids}
+        by_section = {
+            key: len(visible_sections.get(key, []))
+            for key in _CORE_SECTION_ORDER
+            if key in visible_sections
+        }
+        section_labels = {
+            key: _CORE_SECTION_LABELS[key]
+            for key in _CORE_SECTION_ORDER
+            if key in visible_sections
+        }
+
+        stats = CoreMemoriesStats(
+            memory_count=len(ordered_memory_ids),
+            char_count=len(output),
+            estimated_tokens=max(1, (len(output) + 3) // 4),
+            by_type=by_type,
+            by_role=by_role,
+            by_section=by_section,
+            section_labels=section_labels,
+            sections=visible_sections,
+            memory_ids=ordered_memory_ids,
+        )
+
+        result = CoreMemoriesResult(text=output, memory_ids=included_ids, stats=stats)
         self._core_cache.set(cache_key, result)
         return result
 

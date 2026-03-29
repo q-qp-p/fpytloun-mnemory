@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mnemory.memory import (
+    CoreMemoriesStats,
     MemoryService,
     _parse_event_date,
     _validate_id,
@@ -1766,6 +1767,82 @@ class TestCoreMemoriesTopN:
         service.get_core_memories(user_id="filip", agent_id="test-agent")
         assert service.vector.get_pinned_memories.call_count == 1
 
+    def test_core_queries_exclude_raw_layer(self):
+        """Core context queries should always exclude raw-layer memories."""
+        service = self._make_service()
+
+        service.get_core_memories(user_id="filip", agent_id="test-agent")
+
+        assert service.vector.get_pinned_memories.call_args.kwargs[
+            "exclude_layers"
+        ] == ["raw"]
+        assert service.vector.get_all.call_count == 2
+        for call in service.vector.get_all.call_args_list:
+            assert call.kwargs["exclude_layers"] == ["raw"]
+        assert service.vector.get_recent_memories.call_count == 2
+        for call in service.vector.get_recent_memories.call_args_list:
+            assert call.kwargs["exclude_layers"] == ["raw"]
+
+    def test_core_stats_reflect_surviving_entries_after_section_cap(self):
+        """Stats should count only memories that survive section capping."""
+        service = self._make_service()
+        service._config.memory.core_top_memories = 0
+        service._config.memory.core_max_per_section = 1
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": "fact-high",
+                "memory": "High priority fact",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                    "role": "user",
+                },
+            },
+            {
+                "id": "fact-low",
+                "memory": "Low priority fact",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "low",
+                    "pinned": True,
+                    "role": "user",
+                },
+            },
+            {
+                "id": "pref-high",
+                "memory": "High priority preference",
+                "metadata": {
+                    "memory_type": "preference",
+                    "importance": "high",
+                    "pinned": True,
+                    "role": "user",
+                },
+            },
+        ]
+
+        result = service.get_core_memories(user_id="filip")
+
+        assert "High priority fact" in result.text
+        assert "Low priority fact" not in result.text
+        assert result.stats == CoreMemoriesStats(
+            memory_count=2,
+            char_count=len(result.text),
+            estimated_tokens=(len(result.text) + 3) // 4,
+            by_type={"fact": 1, "preference": 1},
+            by_role={"user": 2},
+            by_section={"user_facts": 1, "user_preferences": 1},
+            section_labels={
+                "user_facts": "User Facts",
+                "user_preferences": "User Preferences",
+            },
+            sections={
+                "user_facts": ["fact-high"],
+                "user_preferences": ["pref-high"],
+            },
+            memory_ids=["fact-high", "pref-high"],
+        )
+
 
 class TestCoreMemoriesPartialTruncation:
     """Test graceful truncation of recent context."""
@@ -1815,6 +1892,44 @@ class TestCoreMemoriesPartialTruncation:
         # Should not have all 10
         recent_count = sum(1 for i in range(10) if f"Recent event number {i}" in result)
         assert 0 < recent_count < 10
+
+    def test_stats_match_recent_memories_after_truncation(self):
+        """Stats should count only recent memories that survive truncation."""
+        service = self._make_service(max_len=800)
+        service.vector.get_pinned_memories.return_value = [
+            {
+                "id": "pin-1",
+                "memory": "User is a developer",
+                "metadata": {
+                    "memory_type": "fact",
+                    "importance": "high",
+                    "pinned": True,
+                    "role": "user",
+                },
+            },
+        ]
+        service.vector.get_recent_memories.return_value = [
+            {
+                "id": f"recent-{i}",
+                "memory": f"Recent event number {i} happened today",
+                "created_at": f"2024-01-15T{10 + i:02d}:00:00Z",
+                "metadata": {
+                    "memory_type": "episodic",
+                    "importance": "normal",
+                    "role": "user",
+                },
+            }
+            for i in range(10)
+        ]
+
+        result = service.get_core_memories(user_id="filip")
+        recent_count = sum(
+            1 for i in range(10) if f"Recent event number {i}" in result.text
+        )
+
+        assert result.stats is not None
+        assert result.stats.by_section["recent_user_activity"] == recent_count
+        assert len(result.stats.sections["recent_user_activity"]) == recent_count
 
     def test_all_recent_trimmed_if_needed(self):
         """If main sections fill the budget, all recent should be removed."""
@@ -3407,6 +3522,64 @@ class TestVectorGetRecentMemories:
         agent = store.get_recent_memories(user_id="filip", agent_id="bot", since=since)
         assert len(agent) == 1
         assert agent[0]["memory"] == "Agent note"
+
+    def test_exclude_raw_layer_keeps_legacy_memories(self):
+        """exclude_layers should drop raw memories but keep no-layer legacy data."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+
+        store.insert(
+            text="Legacy episodic memory",
+            vector=[0.1, 0.2, 0.3, 0.4],
+            user_id="filip",
+            agent_id=None,
+            metadata={"memory_type": "episodic"},
+        )
+        store.insert(
+            text="Raw episodic memory",
+            vector=[0.4, 0.3, 0.2, 0.1],
+            user_id="filip",
+            agent_id=None,
+            metadata={"memory_type": "episodic", "memory_layer": "raw"},
+        )
+
+        since = datetime.now(timezone.utc) - timedelta(days=1)
+        results = store.get_recent_memories(
+            user_id="filip",
+            agent_id=None,
+            since=since,
+            exclude_layers=["raw"],
+        )
+
+        assert len(results) == 1
+        assert results[0]["memory"] == "Legacy episodic memory"
+
+
+class TestVectorGetAllExcludeLayers:
+    """Tests for exclude_layers handling in VectorStore.get_all."""
+
+    def test_get_all_adds_must_not_for_excluded_layers(self):
+        """get_all should forward excluded memory layers into the Qdrant filter."""
+        from mnemory.storage.vector import VectorStore
+
+        store = object.__new__(VectorStore)
+        store._config = MagicMock()
+        store._config.vector.collection_name = "mnemory"
+        store._config.vector.is_remote = False
+        store._client = MagicMock()
+        store._write_lock = None
+        store._client.scroll.return_value = ([], None)
+
+        store.get_all(user_id="filip", exclude_layers=["raw"])
+
+        scroll_filter = store._client.scroll.call_args.kwargs["scroll_filter"]
+        assert scroll_filter.must_not is not None
+        assert any(
+            getattr(condition, "key", None) == "memory_layer"
+            and getattr(getattr(condition, "match", None), "value", None) == "raw"
+            for condition in scroll_filter.must_not
+        )
 
 
 # ── Vector store search TTL filter (Qdrant integration) ──────────────

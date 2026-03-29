@@ -26,6 +26,32 @@ Both MCP and REST share the same `MemoryService` backend and authentication midd
 | `/api/memories/{id}/artifacts/{aid}` | DELETE | Delete artifact |
 | `/api/categories` | GET | List categories |
 
+`GET /api/memories/core` supports:
+
+- `recent_days` — how many days of recent context to include
+- `include_stats` — when `true`, also return structured stats for the assembled core context
+
+Example response with `include_stats=true`:
+
+```json
+{
+  "text": "## User Facts\n- User lives in Prague\n...",
+  "stats": {
+    "memory_count": 4,
+    "char_count": 1840,
+    "estimated_tokens": 460,
+    "by_type": {"fact": 2, "preference": 1, "episodic": 1},
+    "by_role": {"user": 4},
+    "by_section": {"user_facts": 2, "user_preferences": 1, "recent_user_activity": 1},
+    "section_labels": {"user_facts": "User Facts", "user_preferences": "User Preferences", "recent_user_activity": "User Activity"},
+    "sections": {"user_facts": ["mem_1", "mem_2"], "user_preferences": ["mem_3"], "recent_user_activity": ["mem_4"]},
+    "memory_ids": ["mem_1", "mem_2", "mem_3", "mem_4"]
+  }
+}
+```
+
+Core memories exclude `memory_layer=raw` by default, so only consolidated (and legacy no-layer) memories are included in the default injected context.
+
 ## Session Summaries
 
 Persistent session summaries from the remember endpoint, used by the consolidation service.

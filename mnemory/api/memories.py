@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -297,9 +298,14 @@ def ask_memories(
     )
 
 
-@router.get("/core", response_model=CoreMemoriesResponse)
+@router.get(
+    "/core", response_model=CoreMemoriesResponse, response_model_exclude_none=True
+)
 def get_core_memories(
     recent_days: int = Query(7, description="Days of recent context"),
+    include_stats: bool = Query(
+        False, description="Include structured core-memory stats"
+    ),
     ctx: SessionContext = Depends(get_session_context),
 ):
     """Load pinned + recent context memories."""
@@ -310,7 +316,12 @@ def get_core_memories(
         agent_id=ctx.agent_id,
         recent_days=recent_days,
     )
-    return CoreMemoriesResponse(text=core_result.text)
+    return CoreMemoriesResponse(
+        text=core_result.text,
+        stats=asdict(core_result.stats)
+        if include_stats and core_result.stats
+        else None,
+    )
 
 
 @router.get("/recent", response_model=RecentMemoriesResponse)
