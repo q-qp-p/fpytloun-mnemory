@@ -1010,6 +1010,8 @@ class VectorStore:
         agent_id: str | None = None,
         shared_only: bool = False,
         filters: dict | None = None,
+        exclude_layers: list[str] | None = None,
+        exclude_expired: bool = False,
     ) -> list[dict[str, Any]]:
         """Scroll ALL memories for a user, including stored embedding vectors.
 
@@ -1026,6 +1028,9 @@ class VectorStore:
                 without any agent_id (shared user memories only). Used by
                 dual-scope fsck to scroll shared memories separately.
             filters: Additional metadata filters.
+            exclude_layers: Memory layers to exclude (e.g. ["raw"]).
+            exclude_expired: If True, exclude memories whose expires_at is
+                in the past (non-pinned). Best-effort Qdrant-side filter.
 
         Returns list of memory dicts with an extra "vector" key containing
         the stored embedding.
@@ -1035,6 +1040,8 @@ class VectorStore:
         must_conditions: list = [
             FieldCondition(key="user_id", match=MatchValue(value=user_id)),
         ]
+        must_not_conditions: list = []
+
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
@@ -1054,7 +1061,34 @@ class VectorStore:
                         FieldCondition(key=key, match=MatchValue(value=value))
                     )
 
-        scroll_filter = Filter(must=must_conditions)
+        if exclude_layers:
+            from qdrant_client.models import MatchValue as MV
+
+            for layer in exclude_layers:
+                must_not_conditions.append(
+                    FieldCondition(key="memory_layer", match=MV(value=layer))
+                )
+
+        if exclude_expired:
+            from qdrant_client.models import DatetimeRange
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            # Exclude expired non-pinned memories. We filter out memories
+            # whose expires_at is in the past. Pinned memories are exempt
+            # (they have no expires_at or it's ignored).
+            # Note: this is a best-effort filter — Python-side filtering
+            # in fsck also catches edge cases.
+            must_not_conditions.append(
+                FieldCondition(
+                    key="expires_at",
+                    range=DatetimeRange(lt=now_iso),
+                )
+            )
+
+        scroll_filter = Filter(
+            must=must_conditions,
+            must_not=must_not_conditions or None,
+        )
         # Use a page size that balances memory and round-trips.
         # with_vectors=True makes payloads larger, so keep pages moderate.
         _PAGE_SIZE = 256
@@ -1145,6 +1179,59 @@ class VectorStore:
             mem["score"] = point.score
             memories.append(mem)
         return memories
+
+    def search_by_vector_ids(
+        self,
+        vector: list[float],
+        *,
+        user_id: str,
+        agent_id: str | None = None,
+        shared_only: bool = False,
+        limit: int = 5,
+        exclude_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search for similar memories by vector, returning only IDs and scores.
+
+        Lightweight variant of search_by_vector that skips payload transfer.
+        Used by fsck duplicate detection where only the similarity graph
+        structure matters, not the memory content.
+
+        Args:
+            vector: Pre-computed embedding vector.
+            user_id: Required user scope.
+            agent_id: Optional agent scope.
+            shared_only: If True and agent_id is None, restrict to memories
+                without any agent_id (shared user memories only).
+            limit: Maximum results.
+            exclude_ids: Point IDs to exclude from results.
+        """
+        from qdrant_client.models import HasIdCondition, IsEmptyCondition
+
+        must_conditions: list = [
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        ]
+        if agent_id:
+            must_conditions.append(
+                FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
+            )
+        elif shared_only:
+            must_conditions.append(
+                IsEmptyCondition(is_empty=PayloadField(key="agent_id"))
+            )
+
+        must_not: list = []
+        if exclude_ids:
+            must_not.append(HasIdCondition(has_id=exclude_ids))
+
+        result = self._client.query_points(
+            collection_name=self.collection_name,
+            query=vector,
+            query_filter=Filter(must=must_conditions, must_not=must_not or None),
+            limit=limit,
+            with_payload=False,
+        )
+
+        return [{"id": str(point.id), "score": point.score} for point in result.points]
 
     # ── Specialized queries ──────────────────────────────────────────
 

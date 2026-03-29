@@ -105,8 +105,8 @@ A background consolidation service synthesizes durable knowledge from raw memori
 
 1. **Within-session**: After a session goes idle, reads the session summary + raw memories, LLM synthesizes consolidated memories
 2. **Re-consolidation**: If a session continues after consolidation, new raw memories reset the session to idle. The next consolidation run is append-only — the LLM receives both new raw memories and previously consolidated memories as context, produces new consolidated outputs, and the new consolidated memory IDs are appended alongside previous ones
-3. **Fsck and cleanup**: Manual fsck and auto-fsck focus on durable memories by default. Raw memories remain part of the session/consolidation lifecycle unless explicitly included in a check
-4. **Garbage collection**: Old superseded raw memories without artifacts are deleted after a configurable retention period during auto-fsck maintenance
+3. **Automated maintenance (fsck)**: An automated maintenance engine keeps durable memories coherent. Auto-fsck runs incrementally — only memories changed since the last check are processed. The four-phase pipeline (security → duplicates → content quality → metadata normalization) runs with bounded LLM cost (`FSCK_MAX_LLM_CALLS`). Manual fsck runs a full scan. Raw memories are excluded by default
+4. **Garbage collection**: Old superseded raw memories without artifacts are deleted after a configurable retention period. GC runs independently of fsck during the maintenance cycle
 
 ### Recall ranking
 

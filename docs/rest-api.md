@@ -101,19 +101,22 @@ Built-in memory consistency checker. Runs a three-phase pipeline to detect quali
 | `/api/fsck/{id}` | GET | Poll check status, progress, and results |
 | `/api/fsck/{id}/apply` | POST | Apply selected fixes from a completed check |
 
-### Three-Phase Pipeline
+### Four-Phase Pipeline
 
-1. **Security scan** (instant) — regex-based detection of prompt injection patterns
+1. **Security scan** (instant) — regex-based detection of prompt injection patterns, confirmed via LLM re-evaluation
 2. **Duplicate detection** — vector similarity clustering + LLM evaluation of each cluster for duplicates and contradictions
-3. **Quality check** — LLM batch evaluation for spelling/grammar errors, meaningless memories, memories that should be split, and metadata misclassification
+3. **Content quality** — LLM batch evaluation for broken, meaningless, or unsalvageable memories
+4. **Metadata normalization** — LLM batch evaluation for wrong memory_type, categories, importance, pinned, or role
 
-Phases 2 and 3 run LLM calls in parallel (`FSCK_LLM_CONCURRENCY`, default 4 workers) for ~4x speedup on large memory sets. Results are cached with configurable TTL (`FSCK_CACHE_TTL`, default 24 hours) so you can review issues in the UI and apply fixes without re-running the check.
+Phases 2–4 run LLM calls in parallel (`FSCK_LLM_CONCURRENCY`, default 4 workers) for ~4x speedup on large memory sets. Results are cached with configurable TTL (`FSCK_CACHE_TTL`, default 24 hours) so you can review issues in the UI and apply fixes without re-running the check.
 
 By default, fsck focuses on durable memories (consolidated memories plus legacy memories without a `memory_layer` field). Raw provisional memories are excluded unless the caller explicitly opts in with `include_raw=true`.
 
-**Issue types:** `duplicate`, `quality`, `split`, `contradiction`, `reclassify`, `security`
+**Incremental mode:** Auto-fsck defaults to incremental processing — only memories changed since the last maintenance run are checked. Manual fsck runs a full scan. The `checked_at` metadata field tracks when each memory was last checked. LLM budget is bounded by `FSCK_MAX_LLM_CALLS` (default 200 per run); phases execute in priority order (security → duplicates → content quality → metadata normalization), so under budget pressure earlier phases take precedence and later phases catch up in subsequent runs.
 
-**Workflow:** Start check -> poll until completed -> review issues in UI -> select and apply fixes. Each fix is a set of actions (update content, update metadata, delete memory, or add new memory).
+**Issue types:** `duplicate`, `contradiction`, `quality`, `reclassify`, `security`
+
+**Workflow:** Start check → poll until completed → review issues in UI → select and apply fixes. Each fix is a set of actions (update content, update metadata, delete memory). Auto-fsck applies qualifying fixes automatically based on confidence and severity thresholds.
 
 ## Intelligence Layer
 

@@ -483,6 +483,19 @@ class MemoryConfig:
         default_factory=lambda: _env("FSCK_AUTO_MIN_SEVERITY", "medium")
     )
 
+    # Fsck — maximum memories per check run. If a user has more durable
+    # memories, a random sample is taken. 0 = no limit.
+    fsck_max_memories: int = field(
+        default_factory=lambda: _env_int("FSCK_MAX_MEMORIES", 5000)
+    )
+
+    # Fsck — maximum LLM calls per check run. When budget is exhausted
+    # the pipeline stops gracefully. Unchecked memories are picked up
+    # in the next incremental run. 0 = no limit.
+    fsck_max_llm_calls: int = field(
+        default_factory=lambda: _env_int("FSCK_MAX_LLM_CALLS", 200)
+    )
+
     # ── Consolidation settings ────────────────────────────────────
 
     # Consolidation — optional separate LLM model (empty = fall back to

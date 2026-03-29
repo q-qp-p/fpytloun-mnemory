@@ -194,6 +194,7 @@ Custom metadata is stored as flat fields in the Qdrant payload alongside standar
 | `labels` | dict\|None | Client-provided key-value metadata (e.g., project, topic, conversation_id). Bypasses LLM extraction. Filterable in search/list queries. |
 | `last_accessed_at` | str\|None | Last time returned in search |
 | `access_count` | int | Number of times accessed in search |
+| `checked_at` | str\|None | ISO 8601 UTC timestamp of last fsck maintenance check (None = unchecked) |
 | `memory_layer` | str | "raw" (from remember) or "consolidated" (from add_memory, consolidation, or pre-existing). Controls recall ranking and dedup scope. Absent = treated as "consolidated" for backward compatibility. **Exception**: the consolidation service treats absent `memory_layer` as "raw" when fetching memories for consolidation, since pre-existing memories linked to sessions were created by the remember pipeline before the two-layer system. |
 | `superseded_by` | str\|None | ID of the consolidated memory that replaced this raw memory (None = not superseded). Set by the consolidation service. |
 | `derived_from` | list[str]\|None | IDs of source raw memories (on consolidated memories produced by consolidation). |

@@ -166,13 +166,15 @@ def start_fsck(
         agent_id=agent_id,
     )
 
-    # Run the check in background
+    # Run the check in background.
+    # Manual UI checks are always full scan (incremental=False).
     background_tasks.add_task(
         fsck.run_check,
         check.check_id,
         categories=req.categories,
         memory_type=req.memory_type,
         include_raw=req.include_raw,
+        incremental=req.incremental,
     )
 
     return FsckStartResponse(check_id=check.check_id, status="running")

@@ -17,17 +17,78 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from mnemory.config import Config
     from mnemory.fsck import FsckService
     from mnemory.metrics import MetricsCollector
+    from mnemory.storage.vector import VectorStore
 
 logger = logging.getLogger(__name__)
 
 # Severity ordering for threshold comparison.
 _SEVERITY_ORDER: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+
+
+def gc_superseded_raw(
+    vector: VectorStore,
+    user_id: str,
+    *,
+    retention_days: int = 30,
+) -> dict[str, int]:
+    """Garbage-collect old superseded raw memories without artifacts.
+
+    Lifecycle management separate from fsck consistency checking.
+    Runs independently of fsck success/failure.
+
+    Deletes raw memories that:
+    - Have memory_layer=raw
+    - Have superseded_by set
+    - Were created more than retention_days ago
+    - Do NOT have artifacts
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+
+    # Scroll only raw memories for this user
+    all_memories = vector.scroll_with_vectors(
+        user_id=user_id,
+        exclude_expired=False,
+    )
+
+    deleted = 0
+    for mem in all_memories:
+        meta = mem.get("metadata") or {}
+        if meta.get("memory_layer") != "raw":
+            continue
+        if not meta.get("superseded_by"):
+            continue
+        if meta.get("artifacts"):
+            continue
+        created = meta.get("created_at_utc", "")
+        if not created or created > cutoff:
+            continue
+        try:
+            mem_id = mem.get("id", "")
+            if mem_id:
+                vector.delete(mem_id)
+                deleted += 1
+        except Exception:
+            logger.warning(
+                "Failed to GC superseded memory %s",
+                mem.get("id"),
+                exc_info=True,
+            )
+
+    if deleted:
+        logger.info(
+            "GC: deleted %d superseded raw memories for user %s",
+            deleted,
+            user_id,
+        )
+
+    return {"deleted": deleted}
 
 
 class MaintenanceService:
@@ -170,7 +231,8 @@ class MaintenanceService:
 
         # Auto-fsck is durable-only by design. Raw memories are handled by the
         # separate session/consolidation lifecycle.
-        self._fsck.run_check(check_id, include_raw=False)
+        # Manual run-now is always a full scan (incremental=False).
+        self._fsck.run_check(check_id, include_raw=False, incremental=False)
 
         check = self._fsck.get_check(check_id)
         if check is None or check.status != "completed":
@@ -385,7 +447,9 @@ class MaintenanceService:
         # Run in a thread pool to avoid blocking the event loop.
         # Auto-fsck is durable-only by design. Raw memories are handled by the
         # separate session/consolidation lifecycle.
-        await asyncio.to_thread(self._fsck.run_check, check_id, include_raw=False)
+        await asyncio.to_thread(
+            self._fsck.run_check, check_id, include_raw=False, incremental=True
+        )
 
         check = self._fsck.get_check(check_id)
         if check is None or check.status != "completed":
@@ -396,82 +460,83 @@ class MaintenanceService:
                 user_id,
                 status,
             )
-            return
-
-        # Filter issues that meet the thresholds
-        qualifying_ids = [
-            issue.issue_id
-            for issue in check.issues
-            if self._meets_thresholds(issue, min_confidence, min_severity)
-        ]
-
-        issues_found = len(qualifying_ids)
-        fixes_applied = 0
-        fixes_failed = 0
-
-        if qualifying_ids:
-            # Set status to "applying" so the UI keeps polling until
-            # auto-apply is done (prevents race where UI sees "completed"
-            # before applied_issue_ids is populated).
-            check.status = "applying"
-
-            logger.info(
-                "Auto-fsck: applying %d/%d qualifying fixes for user %s",
-                issues_found,
-                len(check.issues),
-                user_id,
-            )
-            # apply_check() is synchronous (direct vector store mutations)
-            result: dict[str, Any] = await asyncio.to_thread(
-                self._fsck.apply_check, check_id, qualifying_ids
-            )
-            fixes_applied = result.get("applied", 0)
-            fixes_failed = result.get("failed", 0)
-            logger.info(
-                "Auto-fsck: user %s — applied=%d, failed=%d",
-                user_id,
-                fixes_applied,
-                fixes_failed,
-            )
         else:
-            logger.debug(
-                "Auto-fsck: no qualifying fixes for user %s "
-                "(%d issues below threshold)",
-                user_id,
-                len(check.issues),
-            )
+            # Filter issues that meet the thresholds
+            qualifying_ids = [
+                issue.issue_id
+                for issue in check.issues
+                if self._meets_thresholds(issue, min_confidence, min_severity)
+            ]
 
-        # Mark completed after auto-apply is done so the UI sees the
-        # final state with applied_issue_ids populated.
-        check.status = "completed"
+            issues_found = len(qualifying_ids)
+            fixes_applied = 0
+            fixes_failed = 0
 
-        # Run GC for superseded raw memories
+            if qualifying_ids:
+                # Set status to "applying" so the UI keeps polling until
+                # auto-apply is done (prevents race where UI sees "completed"
+                # before applied_issue_ids is populated).
+                check.status = "applying"
+
+                logger.info(
+                    "Auto-fsck: applying %d/%d qualifying fixes for user %s",
+                    issues_found,
+                    len(check.issues),
+                    user_id,
+                )
+                # apply_check() is synchronous (direct vector store mutations)
+                result: dict[str, Any] = await asyncio.to_thread(
+                    self._fsck.apply_check, check_id, qualifying_ids
+                )
+                fixes_applied = result.get("applied", 0)
+                fixes_failed = result.get("failed", 0)
+                logger.info(
+                    "Auto-fsck: user %s — applied=%d, failed=%d",
+                    user_id,
+                    fixes_applied,
+                    fixes_failed,
+                )
+            else:
+                logger.debug(
+                    "Auto-fsck: no qualifying fixes for user %s "
+                    "(%d issues below threshold)",
+                    user_id,
+                    len(check.issues),
+                )
+
+            # Mark completed after auto-apply is done so the UI sees the
+            # final state with applied_issue_ids populated.
+            check.status = "completed"
+
+            if self._collector is not None:
+                self._collector.record_autofsck_run(
+                    user_id=user_id,
+                    issues_found=issues_found,
+                    fixes_applied=fixes_applied,
+                    fixes_failed=fixes_failed,
+                )
+
+        # Run GC for superseded raw memories — runs independently of
+        # fsck success/failure.
         retention_days = self._config.memory.consolidation_raw_retention_days
         if retention_days > 0:
             try:
                 gc_result = await asyncio.to_thread(
-                    self._fsck.gc_superseded_raw,
+                    gc_superseded_raw,
+                    self._fsck._vector,
                     user_id,
                     retention_days=retention_days,
                 )
                 if gc_result.get("deleted", 0) > 0:
                     logger.info(
-                        "Auto-fsck: GC deleted %d superseded raw memories for user %s",
+                        "Maintenance: GC deleted %d superseded raw memories for user %s",
                         gc_result["deleted"],
                         user_id,
                     )
             except Exception:
                 logger.warning(
-                    "Auto-fsck: GC failed for user %s", user_id, exc_info=True
+                    "Maintenance: GC failed for user %s", user_id, exc_info=True
                 )
-
-        if self._collector is not None:
-            self._collector.record_autofsck_run(
-                user_id=user_id,
-                issues_found=issues_found,
-                fixes_applied=fixes_applied,
-                fixes_failed=fixes_failed,
-            )
 
     # ── Helpers ──────────────────────────────────────────────────────
 

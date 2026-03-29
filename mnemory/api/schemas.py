@@ -569,6 +569,13 @@ class FsckRequest(BaseModel):
             "Defaults to false so fsck focuses on durable memories."
         ),
     )
+    incremental: bool = Field(
+        False,
+        description=(
+            "When true, only check memories changed since last maintenance. "
+            "Defaults to false (full scan)."
+        ),
+    )
 
 
 class FsckStartResponse(BaseModel):

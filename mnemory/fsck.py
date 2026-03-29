@@ -35,13 +35,13 @@ from mnemory.config import Config
 from mnemory.embeddings import EmbeddingClient
 from mnemory.llm import LLMClient, parse_json_response
 from mnemory.prompts import (
+    build_fsck_content_quality_prompt,
     build_fsck_duplicate_prompt,
-    build_fsck_quality_prompt,
+    build_fsck_metadata_normalization_prompt,
     build_fsck_security_reeval_prompt,
 )
 from mnemory.sanitize import detect_injection_patterns
 from mnemory.storage.vector import VectorStore
-from mnemory.ttl import is_expired
 
 if TYPE_CHECKING:
     from mnemory.memory import MemoryService
@@ -109,6 +109,7 @@ class FsckProgress:
     processed: int = 0
     percent: int = 0
     issues_found: int = 0
+    truncated: bool = False
 
 
 @dataclass
@@ -141,6 +142,8 @@ class FsckCheck:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     ttl_seconds: int = 1800
+    budget_exhausted: bool = False
+    llm_calls: int = 0
     # Track which issues have been applied to prevent double-apply.
     applied_issue_ids: set[str] = field(default_factory=set)
 
@@ -302,6 +305,13 @@ class FsckService:
         self._memory_service = memory_service
         self._reasoning_effort = config.memory.fsck_reasoning_effort
 
+    # ── Budget helpers ──────────────────────────────────────────────
+
+    def _check_budget(self, check: FsckCheck) -> bool:
+        """Return True if LLM budget is exhausted."""
+        max_calls = self._config.memory.fsck_max_llm_calls
+        return max_calls > 0 and check.llm_calls >= max_calls
+
     # ── Public API ───────────────────────────────────────────────────
 
     def start_check(
@@ -325,6 +335,7 @@ class FsckService:
         categories: list[str] | None = None,
         memory_type: str | None = None,
         include_raw: bool = False,
+        incremental: bool = False,
     ) -> None:
         """Execute the full check pipeline. Called in a background task.
 
@@ -356,6 +367,8 @@ class FsckService:
                 user_id=check.user_id,
                 agent_id=check.agent_id,
                 filters=filters,
+                exclude_layers=None if include_raw else ["raw"],
+                exclude_expired=True,
             )
             if check.agent_id:
                 shared_memories = self._vector.scroll_with_vectors(
@@ -363,6 +376,8 @@ class FsckService:
                     agent_id=None,
                     shared_only=True,
                     filters=filters,
+                    exclude_layers=None if include_raw else ["raw"],
+                    exclude_expired=True,
                 )
                 # Merge and deduplicate by memory ID
                 seen_ids = {m["id"] for m in memories}
@@ -383,35 +398,46 @@ class FsckService:
                     )
                 ]
 
-            # Filter out expired/decayed memories
-            memories = [
-                m
-                for m in memories
-                if not is_expired(m) or (m.get("metadata") or {}).get("pinned")
-            ]
+            total = len(memories)
 
-            # Fsck is durable-only by default. This intentionally differs from
-            # consolidation, which treats missing memory_layer as raw for
-            # legacy session-linked memories created before the two-layer
-            # system. For fsck, missing memory_layer is treated as legacy /
-            # consolidated so existing durable knowledge is still checked.
-            if not include_raw:
-                raw_memories = [
-                    m
-                    for m in memories
-                    if (m.get("metadata") or {}).get("memory_layer") == "raw"
-                ]
-                if raw_memories:
-                    logger.info(
-                        "Fsck check %s: excluding %d raw memories by default",
-                        check_id,
-                        len(raw_memories),
-                    )
+            # Apply memory count cap
+            max_memories = self._config.memory.fsck_max_memories
+            if max_memories > 0 and total > max_memories:
+                import random
+
+                logger.info(
+                    "Fsck check %s: capping %d memories to %d (random sample)",
+                    check_id,
+                    total,
+                    max_memories,
+                )
+                memories = random.sample(memories, max_memories)
+                total = len(memories)
+                check.progress.truncated = True
+
+            # Incremental mode: only check memories changed since last maintenance.
+            # A memory is "changed" if it has no checked_at or its updated_at_utc
+            # is more recent than checked_at. checked_at is stamped all-or-nothing
+            # after a memory passes through ALL enabled phases.
+            if incremental:
+                full_corpus = list(
+                    memories
+                )  # Keep full corpus for duplicate neighbor search
                 memories = [
                     m
                     for m in memories
-                    if (m.get("metadata") or {}).get("memory_layer") != "raw"
+                    if not (m.get("metadata") or {}).get("checked_at")
+                    or (m.get("metadata") or {}).get("updated_at_utc", "")
+                    > (m.get("metadata") or {}).get("checked_at", "")
                 ]
+                logger.info(
+                    "Fsck check %s: incremental mode — %d changed out of %d total",
+                    check_id,
+                    len(memories),
+                    len(full_corpus),
+                )
+            else:
+                full_corpus = memories
 
             total = len(memories)
             check.progress.total_memories = total
@@ -424,7 +450,9 @@ class FsckService:
                 check.progress.percent = 100
                 return
 
-            # Build lookup for quick access
+            # mem_by_id is the working set. In incremental mode, full_corpus
+            # is retained above for potential future cross-referencing, but
+            # duplicate neighbor filtering uses mem_by_id (working set only).
             mem_by_id: dict[str, dict] = {m["id"]: m for m in memories}
 
             # Phase 0a: Security scan (regex, no LLM) — 0-3%
@@ -451,6 +479,24 @@ class FsckService:
             check.progress.percent = 8
             check.progress.issues_found = len(check.issues)
 
+            # Estimate LLM calls for budget tracking
+            check.llm_calls += len(regex_flagged)  # 1 call per flagged memory
+
+            # Phases execute in order; under budget pressure, earlier phases
+            # take precedence. Later phases catch up over subsequent
+            # incremental runs.
+            if self._check_budget(check):
+                logger.info(
+                    "Fsck check %s: LLM budget exhausted (%d calls), stopping after security phase",
+                    check_id,
+                    check.llm_calls,
+                )
+                check.budget_exhausted = True
+                check.progress.phase = "done"
+                check.summary = self._build_summary(check.issues)
+                check.status = "completed"
+                return
+
             # Phase 1: Duplicate detection (vector similarity + LLM) — 8-55%
             logger.info(
                 "Fsck check %s phase 1: duplicate detection on %d memories",
@@ -463,12 +509,39 @@ class FsckService:
             check.issues.extend(dup_issues)
             check.progress.issues_found = len(check.issues)
 
+            # Estimate LLM calls for duplicate evaluation (1 per cluster).
+            # clustered_ids is a flat set; average cluster size ~2-3 members,
+            # so number of clusters ≈ len(clustered_ids) / 2.
+            estimated_dup_clusters = (
+                max(len(clustered_ids) // 2, 1) if clustered_ids else 0
+            )
+            check.llm_calls += estimated_dup_clusters
+
+            if self._check_budget(check):
+                logger.info(
+                    "Fsck check %s: LLM budget exhausted (%d calls), stopping after duplicate phase",
+                    check_id,
+                    check.llm_calls,
+                )
+                check.budget_exhausted = True
+                check.progress.phase = "done"
+                check.summary = self._build_summary(check.issues)
+                check.status = "completed"
+                return
+
             # Phase 2: Quality check (LLM batches) — 55-100%
-            # Exclude memories already flagged in duplicate clusters to avoid
-            # double-reporting the same memories in both duplicate and quality issues.
-            quality_memories = [m for m in memories if m["id"] not in clustered_ids]
+            # Only exclude memories that were part of confirmed duplicate/contradiction
+            # issues. Memories in clusters that the LLM declared clean should still
+            # reach quality review.
+            confirmed_issue_mem_ids: set[str] = set()
+            for issue in dup_issues:
+                for am in issue.affected_memories:
+                    confirmed_issue_mem_ids.add(am.id)
+            quality_memories = [
+                m for m in memories if m["id"] not in confirmed_issue_mem_ids
+            ]
             logger.info(
-                "Fsck check %s phase 2: quality check on %d memories (%d skipped, in duplicate clusters)",
+                "Fsck check %s phase 2: quality check on %d memories (%d skipped, in confirmed issues)",
                 check_id,
                 len(quality_memories),
                 len(memories) - len(quality_memories),
@@ -481,6 +554,37 @@ class FsckService:
             check.issues.extend(quality_issues)
             check.progress.issues_found = len(check.issues)
             check.progress.percent = 100
+
+            # Estimate LLM calls for quality check (2 passes per batch:
+            # content quality + metadata normalization).
+            quality_batches = (
+                (len(quality_memories) + _QUALITY_BATCH_SIZE - 1) // _QUALITY_BATCH_SIZE
+                if quality_memories
+                else 0
+            )
+            check.llm_calls += (
+                quality_batches * 2
+            )  # 2 LLM calls per batch (Pass A + Pass B)
+
+            # Stamp checked_at on all memories in the working set.
+            # All-or-nothing: only stamp after ALL phases complete successfully.
+            now_utc = datetime.now(timezone.utc).isoformat()
+            checked_ids = [m["id"] for m in memories]
+            if checked_ids:
+                for mid in checked_ids:
+                    try:
+                        self._vector.update_metadata(mid, {"checked_at": now_utc})
+                    except Exception:
+                        logger.warning(
+                            "Failed to stamp checked_at on memory %s",
+                            mid,
+                            exc_info=True,
+                        )
+                logger.info(
+                    "Fsck check %s: stamped checked_at on %d memories",
+                    check_id,
+                    len(checked_ids),
+                )
 
             # Build summary
             check.progress.phase = "done"
@@ -794,7 +898,7 @@ class FsckService:
                 # Search for similar memories using stored vector.
                 # When agent_id is set, also search shared memories
                 # to detect cross-scope duplicates.
-                similar = self._vector.search_by_vector(
+                similar = self._vector.search_by_vector_ids(
                     vector,
                     user_id=check.user_id,
                     agent_id=check.agent_id,
@@ -802,7 +906,7 @@ class FsckService:
                     exclude_ids=[mem["id"]],
                 )
                 if check.agent_id:
-                    shared_similar = self._vector.search_by_vector(
+                    shared_similar = self._vector.search_by_vector_ids(
                         vector,
                         user_id=check.user_id,
                         agent_id=None,
@@ -1085,8 +1189,47 @@ class FsckService:
         *,
         available_categories: list[str] | None = None,
     ) -> list[FsckIssue]:
-        """Send a batch of memories to LLM for quality evaluation."""
-        messages, schema, id_mapping = build_fsck_quality_prompt(
+        """Send a batch of memories through both quality passes.
+
+        Runs Pass A (content quality) and Pass B (metadata normalization)
+        sequentially and merges the results.
+        """
+        issues: list[FsckIssue] = []
+        issues.extend(self._evaluate_content_quality_batch(batch))
+        issues.extend(
+            self._evaluate_metadata_normalization_batch(
+                batch, available_categories=available_categories
+            )
+        )
+        return issues
+
+    def _evaluate_content_quality_batch(
+        self,
+        batch: list[dict],
+    ) -> list[FsckIssue]:
+        """Pass A: check a batch of memories for content quality issues."""
+        messages, schema, id_mapping = build_fsck_content_quality_prompt(batch)
+
+        response = self._llm.generate(
+            messages,
+            json_schema=schema,
+            temperature=0.1,
+            reasoning_effort=self._reasoning_effort,
+            operation="fsck_content_quality",
+        )
+
+        return self._parse_quality_response(
+            response, id_mapping, batch, default_type="quality"
+        )
+
+    def _evaluate_metadata_normalization_batch(
+        self,
+        batch: list[dict],
+        *,
+        available_categories: list[str] | None = None,
+    ) -> list[FsckIssue]:
+        """Pass B: check a batch of memories for metadata issues."""
+        messages, schema, id_mapping = build_fsck_metadata_normalization_prompt(
             batch, available_categories=available_categories
         )
 
@@ -1095,9 +1238,22 @@ class FsckService:
             json_schema=schema,
             temperature=0.1,
             reasoning_effort=self._reasoning_effort,
-            operation="fsck_quality",
+            operation="fsck_metadata_normalization",
         )
 
+        return self._parse_quality_response(
+            response, id_mapping, batch, default_type="reclassify"
+        )
+
+    def _parse_quality_response(
+        self,
+        response: str,
+        id_mapping: dict[str, str],
+        batch: list[dict],
+        *,
+        default_type: str = "quality",
+    ) -> list[FsckIssue]:
+        """Parse an LLM quality/metadata response into ``FsckIssue`` objects."""
         parsed = parse_json_response(response)
         if not parsed or "issues" not in parsed:
             return []
@@ -1116,19 +1272,17 @@ class FsckService:
             if not affected_mems:
                 logger.warning(
                     "Fsck quality check: dropping issue with no resolvable affected memories (type=%s, raw_ids=%s)",
-                    raw_issue.get("type", "quality"),
+                    raw_issue.get("type", default_type),
                     raw_issue.get("affected_memory_ids", []),
                 )
                 continue
 
-            issue_type = raw_issue.get("type", "quality")
+            issue_type = raw_issue.get("type", default_type)
             if issue_type not in (
                 "quality",
-                "split",
                 "reclassify",
-                "security",
             ):
-                issue_type = "quality"
+                issue_type = default_type
 
             severity = raw_issue.get("severity", "medium")
             if severity not in ("low", "medium", "high"):
@@ -1338,6 +1492,11 @@ class FsckService:
                         action.new_content,
                         sparse_vector=sparse_vector,
                     )
+                    # Stamp updated_at_utc so incremental fsck picks up the change.
+                    self._vector.update_metadata(
+                        action.memory_id,
+                        {"updated_at_utc": datetime.now(timezone.utc).isoformat()},
+                    )
                     executed += 1
                 if action.new_metadata:
                     # Filter to allowed metadata fields, dropping None values
@@ -1434,18 +1593,35 @@ class FsckService:
                             executed += 1
 
             elif action.action == "add" and action.new_content:
-                # For split actions: add new memory via MemoryService for proper
-                # deduplication, TTL assignment, and metadata handling.
+                # Derive metadata from source memory when available.
+                # For split issues, the source is the memory being deleted.
+                source_meta: dict[str, Any] = {}
+                source_agent_id: str | None = None
+                for other_action in issue.actions:
+                    if other_action.action == "delete" and other_action.memory_id:
+                        source = self._vector.get_by_id(other_action.memory_id)
+                        if source:
+                            source_meta = source.get("metadata") or {}
+                            source_agent_id = source.get("agent_id")
+                        break
+
                 if self._memory_service is not None:
                     meta = action.new_metadata or {}
                     self._memory_service.add_memory(
                         content=action.new_content,
                         user_id=user_id,
-                        memory_type=meta.get("memory_type"),
-                        categories=meta.get("categories"),
-                        importance=meta.get("importance"),
-                        pinned=meta.get("pinned"),
-                        labels=meta.get("labels"),
+                        agent_id=source_agent_id or meta.get("agent_id"),
+                        role=source_meta.get("role") or meta.get("role"),
+                        memory_type=meta.get("memory_type")
+                        or source_meta.get("memory_type"),
+                        categories=meta.get("categories")
+                        or source_meta.get("categories"),
+                        importance=meta.get("importance")
+                        or source_meta.get("importance"),
+                        pinned=meta.get("pinned", source_meta.get("pinned")),
+                        labels=meta.get("labels") or source_meta.get("labels"),
+                        event_date=source_meta.get("event_date"),
+                        ttl_days=source_meta.get("ttl_days"),
                         infer=False,
                     )
                 else:
@@ -1490,81 +1666,6 @@ class FsckService:
                 executed += 1
 
         return executed, skipped
-
-    # ── GC for superseded raw memories ─────────────────────────────
-
-    def gc_superseded_raw(
-        self,
-        user_id: str,
-        *,
-        retention_days: int = 30,
-    ) -> dict[str, int]:
-        """Garbage-collect old superseded raw memories without artifacts.
-
-        Deletes raw memories that:
-        - Have memory_layer=raw
-        - Have superseded_by set (not None)
-        - Were created more than retention_days ago
-        - Do NOT have artifacts
-
-        Args:
-            user_id: User scope.
-            retention_days: Minimum age before GC (default 30).
-
-        Returns:
-            Dict with 'deleted' count.
-        """
-        from datetime import timedelta
-
-        cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=retention_days)
-        ).isoformat()
-
-        # Scroll all memories for user (reuse scroll_with_vectors, ignore vectors)
-        all_memories = self._vector.scroll_with_vectors(user_id=user_id)
-
-        deleted = 0
-        for mem in all_memories:
-            meta = mem.get("metadata") or {}
-
-            # Must be raw layer
-            if meta.get("memory_layer") != "raw":
-                continue
-
-            # Must be superseded
-            if not meta.get("superseded_by"):
-                continue
-
-            # Must not have artifacts
-            if meta.get("artifacts"):
-                continue
-
-            # Must be old enough
-            created = meta.get("created_at_utc", "")
-            if not created or created > cutoff:
-                continue
-
-            # Delete
-            try:
-                mem_id = mem.get("id", "")
-                if mem_id:
-                    self._vector.delete(mem_id)
-                    deleted += 1
-            except Exception:
-                logger.warning(
-                    "Failed to GC superseded memory %s",
-                    mem.get("id"),
-                    exc_info=True,
-                )
-
-        if deleted:
-            logger.info(
-                "GC: deleted %d superseded raw memories for user %s",
-                deleted,
-                user_id,
-            )
-
-        return {"deleted": deleted}
 
     # ── Helpers ───────────────────────────────────────────────────────
 

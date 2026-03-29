@@ -104,6 +104,8 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `FSCK_AUTO_INTERVAL` | `0` | Interval in hours between automatic background memory checks. `0` = disabled |
 | `FSCK_AUTO_MIN_CONFIDENCE` | `0.95` | Minimum confidence score (0.0-1.0) for a fix to be auto-applied |
 | `FSCK_AUTO_MIN_SEVERITY` | `medium` | Minimum severity for a fix to be auto-applied. Options: `low`, `medium`, `high` |
+| `FSCK_MAX_MEMORIES` | `5000` | Maximum memories per check run. If a user has more durable memories, a random sample is taken. `0` = no limit |
+| `FSCK_MAX_LLM_CALLS` | `200` | Maximum LLM calls per check run. When budget is exhausted, the pipeline stops gracefully; unchecked memories are picked up in the next incremental auto-fsck run. `0` = no limit |
 | `LABELS_MAX_FIELDS` | `20` | Max number of label keys per memory |
 | `LABELS_MAX_KEY_LENGTH` | `64` | Max length of a label key (alphanumeric + underscore only) |
 | `LABELS_MAX_VALUE_LENGTH` | `1000` | Max length of a string label value |

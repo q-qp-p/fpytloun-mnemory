@@ -12,8 +12,8 @@ Covers:
 - FsckService._phase_quality_check (LLM batch evaluation)
 - FsckService.run_check (full pipeline orchestration)
 - FsckService.apply_check (delete, update, add actions)
-- Prompt builders (build_fsck_duplicate_prompt, build_fsck_quality_prompt,
-  build_fsck_security_reeval_prompt)
+- Prompt builders (build_fsck_duplicate_prompt, build_fsck_content_quality_prompt,
+  build_fsck_metadata_normalization_prompt, build_fsck_security_reeval_prompt)
 - API endpoints (start, status, apply)
 - confidence field on FsckIssue
 - agent_id field on FsckAffectedMemory
@@ -40,13 +40,18 @@ from mnemory.fsck import (
     _UnionFind,
 )
 from mnemory.prompts import (
+    FSCK_CONTENT_QUALITY_SCHEMA,
     FSCK_DUPLICATE_SCHEMA,
-    FSCK_QUALITY_SCHEMA,
+    FSCK_METADATA_NORMALIZATION_SCHEMA,
     FSCK_SECURITY_REEVAL_SCHEMA,
+    build_fsck_content_quality_prompt,
     build_fsck_duplicate_prompt,
-    build_fsck_quality_prompt,
+    build_fsck_metadata_normalization_prompt,
     build_fsck_security_reeval_prompt,
 )
+
+# Empty issues response for the second pass when only the first pass matters.
+_EMPTY_ISSUES = '{"issues": []}'
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -62,7 +67,7 @@ def _make_fsck_service(
 
     Args:
         memories: What scroll_with_vectors returns.
-        search_results: What search_by_vector returns (same for all calls).
+        search_results: What search_by_vector_ids returns (same for all calls).
         llm_responses: Sequential LLM generate responses.
         store_ttl: TTL for the FsckStore.
     """
@@ -70,11 +75,13 @@ def _make_fsck_service(
     config.memory.max_memory_length = 1000
     config.memory.fsck_cache_ttl = store_ttl
     config.memory.fsck_llm_concurrency = 4
+    config.memory.fsck_max_memories = 0  # No cap by default in tests
+    config.memory.fsck_max_llm_calls = 0  # No budget limit by default in tests
     config.embed.model = "text-embedding-3-small"
 
     vector = MagicMock()
     vector.scroll_with_vectors.return_value = memories or []
-    vector.search_by_vector.return_value = search_results or []
+    vector.search_by_vector_ids.return_value = search_results or []
     vector.collection_name = "mnemory"
     # Default get_by_id returns a memory owned by "filip" so apply_check
     # ownership checks pass in tests that don't override this.
@@ -680,8 +687,8 @@ class TestPhaseDuplicateDetection:
         mem_by_id = {m["id"]: m for m in memories}
 
         svc = _make_fsck_service()
-        # search_by_vector returns results below threshold
-        svc._vector.search_by_vector.return_value = [{"id": "m2", "score": 0.3}]
+        # search_by_vector_ids returns results below threshold
+        svc._vector.search_by_vector_ids.return_value = [{"id": "m2", "score": 0.3}]
 
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues, clustered = svc._phase_duplicate_detection(memories, mem_by_id, check)
@@ -722,8 +729,8 @@ class TestPhaseDuplicateDetection:
         )
 
         svc = _make_fsck_service(llm_responses=[llm_response])
-        # search_by_vector returns high similarity for both
-        svc._vector.search_by_vector.side_effect = [
+        # search_by_vector_ids returns high similarity for both
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "m2", "score": 0.9}],  # m1's neighbors
             [{"id": "m1", "score": 0.9}],  # m2's neighbors
         ]
@@ -777,7 +784,7 @@ class TestPhaseDuplicateDetection:
         )
 
         svc = _make_fsck_service(llm_responses=[llm_response])
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": memories[1]["id"], "score": 0.9}],
             [{"id": memories[0]["id"], "score": 0.9}],
         ]
@@ -825,7 +832,7 @@ class TestPhaseDuplicateDetection:
         )
 
         svc = _make_fsck_service(llm_responses=[llm_response])
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "m2", "score": 0.9}],
             [{"id": "m1", "score": 0.9}],
         ]
@@ -846,7 +853,7 @@ class TestPhaseDuplicateDetection:
         mem_by_id = {m["id"]: m for m in memories}
 
         svc = _make_fsck_service(llm_responses=['{"issues": []}'])
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "raw-bridge", "score": 0.95}],
             [{"id": "raw-bridge", "score": 0.95}],
         ]
@@ -886,7 +893,7 @@ class TestPhaseDuplicateDetection:
         )
 
         svc = _make_fsck_service(llm_responses=[llm_response])
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "m2", "score": 0.85}],
             [{"id": "m1", "score": 0.85}],
         ]
@@ -906,7 +913,7 @@ class TestPhaseDuplicateDetection:
         mem_by_id = {m["id"]: m for m in memories}
 
         svc = _make_fsck_service()
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues, _ = svc._phase_duplicate_detection(memories, mem_by_id, check)
@@ -923,7 +930,7 @@ class TestPhaseDuplicateDetection:
         mem_by_id = {m["id"]: m for m in memories}
 
         svc = _make_fsck_service()
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "m2", "score": 0.9}],
             [{"id": "m1", "score": 0.9}],
         ]
@@ -958,7 +965,7 @@ class TestPhaseDuplicateDetection:
         )
 
         svc = _make_fsck_service(llm_responses=[llm_response])
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "m2", "score": 0.8}],
             [{"id": "m1", "score": 0.8}],
         ]
@@ -974,7 +981,7 @@ class TestPhaseDuplicateDetection:
         mem_by_id = {m["id"]: m for m in memories}
 
         svc = _make_fsck_service()
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = FsckCheck(check_id="c-1", user_id="filip")
         svc._phase_duplicate_detection(memories, mem_by_id, check)
@@ -1008,7 +1015,6 @@ class TestPhaseQualityCheck:
                                 "action": "update",
                                 "memory_id": "m1",
                                 "new_content": "User lives in Prague",
-                                "new_metadata": None,
                             }
                         ],
                     }
@@ -1016,7 +1022,7 @@ class TestPhaseQualityCheck:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [_make_memory(mid="m1", text="User lives in Praque")]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
@@ -1042,7 +1048,6 @@ class TestPhaseQualityCheck:
                                 "action": "update",
                                 "memory_id": "0",
                                 "new_content": "User lives in Prague",
-                                "new_metadata": None,
                             }
                         ],
                     }
@@ -1050,7 +1055,7 @@ class TestPhaseQualityCheck:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [_make_memory(mid=memory_id, text="User lives in Praque")]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
@@ -1074,7 +1079,6 @@ class TestPhaseQualityCheck:
                                 "action": "update",
                                 "memory_id": "999",
                                 "new_content": "Fixed",
-                                "new_metadata": None,
                             }
                         ],
                     }
@@ -1082,7 +1086,7 @@ class TestPhaseQualityCheck:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         check = FsckCheck(check_id="c-1", user_id="filip")
         with caplog.at_level(logging.WARNING):
             issues = svc._phase_quality_check(
@@ -1092,7 +1096,12 @@ class TestPhaseQualityCheck:
         assert issues == []
         assert "dropping issue with no resolvable affected memories" in caplog.text
 
-    def test_split_issue_detected(self):
+    def test_split_type_no_longer_in_quality_phase(self):
+        """Split is no longer checked in the quality phase.
+
+        If the LLM returns a "split" type, it should be defaulted to
+        the pass's default type (content quality pass defaults to "quality").
+        """
         llm_response = json.dumps(
             {
                 "issues": [
@@ -1103,28 +1112,9 @@ class TestPhaseQualityCheck:
                         "affected_memory_ids": ["m1"],
                         "actions": [
                             {
-                                "action": "add",
-                                "memory_id": None,
-                                "new_content": "User lives in Prague",
-                                "new_metadata": {
-                                    "memory_type": "fact",
-                                    "categories": ["personal"],
-                                },
-                            },
-                            {
-                                "action": "add",
-                                "memory_id": None,
-                                "new_content": "User prefers Python",
-                                "new_metadata": {
-                                    "memory_type": "preference",
-                                    "categories": ["technical"],
-                                },
-                            },
-                            {
-                                "action": "delete",
+                                "action": "update",
                                 "memory_id": "m1",
-                                "new_content": None,
-                                "new_metadata": None,
+                                "new_content": "User lives in Prague and prefers Python",
                             },
                         ],
                     }
@@ -1132,18 +1122,16 @@ class TestPhaseQualityCheck:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [
             _make_memory(mid="m1", text="User lives in Prague and prefers Python")
         ]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
 
+        # "split" is not a valid type — defaults to "quality"
         assert len(issues) == 1
-        assert issues[0].type == "split"
-        assert len(issues[0].actions) == 3
-        add_actions = [a for a in issues[0].actions if a.action == "add"]
-        assert len(add_actions) == 2
+        assert issues[0].type == "quality"
 
     def test_reclassify_issue_detected(self):
         llm_response = json.dumps(
@@ -1158,8 +1146,13 @@ class TestPhaseQualityCheck:
                             {
                                 "action": "update",
                                 "memory_id": "m1",
-                                "new_content": None,
-                                "new_metadata": {"memory_type": "preference"},
+                                "new_metadata": {
+                                    "memory_type": "preference",
+                                    "categories": None,
+                                    "importance": None,
+                                    "pinned": None,
+                                    "role": None,
+                                },
                             }
                         ],
                     }
@@ -1167,7 +1160,8 @@ class TestPhaseQualityCheck:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        # First response (content quality) is empty, second (metadata) has the issue
+        svc = _make_fsck_service(llm_responses=[_EMPTY_ISSUES, llm_response])
         memories = [
             _make_memory(mid="m1", text="User prefers dark mode", memory_type="fact")
         ]
@@ -1176,10 +1170,14 @@ class TestPhaseQualityCheck:
 
         assert len(issues) == 1
         assert issues[0].type == "reclassify"
-        assert issues[0].actions[0].new_metadata == {"memory_type": "preference"}
+        assert issues[0].actions[0].new_metadata["memory_type"] == "preference"
 
-    def test_security_issue_from_llm(self):
-        """LLM can also detect subtle injection patterns."""
+    def test_security_type_no_longer_in_quality_phase(self):
+        """Security is no longer checked in the quality phase.
+
+        If the LLM returns a "security" type, it should be defaulted to
+        the pass's default type (content quality pass defaults to "quality").
+        """
         llm_response = json.dumps(
             {
                 "issues": [
@@ -1193,7 +1191,6 @@ class TestPhaseQualityCheck:
                                 "action": "delete",
                                 "memory_id": "m1",
                                 "new_content": None,
-                                "new_metadata": None,
                             }
                         ],
                     }
@@ -1201,29 +1198,33 @@ class TestPhaseQualityCheck:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [_make_memory(mid="m1", text="Some subtle injection")]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
 
+        # "security" is not a valid type — defaults to "quality"
         assert len(issues) == 1
-        assert issues[0].type == "security"
+        assert issues[0].type == "quality"
 
     def test_batching(self):
         """Memories should be processed in batches of 20."""
-        # 25 memories = 2 batches (20 + 5)
+        # 25 memories = 2 batches (20 + 5), each batch has 2 LLM calls
+        # (content quality + metadata normalization) = 4 total
         memories = [_make_memory(mid=f"m{i}", text=f"Memory {i}") for i in range(25)]
 
         svc = _make_fsck_service(
             llm_responses=[
-                '{"issues": []}',
-                '{"issues": []}',
+                _EMPTY_ISSUES,
+                _EMPTY_ISSUES,
+                _EMPTY_ISSUES,
+                _EMPTY_ISSUES,
             ]
         )
         check = FsckCheck(check_id="c-1", user_id="filip")
         svc._phase_quality_check(memories, check)
 
-        assert svc._llm.generate.call_count == 2
+        assert svc._llm.generate.call_count == 4
         assert check.progress.processed == 25
 
     def test_llm_failure_handled_gracefully(self):
@@ -1239,7 +1240,7 @@ class TestPhaseQualityCheck:
         assert check.progress.processed == 1
 
     def test_invalid_issue_type_defaults_to_quality(self):
-        """Unknown issue types from LLM should default to 'quality'."""
+        """Unknown issue types from LLM should default to the pass's default type."""
         llm_response = json.dumps(
             {
                 "issues": [
@@ -1254,7 +1255,7 @@ class TestPhaseQualityCheck:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [_make_memory(mid="m1", text="Test")]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
@@ -1278,7 +1279,7 @@ class TestPhaseQualityCheck:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [_make_memory(mid="m1", text="Test")]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
@@ -1287,7 +1288,7 @@ class TestPhaseQualityCheck:
 
     def test_empty_llm_response(self):
         """Empty or malformed LLM response should return no issues."""
-        svc = _make_fsck_service(llm_responses=["{}"])
+        svc = _make_fsck_service(llm_responses=["{}", "{}"])
         memories = [_make_memory(mid="m1", text="Test")]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
@@ -1320,7 +1321,7 @@ class TestRunCheck:
         ]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = svc._store.create(user_id="filip")
         svc.run_check(check.check_id)
@@ -1337,7 +1338,7 @@ class TestRunCheck:
         ]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         # Mock _evaluate_security_flag to confirm the threat
         confirmed_issue = FsckIssue(
@@ -1359,46 +1360,36 @@ class TestRunCheck:
         assert check.summary.total >= 1
 
     def test_pipeline_filters_expired_memories(self):
-        """Expired/decayed memories should be filtered out."""
-        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-        memories = [
-            _make_memory(mid="m1", text="Active memory"),
-            _make_memory(
-                mid="m2",
-                text="Expired memory",
-                expires_at=past,
-                decayed_at=past,
-            ),
-        ]
+        """Expired/decayed memories are filtered server-side by Qdrant.
+
+        The scroll call passes exclude_expired=True so Qdrant omits them.
+        We verify the parameter is forwarded correctly.
+        """
+        memories = [_make_memory(mid="m1", text="Active memory")]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = svc._store.create(user_id="filip")
         svc.run_check(check.check_id)
 
+        # Verify exclude_expired=True was passed to scroll
+        call_kwargs = svc._vector.scroll_with_vectors.call_args
+        assert call_kwargs[1].get("exclude_expired") is True
         assert check.progress.total_memories == 1
 
-    def test_pipeline_keeps_pinned_even_if_expired(self):
-        """Pinned memories should not be filtered even if expired."""
-        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-        memories = [
-            _make_memory(
-                mid="m1",
-                text="Pinned but expired",
-                pinned=True,
-                expires_at=past,
-                decayed_at=past,
-            ),
-        ]
+    def test_pipeline_passes_exclude_layers_for_raw(self):
+        """Raw memories are filtered server-side unless include_raw=True."""
+        memories = [_make_memory(mid="m1", text="Durable memory")]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = svc._store.create(user_id="filip")
-        svc.run_check(check.check_id)
+        svc.run_check(check.check_id, include_raw=False)
 
-        assert check.progress.total_memories == 1
+        call_kwargs = svc._vector.scroll_with_vectors.call_args
+        assert call_kwargs[1].get("exclude_layers") == ["raw"]
 
     def test_pipeline_filters_by_categories(self):
         """Category filter should narrow down memories."""
@@ -1408,7 +1399,7 @@ class TestRunCheck:
         ]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = svc._store.create(user_id="filip")
         svc.run_check(check.check_id, categories=["work"])
@@ -1425,34 +1416,30 @@ class TestRunCheck:
         assert call_kwargs[1]["filters"] == {"memory_type": "fact"}
 
     def test_pipeline_excludes_raw_memories_by_default(self):
-        """Durable-only fsck should exclude raw memories unless requested."""
-        memories = [
-            _make_memory(mid="m1", text="Raw memory", memory_layer="raw"),
-            _make_memory(mid="m2", text="Consolidated memory"),
-        ]
+        """Durable-only fsck passes exclude_layers=['raw'] to Qdrant."""
+        memories = [_make_memory(mid="m1", text="Durable memory")]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = svc._store.create(user_id="filip")
         svc.run_check(check.check_id)
 
-        assert check.progress.total_memories == 1
+        call_kwargs = svc._vector.scroll_with_vectors.call_args
+        assert call_kwargs[1].get("exclude_layers") == ["raw"]
 
     def test_pipeline_can_include_raw_memories(self):
-        """Raw memories should be included when explicitly requested."""
-        memories = [
-            _make_memory(mid="m1", text="Raw memory", memory_layer="raw"),
-            _make_memory(mid="m2", text="Consolidated memory"),
-        ]
+        """include_raw=True passes no exclude_layers to Qdrant."""
+        memories = [_make_memory(mid="m1", text="Any memory")]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = svc._store.create(user_id="filip")
         svc.run_check(check.check_id, include_raw=True)
 
-        assert check.progress.total_memories == 2
+        call_kwargs = svc._vector.scroll_with_vectors.call_args
+        assert call_kwargs[1].get("exclude_layers") is None
 
     def test_pipeline_exception_sets_failed(self):
         """Unhandled exception should set status to 'failed'."""
@@ -1665,9 +1652,16 @@ class TestApplyCheck:
         svc._vector.update_content.assert_called_once_with(
             "mem-1", "New text", sparse_vector=None
         )
-        svc._vector.update_metadata.assert_called_once_with(
-            "mem-1", {"importance": "high"}
-        )
+        # update_metadata is called twice: once for updated_at_utc (after
+        # content update) and once for the metadata corrections.
+        assert svc._vector.update_metadata.call_count == 2
+        # First call: updated_at_utc stamp
+        first_call = svc._vector.update_metadata.call_args_list[0]
+        assert first_call[0][0] == "mem-1"
+        assert "updated_at_utc" in first_call[0][1]
+        # Second call: metadata corrections
+        second_call = svc._vector.update_metadata.call_args_list[1]
+        assert second_call[0] == ("mem-1", {"importance": "high"})
 
     def test_apply_strips_invalid_categories(self):
         """Invalid categories in reclassify actions should be stripped, not written."""
@@ -2204,7 +2198,7 @@ class TestFsckPromptBuilders:
         user_msg = messages[1]["content"]
         assert "existing_memories" in user_msg
 
-    def test_quality_prompt_structure(self):
+    def test_content_quality_prompt_structure(self):
         batch = [
             {
                 "id": "m1",
@@ -2212,20 +2206,36 @@ class TestFsckPromptBuilders:
                 "metadata": {"memory_type": "fact"},
             },
         ]
-        messages, schema, id_mapping = build_fsck_quality_prompt(batch)
+        messages, schema, id_mapping = build_fsck_content_quality_prompt(batch)
 
         assert len(messages) == 2
         assert messages[0]["role"] == "system"
         assert messages[1]["role"] == "user"
-        assert schema == FSCK_QUALITY_SCHEMA
+        assert schema == FSCK_CONTENT_QUALITY_SCHEMA
         assert id_mapping == {"0": "m1"}
 
-    def test_quality_prompt_contains_memory_ids(self):
+    def test_metadata_normalization_prompt_structure(self):
+        batch = [
+            {
+                "id": "m1",
+                "memory": "User lives in Prague",
+                "metadata": {"memory_type": "fact"},
+            },
+        ]
+        messages, schema, id_mapping = build_fsck_metadata_normalization_prompt(batch)
+
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert schema == FSCK_METADATA_NORMALIZATION_SCHEMA
+        assert id_mapping == {"0": "m1"}
+
+    def test_content_quality_prompt_contains_memory_ids(self):
         batch = [
             {"id": "m1", "memory": "Text 1", "metadata": {}},
             {"id": "m2", "memory": "Text 2", "metadata": {}},
         ]
-        messages, _, id_mapping = build_fsck_quality_prompt(batch)
+        messages, _, id_mapping = build_fsck_content_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "id=0" in user_msg
         assert "id=1" in user_msg
@@ -2233,7 +2243,7 @@ class TestFsckPromptBuilders:
         assert "m2" not in user_msg
         assert id_mapping == {"0": "m1", "1": "m2"}
 
-    def test_quality_prompt_hides_uuid_like_ids(self):
+    def test_content_quality_prompt_hides_uuid_like_ids(self):
         batch = [
             {
                 "id": "550e8400-e29b-41d4-a716-446655440010",
@@ -2241,13 +2251,13 @@ class TestFsckPromptBuilders:
                 "metadata": {},
             }
         ]
-        messages, _, id_mapping = build_fsck_quality_prompt(batch)
+        messages, _, id_mapping = build_fsck_content_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "550e8400-e29b-41d4-a716-446655440010" not in user_msg
         assert "id=0" in user_msg
         assert id_mapping == {"0": "550e8400-e29b-41d4-a716-446655440010"}
 
-    def test_quality_prompt_includes_role_tag(self):
+    def test_content_quality_prompt_includes_role_tag(self):
         """Role should be included in tags when not 'user'."""
         batch = [
             {
@@ -2256,11 +2266,11 @@ class TestFsckPromptBuilders:
                 "metadata": {"role": "assistant"},
             }
         ]
-        messages, _, _ = build_fsck_quality_prompt(batch)
+        messages, _, _ = build_fsck_content_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "role: assistant" in user_msg
 
-    def test_quality_prompt_omits_user_role(self):
+    def test_content_quality_prompt_omits_user_role(self):
         """Default 'user' role should not appear in tags for shared memories."""
         batch = [
             {
@@ -2269,11 +2279,11 @@ class TestFsckPromptBuilders:
                 "metadata": {"role": "user"},
             }
         ]
-        messages, _, _ = build_fsck_quality_prompt(batch)
+        messages, _, _ = build_fsck_content_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "role:" not in user_msg
 
-    def test_quality_prompt_shows_role_for_agent_scoped(self):
+    def test_content_quality_prompt_shows_role_for_agent_scoped(self):
         """Agent-scoped memories should always show role tag (even 'user')
         so the LLM can detect role mismatches."""
         batch = [
@@ -2284,13 +2294,13 @@ class TestFsckPromptBuilders:
                 "agent_id": "openwebui",
             }
         ]
-        messages, _, _ = build_fsck_quality_prompt(batch)
+        messages, _, _ = build_fsck_content_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "role: user" in user_msg
 
-    def test_quality_prompt_boundary_tags(self):
+    def test_content_quality_prompt_boundary_tags(self):
         batch = [{"id": "m1", "memory": "Test", "metadata": {}}]
-        messages, _, _ = build_fsck_quality_prompt(batch)
+        messages, _, _ = build_fsck_content_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "existing_memories" in user_msg
 
@@ -2303,29 +2313,39 @@ class TestFsckPromptBuilders:
         assert "type" in items["properties"]
         assert items["properties"]["type"]["enum"] == ["duplicate", "contradiction"]
 
-    def test_quality_schema_structure(self):
-        """Schema should have required fields and correct enums."""
-        schema = FSCK_QUALITY_SCHEMA
-        assert schema["name"] == "fsck_quality_check"
+    def test_content_quality_schema_structure(self):
+        """Content quality schema should have required fields and correct enums."""
+        schema = FSCK_CONTENT_QUALITY_SCHEMA
+        assert schema["name"] == "fsck_content_quality_check"
         assert schema["strict"] is True
         items = schema["schema"]["properties"]["issues"]["items"]
-        assert items["properties"]["type"]["enum"] == [
-            "quality",
-            "split",
-            "reclassify",
-            "security",
-        ]
+        assert items["properties"]["type"]["enum"] == ["quality"]
         action_items = items["properties"]["actions"]["items"]
         assert action_items["properties"]["action"]["enum"] == [
             "update",
             "delete",
-            "add",
         ]
+        # Content quality actions should NOT have new_metadata
+        assert "new_metadata" not in action_items["properties"]
 
-    def test_quality_prompt_no_metadata(self):
+    def test_metadata_normalization_schema_structure(self):
+        """Metadata normalization schema should have required fields and correct enums."""
+        schema = FSCK_METADATA_NORMALIZATION_SCHEMA
+        assert schema["name"] == "fsck_metadata_normalization_check"
+        assert schema["strict"] is True
+        items = schema["schema"]["properties"]["issues"]["items"]
+        assert items["properties"]["type"]["enum"] == ["reclassify"]
+        action_items = items["properties"]["actions"]["items"]
+        assert action_items["properties"]["action"]["enum"] == ["update"]
+        # Metadata normalization actions should have new_metadata
+        assert "new_metadata" in action_items["properties"]
+        # Metadata normalization actions should NOT have new_content
+        assert "new_content" not in action_items["properties"]
+
+    def test_content_quality_prompt_no_metadata(self):
         """Memories with no metadata should still work."""
         batch = [{"id": "m1", "memory": "Test", "metadata": None}]
-        messages, _, id_mapping = build_fsck_quality_prompt(batch)
+        messages, _, id_mapping = build_fsck_content_quality_prompt(batch)
         assert "id=0" in messages[1]["content"]
         assert id_mapping == {"0": "m1"}
 
@@ -2336,8 +2356,8 @@ class TestFsckPromptBuilders:
         assert "id=0" in messages[1]["content"]
         assert id_mapping == {"0": "m1"}
 
-    def test_quality_prompt_includes_event_date(self):
-        """event_date should appear in the quality prompt user message."""
+    def test_content_quality_prompt_includes_event_date(self):
+        """event_date should appear in the content quality prompt user message."""
         batch = [
             {
                 "id": "m1",
@@ -2345,12 +2365,12 @@ class TestFsckPromptBuilders:
                 "metadata": {"memory_type": "episodic", "event_date": "2024-03-15"},
             }
         ]
-        messages, _, _ = build_fsck_quality_prompt(batch)
+        messages, _, _ = build_fsck_content_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "event_date: 2024-03-15" in user_msg
 
-    def test_quality_prompt_includes_created_at(self):
-        """created_at_utc should appear as 'created: YYYY-MM-DD' in quality prompt."""
+    def test_content_quality_prompt_includes_created_at(self):
+        """created_at_utc should appear as 'created: YYYY-MM-DD' in content quality prompt."""
         batch = [
             {
                 "id": "m1",
@@ -2361,25 +2381,25 @@ class TestFsckPromptBuilders:
                 },
             }
         ]
-        messages, _, _ = build_fsck_quality_prompt(batch)
+        messages, _, _ = build_fsck_content_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "created: 2023-06-01" in user_msg
 
-    def test_quality_prompt_default_categories(self):
-        """Quality prompt should include predefined categories when none provided."""
+    def test_metadata_normalization_prompt_default_categories(self):
+        """Metadata normalization prompt should include predefined categories when none provided."""
         batch = [{"id": "m1", "memory": "Test", "metadata": {}}]
-        messages, _, _ = build_fsck_quality_prompt(batch)
+        messages, _, _ = build_fsck_metadata_normalization_prompt(batch)
         system_msg = messages[0]["content"]
         # Should contain at least some predefined categories
         assert "personal" in system_msg
         assert "technical" in system_msg
         assert "preferences" in system_msg
 
-    def test_quality_prompt_custom_categories(self):
-        """Quality prompt should use provided categories list."""
+    def test_metadata_normalization_prompt_custom_categories(self):
+        """Metadata normalization prompt should use provided categories list."""
         batch = [{"id": "m1", "memory": "Test", "metadata": {}}]
         custom_cats = ["personal", "technical", "project:myapp"]
-        messages, _, _ = build_fsck_quality_prompt(
+        messages, _, _ = build_fsck_metadata_normalization_prompt(
             batch, available_categories=custom_cats
         )
         system_msg = messages[0]["content"]
@@ -2388,7 +2408,14 @@ class TestFsckPromptBuilders:
         # (they may appear elsewhere in the static prompt text, so check the list section)
         assert "personal, technical, project:myapp" in system_msg
 
-    def test_quality_prompt_no_event_date_when_absent(self):
+    def test_content_quality_prompt_no_categories_in_system(self):
+        """Content quality prompt should NOT include categories in system message."""
+        batch = [{"id": "m1", "memory": "Test", "metadata": {}}]
+        messages, _, _ = build_fsck_content_quality_prompt(batch)
+        system_msg = messages[0]["content"]
+        assert "Valid categories" not in system_msg
+
+    def test_content_quality_prompt_no_event_date_when_absent(self):
         """event_date tag should not appear when metadata has no event_date."""
         batch = [
             {
@@ -2397,7 +2424,7 @@ class TestFsckPromptBuilders:
                 "metadata": {"memory_type": "preference"},
             }
         ]
-        messages, _, _ = build_fsck_quality_prompt(batch)
+        messages, _, _ = build_fsck_content_quality_prompt(batch)
         user_msg = messages[1]["content"]
         assert "event_date" not in user_msg
         """Security reeval prompt should have system+user messages and correct schema."""
@@ -2443,9 +2470,16 @@ class TestFsckPromptBuilders:
         items = FSCK_DUPLICATE_SCHEMA["schema"]["properties"]["issues"]["items"]
         assert "confidence" in items["properties"]
 
-    def test_quality_schema_has_confidence(self):
-        """FSCK_QUALITY_SCHEMA should include a confidence field."""
-        items = FSCK_QUALITY_SCHEMA["schema"]["properties"]["issues"]["items"]
+    def test_content_quality_schema_has_confidence(self):
+        """FSCK_CONTENT_QUALITY_SCHEMA should include a confidence field."""
+        items = FSCK_CONTENT_QUALITY_SCHEMA["schema"]["properties"]["issues"]["items"]
+        assert "confidence" in items["properties"]
+
+    def test_metadata_normalization_schema_has_confidence(self):
+        """FSCK_METADATA_NORMALIZATION_SCHEMA should include a confidence field."""
+        items = FSCK_METADATA_NORMALIZATION_SCHEMA["schema"]["properties"]["issues"][
+            "items"
+        ]
         assert "confidence" in items["properties"]
 
 
@@ -2488,7 +2522,7 @@ class TestFsckAffectedMemoryAgentId:
         )
 
         svc = _make_fsck_service(llm_responses=[llm_response])
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "m2", "score": 0.9}],
             [{"id": "m1", "score": 0.9}],
         ]
@@ -2525,7 +2559,7 @@ class TestFsckAffectedMemoryAgentId:
         )
 
         svc = _make_fsck_service(llm_responses=[llm_response])
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "m2", "score": 0.9}],
             [{"id": "m1", "score": 0.9}],
         ]
@@ -2554,7 +2588,6 @@ class TestFsckAffectedMemoryAgentId:
                                 "action": "update",
                                 "memory_id": "m1",
                                 "new_content": "User lives in Prague",
-                                "new_metadata": None,
                             }
                         ],
                     }
@@ -2562,7 +2595,7 @@ class TestFsckAffectedMemoryAgentId:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check([mem], check)
 
@@ -2602,7 +2635,7 @@ class TestFsckIssueConfidence:
         )
 
         svc = _make_fsck_service(llm_responses=[llm_response])
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "m2", "score": 0.9}],
             [{"id": "m1", "score": 0.9}],
         ]
@@ -2629,7 +2662,6 @@ class TestFsckIssueConfidence:
                                 "action": "update",
                                 "memory_id": "m1",
                                 "new_content": "User lives in Prague",
-                                "new_metadata": None,
                             }
                         ],
                     }
@@ -2637,7 +2669,7 @@ class TestFsckIssueConfidence:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [_make_memory(mid="m1", text="User lives in Praque")]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
@@ -2660,7 +2692,6 @@ class TestFsckIssueConfidence:
                                 "action": "update",
                                 "memory_id": "m1",
                                 "new_content": "User lives in Prague",
-                                "new_metadata": None,
                             }
                         ],
                     }
@@ -2668,7 +2699,7 @@ class TestFsckIssueConfidence:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [_make_memory(mid="m1", text="User lives in Praque")]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
@@ -2698,7 +2729,7 @@ class TestFsckIssueConfidence:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [_make_memory(mid="m1", text="Test")]
         check = FsckCheck(check_id="c-1", user_id="filip")
         issues = svc._phase_quality_check(memories, check)
@@ -2880,6 +2911,7 @@ class TestFsckApiEndpoints:
             categories=None,
             memory_type=None,
             include_raw=True,
+            incremental=False,
         )
 
     def test_start_fsck_uses_request_agent_id_sub_agent(self):
@@ -3140,7 +3172,7 @@ class TestProgressTracking:
         ]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = svc._store.create(user_id="filip")
         svc.run_check(check.check_id)
@@ -3177,7 +3209,7 @@ class TestProgressTracking:
         )
 
         svc = _make_fsck_service(llm_responses=[llm_response])
-        svc._vector.search_by_vector.side_effect = [
+        svc._vector.search_by_vector_ids.side_effect = [
             [{"id": "m2", "score": 0.9}],
             [{"id": "m1", "score": 0.9}],
         ]
@@ -3198,7 +3230,7 @@ class TestProgressTracking:
         mem_by_id = {m["id"]: m for m in memories}
 
         svc = _make_fsck_service()
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = FsckCheck(check_id="c-1", user_id="filip")
         svc._phase_duplicate_detection(memories, mem_by_id, check)
@@ -3209,10 +3241,12 @@ class TestProgressTracking:
 
     def test_quality_check_percent_range(self):
         """During quality_check, percent should progress from 55 to 100."""
-        # 25 memories = 2 batches
+        # 25 memories = 2 batches, each batch has 2 LLM calls = 4 total
         memories = [_make_memory(mid=f"m{i}", text=f"Memory {i}") for i in range(25)]
 
-        svc = _make_fsck_service(llm_responses=['{"issues": []}', '{"issues": []}'])
+        svc = _make_fsck_service(
+            llm_responses=[_EMPTY_ISSUES, _EMPTY_ISSUES, _EMPTY_ISSUES, _EMPTY_ISSUES]
+        )
         check = FsckCheck(check_id="c-1", user_id="filip")
         svc._phase_quality_check(memories, check)
 
@@ -3236,7 +3270,6 @@ class TestProgressTracking:
                                 "action": "update",
                                 "memory_id": "m0",
                                 "new_content": "Fixed",
-                                "new_metadata": None,
                             }
                         ],
                     }
@@ -3244,7 +3277,7 @@ class TestProgressTracking:
             }
         )
 
-        svc = _make_fsck_service(llm_responses=[llm_response])
+        svc = _make_fsck_service(llm_responses=[llm_response, _EMPTY_ISSUES])
         memories = [_make_memory(mid="m0", text="Tset")]
 
         check = FsckCheck(check_id="c-1", user_id="filip")
@@ -3263,7 +3296,7 @@ class TestProgressTracking:
         ]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = svc._store.create(user_id="filip")
         svc.run_check(check.check_id)
@@ -3278,7 +3311,7 @@ class TestProgressTracking:
         ]
 
         svc = _make_fsck_service(memories=memories)
-        svc._vector.search_by_vector.return_value = []
+        svc._vector.search_by_vector_ids.return_value = []
 
         check = svc._store.create(user_id="filip")
         svc.run_check(check.check_id)
@@ -3310,12 +3343,12 @@ class TestProgressTracking:
 # ── Schema validation ────────────────────────────────────────────────
 
 
-class TestFsckQualitySchemaNewMetadata:
-    """Test that FSCK_QUALITY_SCHEMA new_metadata has proper structure for strict mode."""
+class TestFsckMetadataNormalizationSchemaNewMetadata:
+    """Test that FSCK_METADATA_NORMALIZATION_SCHEMA new_metadata has proper structure for strict mode."""
 
     def test_new_metadata_has_properties(self):
         """new_metadata should have properties for strict mode compliance."""
-        schema = FSCK_QUALITY_SCHEMA
+        schema = FSCK_METADATA_NORMALIZATION_SCHEMA
         action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
             "actions"
         ]["items"]["properties"]
@@ -3326,7 +3359,7 @@ class TestFsckQualitySchemaNewMetadata:
 
     def test_new_metadata_fields(self):
         """new_metadata should define memory_type, categories, importance, pinned, role."""
-        schema = FSCK_QUALITY_SCHEMA
+        schema = FSCK_METADATA_NORMALIZATION_SCHEMA
         action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
             "actions"
         ]["items"]["properties"]
@@ -3339,7 +3372,7 @@ class TestFsckQualitySchemaNewMetadata:
 
     def test_new_metadata_fields_are_nullable(self):
         """All new_metadata fields should be nullable (unchanged = null)."""
-        schema = FSCK_QUALITY_SCHEMA
+        schema = FSCK_METADATA_NORMALIZATION_SCHEMA
         action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
             "actions"
         ]["items"]["properties"]
@@ -3353,7 +3386,7 @@ class TestFsckQualitySchemaNewMetadata:
 
     def test_memory_type_enum_values(self):
         """memory_type should have correct enum values."""
-        schema = FSCK_QUALITY_SCHEMA
+        schema = FSCK_METADATA_NORMALIZATION_SCHEMA
         action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
             "actions"
         ]["items"]["properties"]
@@ -3369,7 +3402,7 @@ class TestFsckQualitySchemaNewMetadata:
 
     def test_importance_enum_values(self):
         """importance should have correct enum values."""
-        schema = FSCK_QUALITY_SCHEMA
+        schema = FSCK_METADATA_NORMALIZATION_SCHEMA
         action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
             "actions"
         ]["items"]["properties"]
@@ -3378,7 +3411,7 @@ class TestFsckQualitySchemaNewMetadata:
 
     def test_role_enum_values(self):
         """role should have correct enum values."""
-        schema = FSCK_QUALITY_SCHEMA
+        schema = FSCK_METADATA_NORMALIZATION_SCHEMA
         action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
             "actions"
         ]["items"]["properties"]
@@ -3387,7 +3420,7 @@ class TestFsckQualitySchemaNewMetadata:
 
     def test_role_in_required_fields(self):
         """role should be in the required fields of new_metadata."""
-        schema = FSCK_QUALITY_SCHEMA
+        schema = FSCK_METADATA_NORMALIZATION_SCHEMA
         action_props = schema["schema"]["properties"]["issues"]["items"]["properties"][
             "actions"
         ]["items"]["properties"]
