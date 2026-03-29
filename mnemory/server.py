@@ -1795,20 +1795,15 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                             status_code=401,
                         )
 
-            # Extract token from Authorization: Bearer or X-API-Key header
+            # Extract token from Authorization: Bearer, X-API-Key, or cookie
             token = self._extract_token(request)
             if not token:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-            auth_header = request.headers.get("authorization", "")
             header_agent_id = request.headers.get("x-agent-id", "").strip() or None
             header_tz = request.headers.get("x-timezone", "").strip() or None
 
-            if (
-                validator is not None
-                and auth_header.lower().startswith("bearer ")
-                and looks_like_jwt(token)
-            ):
+            if validator is not None and looks_like_jwt(token):
                 try:
                     auth_ctx = validator.validate(
                         token, header_agent_id=header_agent_id
@@ -1892,9 +1887,10 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             _session_user_bound.set(False)
 
     def _extract_token(self, request: Request) -> str:
-        """Extract API token from request headers.
+        """Extract API token from request headers or cognis_session cookie.
 
-        Checks in order: Authorization: Bearer header, X-API-Key header.
+        Checks in order: Authorization: Bearer header, X-API-Key header,
+        cognis_session cookie (cross-service SSO).
         No query parameter fallback — browser-embedded requests (e.g.,
         ``<img src="...">``) must use short-lived download tokens instead.
         """
@@ -1904,6 +1900,10 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         header_key = request.headers.get("x-api-key", "")
         if header_key:
             return header_key
+        # Fallback to cognis_session cookie (cross-service SSO)
+        cookie = request.cookies.get("cognis_session", "")
+        if cookie:
+            return cookie
         return ""
 
     def _set_identity_from_headers(self, request: Request) -> None:
