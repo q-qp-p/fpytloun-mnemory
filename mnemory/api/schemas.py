@@ -562,6 +562,13 @@ class FsckRequest(BaseModel):
     memory_type: str | None = Field(
         None, description="Optional: scope check to specific memory type"
     )
+    include_raw: bool = Field(
+        False,
+        description=(
+            "Whether to include raw provisional memories in the check. "
+            "Defaults to false so fsck focuses on durable memories."
+        ),
+    )
 
 
 class FsckStartResponse(BaseModel):

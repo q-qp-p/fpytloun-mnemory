@@ -97,6 +97,7 @@ Built-in memory consistency checker. Runs a three-phase pipeline to detect quali
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/fsck` | POST | Start a memory check (runs in background) |
+| `/api/fsck/auto-run` | POST | Trigger an immediate auto-fsck run for the current user |
 | `/api/fsck/{id}` | GET | Poll check status, progress, and results |
 | `/api/fsck/{id}/apply` | POST | Apply selected fixes from a completed check |
 
@@ -107,6 +108,8 @@ Built-in memory consistency checker. Runs a three-phase pipeline to detect quali
 3. **Quality check** — LLM batch evaluation for spelling/grammar errors, meaningless memories, memories that should be split, and metadata misclassification
 
 Phases 2 and 3 run LLM calls in parallel (`FSCK_LLM_CONCURRENCY`, default 4 workers) for ~4x speedup on large memory sets. Results are cached with configurable TTL (`FSCK_CACHE_TTL`, default 24 hours) so you can review issues in the UI and apply fixes without re-running the check.
+
+By default, fsck focuses on durable memories (consolidated memories plus legacy memories without a `memory_layer` field). Raw provisional memories are excluded unless the caller explicitly opts in with `include_raw=true`.
 
 **Issue types:** `duplicate`, `quality`, `split`, `contradiction`, `reclassify`, `security`
 

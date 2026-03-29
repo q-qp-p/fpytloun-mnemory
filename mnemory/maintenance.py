@@ -168,7 +168,9 @@ class MaintenanceService:
         min_confidence = self._config.memory.fsck_auto_min_confidence
         min_severity = self._config.memory.fsck_auto_min_severity
 
-        self._fsck.run_check(check_id)
+        # Auto-fsck is durable-only by design. Raw memories are handled by the
+        # separate session/consolidation lifecycle.
+        self._fsck.run_check(check_id, include_raw=False)
 
         check = self._fsck.get_check(check_id)
         if check is None or check.status != "completed":
@@ -381,7 +383,9 @@ class MaintenanceService:
 
         # run_check() is synchronous and CPU/IO-bound (LLM calls via requests).
         # Run in a thread pool to avoid blocking the event loop.
-        await asyncio.to_thread(self._fsck.run_check, check_id)
+        # Auto-fsck is durable-only by design. Raw memories are handled by the
+        # separate session/consolidation lifecycle.
+        await asyncio.to_thread(self._fsck.run_check, check_id, include_raw=False)
 
         check = self._fsck.get_check(check_id)
         if check is None or check.status != "completed":

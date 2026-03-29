@@ -276,7 +276,7 @@ function fsckTab() {
       this.status = 'running';
 
       try {
-        const params = {};
+        const params = { include_raw: false };
         if (this.filters.agent_id) params.agent_id = this.filters.agent_id;
         if (this.filters.memory_type) params.memory_type = this.filters.memory_type;
         if (this.filters.categories.length > 0) params.categories = this.filters.categories;

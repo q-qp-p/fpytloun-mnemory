@@ -3794,24 +3794,30 @@ def build_fsck_duplicate_prompt(
     cluster: list[dict[str, Any]],
     *,
     max_memory_length: int = 1000,
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
+) -> tuple[list[dict[str, str]], dict[str, Any], dict[str, str]]:
     """Build a prompt to evaluate a cluster of similar memories for duplicates.
+
+    Uses the same string-index alias pattern as ``build_extraction_prompt()``
+    so the LLM never sees raw internal memory IDs.
 
     Args:
         cluster: List of memory dicts with "id", "memory", and "metadata".
         max_memory_length: Maximum character length for merged text.
 
     Returns:
-        Tuple of (messages, json_schema) for the LLM call.
+        Tuple of (messages, json_schema, id_mapping) for the LLM call.
     """
     system_prompt = _FSCK_DUPLICATE_SYSTEM_PROMPT.format(
         max_length=max_memory_length,
         anti_injection=ANTI_INJECTION_PREAMBLE,
     )
 
+    id_mapping: dict[str, str] = {}
     mem_lines = []
-    for mem in cluster:
+    for idx, mem in enumerate(cluster):
+        alias = str(idx)
         mid = mem.get("id", "")
+        id_mapping[alias] = mid
         text = mem.get("memory", "")
         metadata = mem.get("metadata") or {}
         tags = []
@@ -3834,7 +3840,7 @@ def build_fsck_duplicate_prompt(
         if metadata.get("artifacts"):
             tags.append("has_artifacts")
         tag_str = f" [{' | '.join(tags)}]" if tags else ""
-        mem_lines.append(f"- id={mid}: {text}{tag_str}")
+        mem_lines.append(f"- id={alias}: {text}{tag_str}")
     mem_text = "\n".join(mem_lines)
 
     user_content = (
@@ -3847,7 +3853,7 @@ def build_fsck_duplicate_prompt(
         {"role": "user", "content": user_content},
     ]
 
-    return messages, FSCK_DUPLICATE_SCHEMA
+    return messages, FSCK_DUPLICATE_SCHEMA, id_mapping
 
 
 _FSCK_QUALITY_SYSTEM_PROMPT = """\
@@ -4124,8 +4130,11 @@ def build_fsck_quality_prompt(
     batch: list[dict[str, Any]],
     *,
     available_categories: list[str] | None = None,
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
+) -> tuple[list[dict[str, str]], dict[str, Any], dict[str, str]]:
     """Build a prompt to evaluate a batch of memories for quality issues.
+
+    Uses the same string-index alias pattern as ``build_extraction_prompt()``
+    so the LLM never sees raw internal memory IDs.
 
     Checks for spelling, sense/completeness, split candidates,
     metadata misclassification, and prompt injection patterns.
@@ -4137,7 +4146,7 @@ def build_fsck_quality_prompt(
             list when not provided.
 
     Returns:
-        Tuple of (messages, json_schema) for the LLM call.
+        Tuple of (messages, json_schema, id_mapping) for the LLM call.
     """
     if available_categories is None:
         available_categories = list(PREDEFINED_CATEGORIES.keys())
@@ -4150,9 +4159,12 @@ def build_fsck_quality_prompt(
         anti_injection=ANTI_INJECTION_PREAMBLE,
     )
 
+    id_mapping: dict[str, str] = {}
     mem_lines = []
-    for mem in batch:
+    for idx, mem in enumerate(batch):
+        alias = str(idx)
         mid = mem.get("id", "")
+        id_mapping[alias] = mid
         text = mem.get("memory", "")
         metadata = mem.get("metadata") or {}
         tags = []
@@ -4177,7 +4189,7 @@ def build_fsck_quality_prompt(
         if metadata.get("artifacts"):
             tags.append("has_artifacts")
         tag_str = f" [{' | '.join(tags)}]" if tags else ""
-        mem_lines.append(f"- id={mid}: {text}{tag_str}")
+        mem_lines.append(f"- id={alias}: {text}{tag_str}")
     mem_text = "\n".join(mem_lines)
 
     user_content = (
@@ -4190,7 +4202,7 @@ def build_fsck_quality_prompt(
         {"role": "user", "content": user_content},
     ]
 
-    return messages, FSCK_QUALITY_SCHEMA
+    return messages, FSCK_QUALITY_SCHEMA, id_mapping
 
 
 # ── Consolidation prompts ────────────────────────────────────────────

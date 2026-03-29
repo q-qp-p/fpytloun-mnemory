@@ -324,6 +324,7 @@ class FsckService:
         *,
         categories: list[str] | None = None,
         memory_type: str | None = None,
+        include_raw: bool = False,
     ) -> None:
         """Execute the full check pipeline. Called in a background task.
 
@@ -388,6 +389,29 @@ class FsckService:
                 for m in memories
                 if not is_expired(m) or (m.get("metadata") or {}).get("pinned")
             ]
+
+            # Fsck is durable-only by default. This intentionally differs from
+            # consolidation, which treats missing memory_layer as raw for
+            # legacy session-linked memories created before the two-layer
+            # system. For fsck, missing memory_layer is treated as legacy /
+            # consolidated so existing durable knowledge is still checked.
+            if not include_raw:
+                raw_memories = [
+                    m
+                    for m in memories
+                    if (m.get("metadata") or {}).get("memory_layer") == "raw"
+                ]
+                if raw_memories:
+                    logger.info(
+                        "Fsck check %s: excluding %d raw memories by default",
+                        check_id,
+                        len(raw_memories),
+                    )
+                memories = [
+                    m
+                    for m in memories
+                    if (m.get("metadata") or {}).get("memory_layer") != "raw"
+                ]
 
             total = len(memories)
             check.progress.total_memories = total
@@ -657,7 +681,6 @@ class FsckService:
                         exc_info=True,
                     )
                     # On LLM failure, include the issue conservatively
-                    text = mem.get("memory", "")
                     with lock:
                         issues.append(
                             FsckIssue(
@@ -668,16 +691,7 @@ class FsckService:
                                     f"Prompt injection patterns detected: {', '.join(patterns)}. "
                                     "LLM re-evaluation failed — flagged conservatively."
                                 ),
-                                affected_memories=[
-                                    FsckAffectedMemory(
-                                        id=mem["id"],
-                                        content=text,
-                                        metadata=mem.get("metadata"),
-                                        agent_id=(mem.get("metadata") or {}).get(
-                                            "agent_id"
-                                        ),
-                                    )
-                                ],
+                                affected_memories=[self._make_affected_memory(mem)],
                                 actions=[
                                     FsckAction(action="delete", memory_id=mem["id"])
                                 ],
@@ -702,6 +716,8 @@ class FsckService:
 
         Returns an FsckIssue if confirmed threat, None if false positive.
         """
+        # Security re-evaluation handles one memory at a time, so aliasing the
+        # memory ID is unnecessary here unlike duplicate/quality batch prompts.
         messages, schema = build_fsck_security_reeval_prompt(mem, patterns)
 
         response = self._llm.generate(
@@ -738,7 +754,6 @@ class FsckService:
             return None
 
         # Confirmed threat
-        text = mem.get("memory", "")
         return FsckIssue(
             issue_id=str(uuid.uuid4()),
             type="security",
@@ -747,14 +762,7 @@ class FsckService:
                 f"Prompt injection patterns detected: {', '.join(patterns)}. "
                 f"LLM confirmed: {reasoning}"
             ),
-            affected_memories=[
-                FsckAffectedMemory(
-                    id=mem["id"],
-                    content=text,
-                    metadata=mem.get("metadata"),
-                    agent_id=(mem.get("metadata") or {}).get("agent_id"),
-                )
-            ],
+            affected_memories=[self._make_affected_memory(mem)],
             actions=[FsckAction(action="delete", memory_id=mem["id"])],
         )
 
@@ -808,6 +816,12 @@ class FsckService:
                         if s["id"] not in seen:
                             seen.add(s["id"])
                             similar.append(s)
+
+                # Only neighbors that survived the main run_check() filters
+                # may influence duplicate clustering. This prevents excluded
+                # raw memories from acting as graph bridges between durable
+                # memories during union-find.
+                similar = [s for s in similar if s.get("id") in mem_by_id]
 
                 for sim in similar:
                     score = sim.get("score", 0)
@@ -908,7 +922,7 @@ class FsckService:
         cluster: list[dict],
     ) -> list[FsckIssue]:
         """Send a cluster of similar memories to LLM for duplicate evaluation."""
-        messages, schema = build_fsck_duplicate_prompt(
+        messages, schema, id_mapping = build_fsck_duplicate_prompt(
             cluster,
             max_memory_length=self._config.memory.max_memory_length,
         )
@@ -930,30 +944,19 @@ class FsckService:
 
         issues: list[FsckIssue] = []
         for raw_issue in parsed["issues"]:
-            affected_ids = raw_issue.get("affected_memory_ids", [])
-            affected_mems = []
-            for mid in affected_ids:
-                m = mem_lookup.get(mid)
-                if m:
-                    affected_mems.append(
-                        FsckAffectedMemory(
-                            id=mid,
-                            content=m.get("memory", ""),
-                            metadata=m.get("metadata"),
-                            agent_id=(m.get("metadata") or {}).get("agent_id"),
-                        )
-                    )
-
-            actions = []
-            for raw_action in raw_issue.get("actions", []):
-                actions.append(
-                    FsckAction(
-                        action=raw_action.get("action", ""),
-                        memory_id=raw_action.get("memory_id"),
-                        new_content=raw_action.get("new_content"),
-                        new_metadata=raw_action.get("new_metadata"),
-                    )
+            actions, action_target_ids = self._parse_issue_actions(
+                raw_issue, id_mapping, mem_lookup
+            )
+            affected_mems = self._resolve_affected_memories(
+                raw_issue, id_mapping, mem_lookup, action_target_ids
+            )
+            if not affected_mems:
+                logger.warning(
+                    "Fsck duplicate check: dropping issue with no resolvable affected memories (type=%s, raw_ids=%s)",
+                    raw_issue.get("type", "duplicate"),
+                    raw_issue.get("affected_memory_ids", []),
                 )
+                continue
 
             issue_type = raw_issue.get("type", "duplicate")
             if issue_type not in ("duplicate", "contradiction"):
@@ -1083,7 +1086,7 @@ class FsckService:
         available_categories: list[str] | None = None,
     ) -> list[FsckIssue]:
         """Send a batch of memories to LLM for quality evaluation."""
-        messages, schema = build_fsck_quality_prompt(
+        messages, schema, id_mapping = build_fsck_quality_prompt(
             batch, available_categories=available_categories
         )
 
@@ -1104,30 +1107,19 @@ class FsckService:
 
         issues: list[FsckIssue] = []
         for raw_issue in parsed["issues"]:
-            affected_ids = raw_issue.get("affected_memory_ids", [])
-            affected_mems = []
-            for mid in affected_ids:
-                m = mem_lookup.get(mid)
-                if m:
-                    affected_mems.append(
-                        FsckAffectedMemory(
-                            id=mid,
-                            content=m.get("memory", ""),
-                            metadata=m.get("metadata"),
-                            agent_id=(m.get("metadata") or {}).get("agent_id"),
-                        )
-                    )
-
-            actions = []
-            for raw_action in raw_issue.get("actions", []):
-                actions.append(
-                    FsckAction(
-                        action=raw_action.get("action", ""),
-                        memory_id=raw_action.get("memory_id"),
-                        new_content=raw_action.get("new_content"),
-                        new_metadata=raw_action.get("new_metadata"),
-                    )
+            actions, action_target_ids = self._parse_issue_actions(
+                raw_issue, id_mapping, mem_lookup
+            )
+            affected_mems = self._resolve_affected_memories(
+                raw_issue, id_mapping, mem_lookup, action_target_ids
+            )
+            if not affected_mems:
+                logger.warning(
+                    "Fsck quality check: dropping issue with no resolvable affected memories (type=%s, raw_ids=%s)",
+                    raw_issue.get("type", "quality"),
+                    raw_issue.get("affected_memory_ids", []),
                 )
+                continue
 
             issue_type = raw_issue.get("type", "quality")
             if issue_type not in (
@@ -1163,6 +1155,94 @@ class FsckService:
             )
 
         return issues
+
+    @staticmethod
+    def _get_memory_agent_id(mem: dict[str, Any]) -> str | None:
+        """Return the memory agent ID from the normalized memory shape."""
+        agent_id = mem.get("agent_id")
+        if agent_id is not None:
+            return str(agent_id)
+        metadata = mem.get("metadata") or {}
+        fallback = metadata.get("agent_id")
+        return str(fallback) if fallback is not None else None
+
+    def _make_affected_memory(self, mem: dict[str, Any]) -> FsckAffectedMemory:
+        """Convert a memory dict into an affected-memory payload."""
+        return FsckAffectedMemory(
+            id=str(mem.get("id", "")),
+            content=mem.get("memory", ""),
+            metadata=mem.get("metadata"),
+            agent_id=self._get_memory_agent_id(mem),
+        )
+
+    @staticmethod
+    def _resolve_llm_memory_id(
+        raw_memory_id: Any,
+        id_mapping: dict[str, str],
+        mem_lookup: dict[str, dict[str, Any]],
+    ) -> str | None:
+        """Resolve an LLM-returned alias or direct ID to a real memory ID."""
+        if raw_memory_id is None:
+            return None
+        candidate = str(raw_memory_id).strip()
+        if not candidate:
+            return None
+        resolved = id_mapping.get(candidate, candidate)
+        return resolved if resolved in mem_lookup else None
+
+    def _parse_issue_actions(
+        self,
+        raw_issue: dict[str, Any],
+        id_mapping: dict[str, str],
+        mem_lookup: dict[str, dict[str, Any]],
+    ) -> tuple[list[FsckAction], list[str]]:
+        """Parse and validate fsck issue actions from LLM output."""
+        actions: list[FsckAction] = []
+        action_target_ids: list[str] = []
+
+        for raw_action in raw_issue.get("actions", []):
+            if not isinstance(raw_action, dict):
+                continue
+            action_type = raw_action.get("action", "")
+            resolved_memory_id = self._resolve_llm_memory_id(
+                raw_action.get("memory_id"), id_mapping, mem_lookup
+            )
+            if action_type != "add" and resolved_memory_id is None:
+                continue
+            actions.append(
+                FsckAction(
+                    action=action_type,
+                    memory_id=resolved_memory_id,
+                    new_content=raw_action.get("new_content"),
+                    new_metadata=raw_action.get("new_metadata"),
+                )
+            )
+            if resolved_memory_id and resolved_memory_id not in action_target_ids:
+                action_target_ids.append(resolved_memory_id)
+
+        return actions, action_target_ids
+
+    def _resolve_affected_memories(
+        self,
+        raw_issue: dict[str, Any],
+        id_mapping: dict[str, str],
+        mem_lookup: dict[str, dict[str, Any]],
+        action_target_ids: list[str],
+    ) -> list[FsckAffectedMemory]:
+        """Resolve issue affected memories from aliases and validated actions."""
+        resolved_ids: list[str] = []
+        for raw_memory_id in raw_issue.get("affected_memory_ids", []):
+            resolved = self._resolve_llm_memory_id(
+                raw_memory_id, id_mapping, mem_lookup
+            )
+            if resolved and resolved not in resolved_ids:
+                resolved_ids.append(resolved)
+
+        for memory_id in action_target_ids:
+            if memory_id not in resolved_ids:
+                resolved_ids.append(memory_id)
+
+        return [self._make_affected_memory(mem_lookup[mid]) for mid in resolved_ids]
 
     # ── Apply logic ──────────────────────────────────────────────────
 

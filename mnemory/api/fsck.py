@@ -172,6 +172,7 @@ def start_fsck(
         check.check_id,
         categories=req.categories,
         memory_type=req.memory_type,
+        include_raw=req.include_raw,
     )
 
     return FsckStartResponse(check_id=check.check_id, status="running")
