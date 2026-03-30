@@ -895,11 +895,11 @@ class TestClassificationInDirectPath:
 
         result = service.add_memory(content="test", user_id="filip", infer=False)
 
-        # Should still succeed with defaults
+        # Should still succeed with defaults (episodic is the safe default)
         assert result.get("error") is not True
         service.vector.insert.assert_called_once()
         _, kwargs = service.vector.insert.call_args
-        assert kwargs["metadata"]["memory_type"] == "fact"
+        assert kwargs["metadata"]["memory_type"] == "episodic"
         assert kwargs["metadata"]["importance"] == "normal"
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -453,6 +454,22 @@ For each extracted fact, classify:
     it may change with the next commit. Anything that may change
     soon or is only relevant to the current task.
 
+  **Common classification mistakes to avoid**:
+  - "User wants to add distributed tracing" → **episodic** (goal/intent),
+    NOT fact
+  - "User decided to use PostgreSQL for billing" → **episodic** (decision),
+    NOT fact
+  - "User doesn't know how OpenTelemetry works" → **episodic** (current
+    knowledge state), NOT fact
+  - "User wants to implement canary deployments" → **episodic** (feature
+    request/goal), NOT fact
+  - "The project doesn't have rollback mechanism" → **context** (current
+    project state), NOT fact
+  - "The model defaults to gpt-5-mini" → **context** (current
+    configuration/code behavior), NOT fact
+  - "User's name is Elena" → **fact** (stable biographical info)
+  - "User lives in Prague" → **fact** (stable biographical info)
+
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
   clearly involves a specific named project, initiative, or effort, create
@@ -700,6 +717,19 @@ For each extracted fact, classify:
     configuration defaults, what a system currently does or lacks.
     Anything that describes how code currently works is context —
     it may change with the next commit.
+
+  **Common classification mistakes to avoid**:
+  - "Assistant concluded Cilium is the best CNI" → **episodic**
+    (research conclusion), NOT fact
+  - "Assistant is working on the billing migration" → **episodic**
+    (current task), NOT fact
+  - "The system currently lacks monitoring" → **context** (current
+    project state), NOT fact
+  - "The config defaults to gpt-5-mini" → **context** (current
+    configuration), NOT fact
+  - "Assistant's name is Aria" → **fact** (stable identity)
+  - "Assistant specializes in Python and Rust" → **fact** (stable
+    capability)
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
@@ -1049,6 +1079,7 @@ def parse_extraction_response(
 
         # Validate and sanitize classification fields
         memory_type = _validate_memory_type(entry.get("memory_type"))
+        memory_type = _correct_memory_type(memory_type, text)
         categories = _validate_categories(entry.get("categories"))
         importance = _validate_importance(entry.get("importance"))
         pinned = bool(entry.get("pinned", False))
@@ -1136,7 +1167,12 @@ def build_classification_prompt(
             "context=session/short-term notes, current project/system state, "
             "technical observations, implementation details, code behavior "
             "observations, configuration defaults, what a project currently "
-            "does or lacks — anything that may change with the next code update"
+            "does or lacks — anything that may change with the next code update. "
+            'Common mistakes: "wants to X"/"decided to X"/"plans to X" → '
+            "episodic NOT fact; "
+            '"currently lacks X"/"defaults to X"/"does not support X" → '
+            "context NOT fact; "
+            '"name is X"/"lives in X"/"works at X" → fact'
         )
         schema_props["memory_type"] = {
             "type": "string",
@@ -1214,8 +1250,79 @@ def build_classification_prompt(
 # ── Validation helpers ───────────────────────────────────────────────
 
 # Defaults for invalid/missing classification values
-_DEFAULT_MEMORY_TYPE = "fact"
+_DEFAULT_MEMORY_TYPE = "episodic"
 _DEFAULT_IMPORTANCE = "normal"
+
+# ── Post-LLM memory_type heuristic corrections ──────────────────────
+#
+# Conservative patterns that demote "fact" → "episodic" or "context".
+# Never promotes anything to "fact".  Applied to English text (extraction
+# always outputs English).
+
+# Patterns indicating goals, decisions, intents → episodic
+_EPISODIC_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bwants?\s+to\b",
+        r"\bdecided\s+to\b",
+        r"\bplans?\s+to\b",
+        r"\bplanning\s+to\b",
+        r"\bis\s+working\s+on\b",
+        r"\bintends?\s+to\b",
+        r"\baims?\s+to\b",
+    )
+]
+
+# Patterns indicating project/code state → context
+_CONTEXT_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bcurrently\b",
+        r"\bdoes\s+not\s+have\b",
+        r"\bdoesn'?t\s+have\b",
+        r"\bdefaults?\s+to\b",
+        r"\bdoes\s+not\s+support\b",
+        r"\bdoesn'?t\s+support\b",
+    )
+]
+
+
+def _correct_memory_type(memory_type: str, text: str) -> str:
+    """Apply conservative post-LLM heuristic corrections to memory_type.
+
+    Only demotes ``"fact"`` → ``"episodic"`` or ``"fact"`` → ``"context"``.
+    Never promotes any type to ``"fact"``.  Logs when a correction is
+    applied so misclassification patterns can be monitored.
+
+    Args:
+        memory_type: The LLM-assigned memory type.
+        text: The extracted fact text (always English).
+
+    Returns:
+        The corrected memory type.
+    """
+    if memory_type != "fact":
+        return memory_type
+
+    for pattern in _EPISODIC_PATTERNS:
+        if pattern.search(text):
+            logger.info(
+                "Post-LLM correction: fact → episodic (matched %r) for: %.100s",
+                pattern.pattern,
+                text,
+            )
+            return "episodic"
+
+    for pattern in _CONTEXT_PATTERNS:
+        if pattern.search(text):
+            logger.info(
+                "Post-LLM correction: fact → context (matched %r) for: %.100s",
+                pattern.pattern,
+                text,
+            )
+            return "context"
+
+    return memory_type
 
 
 def _validate_memory_type(value: Any) -> str:
@@ -2206,6 +2313,19 @@ For each extracted fact, classify:
     describes how code currently works is context — it may change
     with the next commit.
 
+  **Common classification mistakes to avoid**:
+  - "Assistant concluded Cilium is the best CNI" → **episodic**
+    (research conclusion), NOT fact
+  - "Assistant is working on the billing migration" → **episodic**
+    (current task), NOT fact
+  - "The system currently lacks monitoring" → **context** (current
+    project state), NOT fact
+  - "The config defaults to gpt-5-mini" → **context** (current
+    configuration), NOT fact
+  - "Assistant's name is Aria" → **fact** (stable identity)
+  - "Assistant specializes in Python and Rust" → **fact** (stable
+    capability)
+
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation clearly
   involves a specific named project, create a subcategory by appending the
@@ -2594,6 +2714,22 @@ For each extracted fact, classify:
     observations, configuration defaults, what a system currently
     does or lacks. Anything that describes how code currently works
     is context — it may change with the next commit.
+
+  **Common classification mistakes to avoid**:
+  - "User wants to add distributed tracing" → **episodic** (goal/intent),
+    NOT fact
+  - "User decided to use PostgreSQL for billing" → **episodic** (decision),
+    NOT fact
+  - "User doesn't know how OpenTelemetry works" → **episodic** (current
+    knowledge state), NOT fact
+  - "The project doesn't have rollback mechanism" → **context** (current
+    project state), NOT fact
+  - "The model defaults to gpt-5-mini" → **context** (current
+    configuration/code behavior), NOT fact
+  - "Assistant concluded Cilium is the best CNI" → **episodic**
+    (research conclusion), NOT fact
+  - "User's name is Elena" → **fact** (stable biographical info)
+  - "User lives in Prague" → **fact** (stable biographical info)
 
 - **categories**: Pick from the available list below. Use [] if none fit.
   "project" is for general project content. When the conversation
@@ -3143,6 +3279,7 @@ def parse_remember_extraction_response(
             continue
 
         memory_type = _validate_memory_type(entry.get("memory_type"))
+        memory_type = _correct_memory_type(memory_type, text)
         categories = _validate_categories(entry.get("categories"))
         importance = _validate_importance(entry.get("importance"))
         pinned = bool(entry.get("pinned", False))
@@ -4124,6 +4261,27 @@ or vice versa. Only suggest role="assistant" for agent-scoped memories \
 (those showing a role tag).
 
 Hint: memories with event_date are almost certainly "episodic".
+
+## Fact vs episodic/context — common misclassifications
+
+The most common metadata error is classifying episodic or context \
+memories as "fact". Facts are PERMANENT (no TTL). Only stable \
+biographical/personal information should be "fact".
+
+These patterns are almost always NOT facts:
+- Goals, intents, plans: "User wants to...", "User plans to..." → episodic
+- Decisions: "User decided to..." → episodic
+- Knowledge gaps: "User doesn't know..." → episodic
+- Current tasks: "User is working on..." → episodic
+- Project/code state: "X currently lacks...", "X defaults to...", \
+"X does not support..." → context
+- Feature requests: "User wants to implement..." → episodic
+
+These ARE facts:
+- Biographical: "User's name is...", "User lives in...", "User works at..."
+- Relationships: "User's partner is...", "User has a son named..."
+- Stable traits: "User has 14 years of experience in DevOps"
+- Stable identity: "Assistant's name is Aria"
 
 ## Valid categories
 

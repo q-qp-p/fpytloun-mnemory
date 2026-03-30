@@ -8,6 +8,7 @@ from mnemory.categories import PREDEFINED_CATEGORIES
 from mnemory.prompts import (
     REMEMBER_EXTRACTION_AUTO_SCHEMA,
     REMEMBER_EXTRACTION_SCHEMA,
+    _correct_memory_type,
     _validate_categories,
     _validate_importance,
     _validate_memory_type,
@@ -32,10 +33,185 @@ class TestValidateMemoryType:
             assert _validate_memory_type(t) == t
 
     def test_invalid_type_falls_back(self):
-        assert _validate_memory_type("invalid") == "fact"
+        assert _validate_memory_type("invalid") == "episodic"
 
     def test_none_falls_back(self):
-        assert _validate_memory_type(None) == "fact"
+        assert _validate_memory_type(None) == "episodic"
+
+
+class TestCorrectMemoryType:
+    """Tests for the post-LLM heuristic that demotes fact → episodic/context."""
+
+    # ── Episodic corrections (fact → episodic) ───────────────────────
+
+    def test_wants_to_becomes_episodic(self):
+        assert (
+            _correct_memory_type("fact", "User wants to add distributed tracing")
+            == "episodic"
+        )
+
+    def test_want_to_becomes_episodic(self):
+        assert (
+            _correct_memory_type("fact", "User want to migrate to Kubernetes")
+            == "episodic"
+        )
+
+    def test_decided_to_becomes_episodic(self):
+        assert (
+            _correct_memory_type("fact", "User decided to use PostgreSQL") == "episodic"
+        )
+
+    def test_plans_to_becomes_episodic(self):
+        assert (
+            _correct_memory_type("fact", "User plans to migrate to Kubernetes")
+            == "episodic"
+        )
+
+    def test_planning_to_becomes_episodic(self):
+        assert (
+            _correct_memory_type("fact", "User is planning to refactor the auth module")
+            == "episodic"
+        )
+
+    def test_is_working_on_becomes_episodic(self):
+        assert (
+            _correct_memory_type("fact", "User is working on the billing service")
+            == "episodic"
+        )
+
+    def test_intends_to_becomes_episodic(self):
+        assert (
+            _correct_memory_type("fact", "User intends to deploy next week")
+            == "episodic"
+        )
+
+    def test_aims_to_becomes_episodic(self):
+        assert (
+            _correct_memory_type("fact", "User aims to reduce latency by 50%")
+            == "episodic"
+        )
+
+    # ── Context corrections (fact → context) ─────────────────────────
+
+    def test_currently_lacks_becomes_context(self):
+        assert (
+            _correct_memory_type("fact", "mnemory currently lacks provenance tracking")
+            == "context"
+        )
+
+    def test_currently_has_no_becomes_context(self):
+        assert (
+            _correct_memory_type(
+                "fact", "mnemory currently has no provenance tracking system"
+            )
+            == "context"
+        )
+
+    def test_currently_has_becomes_context(self):
+        assert (
+            _correct_memory_type("fact", "mnemory currently has basic search")
+            == "context"
+        )
+
+    def test_currently_uses_becomes_context(self):
+        assert (
+            _correct_memory_type(
+                "fact", "The project currently uses Qdrant for vectors"
+            )
+            == "context"
+        )
+
+    def test_does_not_have_becomes_context(self):
+        assert (
+            _correct_memory_type("fact", "The project does not have rollback mechanism")
+            == "context"
+        )
+
+    def test_doesnt_have_becomes_context(self):
+        assert (
+            _correct_memory_type("fact", "The system doesn't have monitoring")
+            == "context"
+        )
+
+    def test_defaults_to_becomes_context(self):
+        assert (
+            _correct_memory_type("fact", "The model defaults to gpt-5-mini")
+            == "context"
+        )
+
+    def test_does_not_support_becomes_context(self):
+        assert (
+            _correct_memory_type("fact", "The API does not support pagination")
+            == "context"
+        )
+
+    def test_doesnt_support_becomes_context(self):
+        assert (
+            _correct_memory_type("fact", "The system doesn't support WebSocket")
+            == "context"
+        )
+
+    # ── No correction (real facts stay as facts) ─────────────────────
+
+    def test_biographical_name_stays_fact(self):
+        assert _correct_memory_type("fact", "User's name is Elena") == "fact"
+
+    def test_biographical_location_stays_fact(self):
+        assert _correct_memory_type("fact", "User lives in Prague") == "fact"
+
+    def test_biographical_job_stays_fact(self):
+        assert (
+            _correct_memory_type("fact", "User works at Google as a software engineer")
+            == "fact"
+        )
+
+    def test_relationship_stays_fact(self):
+        assert _correct_memory_type("fact", "User's partner is Romana") == "fact"
+
+    def test_stable_trait_stays_fact(self):
+        assert (
+            _correct_memory_type(
+                "fact", "User has over 14 years of experience in DevOps"
+            )
+            == "fact"
+        )
+
+    # ── Non-fact types are never touched ─────────────────────────────
+
+    def test_episodic_not_touched(self):
+        assert (
+            _correct_memory_type("episodic", "User wants to add tracing") == "episodic"
+        )
+
+    def test_context_not_touched(self):
+        assert (
+            _correct_memory_type("context", "The model defaults to gpt-5-mini")
+            == "context"
+        )
+
+    def test_preference_not_touched(self):
+        assert (
+            _correct_memory_type("preference", "User prefers dark mode") == "preference"
+        )
+
+    def test_procedural_not_touched(self):
+        assert (
+            _correct_memory_type("procedural", "User plans to run tests first")
+            == "procedural"
+        )
+
+    # ── Case insensitivity ───────────────────────────────────────────
+
+    def test_case_insensitive_wants(self):
+        assert (
+            _correct_memory_type("fact", "User WANTS TO add monitoring") == "episodic"
+        )
+
+    def test_case_insensitive_defaults(self):
+        assert (
+            _correct_memory_type("fact", "The config DEFAULTS TO gpt-5-mini")
+            == "context"
+        )
 
 
 class TestValidateCategories:
@@ -453,7 +629,7 @@ class TestParseExtractionResponse:
         )
         results, _ = parse_extraction_response(response, {})
         assert len(results) == 1
-        assert results[0]["memory_type"] == "fact"  # Default
+        assert results[0]["memory_type"] == "episodic"  # Default (safe fallback)
         assert results[0]["categories"] == []  # Default
         assert results[0]["importance"] == "normal"  # Default
 

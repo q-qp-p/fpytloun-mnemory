@@ -777,14 +777,15 @@ class MemoryService:
                     for r in results
                     if r.get("event") in ("ADD", "UPDATE") and r.get("id")
                 ]
-                if current_summary or stored_ids:
-                    self._session_summary_store.upsert(
-                        session_id=session_id,
-                        user_id=user_id,
-                        agent_id=agent_id,
-                        summary=current_summary,
-                        new_memory_ids=stored_ids,
-                    )
+                # Always persist — turn_count increment is valuable even
+                # when no facts were extracted or summary was generated.
+                self._session_summary_store.upsert(
+                    session_id=session_id,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    summary=current_summary,
+                    new_memory_ids=stored_ids,
+                )
             except Exception:
                 logger.warning(
                     "Failed to persist session summary for %s",
@@ -1576,7 +1577,9 @@ class MemoryService:
                     msgs, json_schema=schema, operation="reclassify"
                 )
                 classified = parse_json_response(response_text)
-                mem_type = validate_memory_type(classified.get("memory_type", "fact"))
+                mem_type = validate_memory_type(
+                    classified.get("memory_type", "episodic")
+                )
                 cats = validate_categories(classified.get("categories", []))
                 imp = validate_importance(classified.get("importance", "normal"))
                 logger.info(
@@ -1593,7 +1596,7 @@ class MemoryService:
             )
 
         # Final fallback — safe defaults, never lose the memory
-        return "fact", [], "normal"
+        return "episodic", [], "normal"
 
     def _execute_action(
         self,
@@ -1928,7 +1931,7 @@ class MemoryService:
                 classified = {}
 
             if memory_type is None:
-                memory_type = classified.get("memory_type", "fact")
+                memory_type = classified.get("memory_type", "episodic")
             if categories is None:
                 categories = classified.get("categories", [])
             if importance is None:
@@ -1938,7 +1941,7 @@ class MemoryService:
         else:
             # Defaults when auto_classify is off or all fields provided
             if memory_type is None:
-                memory_type = "fact"
+                memory_type = "episodic"
             if categories is None:
                 categories = []
             if importance is None:
