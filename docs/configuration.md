@@ -16,6 +16,7 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `LLM_REASONING_EFFORT` | | Reasoning effort for LLM (none/minimal/low/medium/high). Models that don't support it auto-skip. |
 | `EMBED_MODEL` | `text-embedding-3-small` | Embedding model |
 | `EMBED_BASE_URL` | (falls back to `LLM_BASE_URL`) | Separate base URL for embeddings |
+| `EMBED_API_KEY` | (falls back to `LLM_API_KEY`) | Separate API key for embedding provider |
 | `EMBED_DIMS` | `1536` | Embedding dimensions |
 
 ## Data Storage

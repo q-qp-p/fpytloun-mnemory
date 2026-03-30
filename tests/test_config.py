@@ -64,6 +64,29 @@ class TestConfigValidation:
         config = load_config()
         assert config.embed.base_url == "https://custom.api.com/v1"
 
+    def test_embed_api_key_explicit(self, monkeypatch):
+        """EMBED_API_KEY should be used when set."""
+        monkeypatch.setenv("LLM_API_KEY", "llm-key")
+        monkeypatch.setenv("EMBED_API_KEY", "embed-key")
+        config = load_config()
+        assert config.embed.api_key == "embed-key"
+        assert config.llm.api_key == "llm-key"
+
+    def test_embed_api_key_falls_back_to_llm_key(self, monkeypatch):
+        """EMBED_API_KEY should fall back to LLM_API_KEY."""
+        monkeypatch.setenv("LLM_API_KEY", "llm-key")
+        monkeypatch.delenv("EMBED_API_KEY", raising=False)
+        config = load_config()
+        assert config.embed.api_key == "llm-key"
+
+    def test_embed_api_key_falls_back_to_openai_key(self, monkeypatch):
+        """EMBED_API_KEY should fall back to OPENAI_API_KEY."""
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        monkeypatch.delenv("EMBED_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+        config = load_config()
+        assert config.embed.api_key == "openai-key"
+
     def test_qdrant_api_key_optional(self, monkeypatch):
         """Qdrant API key should be optional."""
         monkeypatch.setenv("LLM_API_KEY", "test-key")

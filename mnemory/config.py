@@ -65,6 +65,14 @@ def _llm_api_key() -> str:
     return _env("LLM_API_KEY") or _env("OPENAI_API_KEY")
 
 
+def _embed_api_key() -> str:
+    """Resolve embedding API key with fallback chain.
+
+    Priority: EMBED_API_KEY > LLM_API_KEY > OPENAI_API_KEY
+    """
+    return _env("EMBED_API_KEY") or _llm_api_key()
+
+
 def _llm_base_url() -> str:
     """Resolve LLM base URL with fallback chain.
 
@@ -127,7 +135,7 @@ class EmbedConfig:
     base_url: str = field(
         default_factory=lambda: _env("EMBED_BASE_URL") or _llm_base_url()
     )
-    api_key: str = field(default_factory=_llm_api_key)
+    api_key: str = field(default_factory=_embed_api_key)
     dims: int = field(default_factory=lambda: _env_int("EMBED_DIMS", 1536))
 
 
