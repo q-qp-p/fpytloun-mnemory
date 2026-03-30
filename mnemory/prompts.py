@@ -256,7 +256,8 @@ You are a memory manager for an AI assistant. Your job is to:
   in their original form (e.g., keep "Malibu", "Stephen King",
   "Praha", "Škoda Octavia").
 - If no relevant facts can be extracted, return an empty list.
-- Today's date is {today}.
+- Today's date is provided in the dynamic parameters section of the
+  user message below.
 - Each fact has an event_date field (YYYY-MM-DD or null). Use it to
   record WHEN something happened or was mentioned:
   - Set event_date when the fact has a temporal anchor — an event,
@@ -353,11 +354,11 @@ Output: {{"memories": [
   {{"text": "John proposed using Kubernetes",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical"],
-    "importance": "normal", "pinned": false, "event_date": "{today}"}},
+    "importance": "normal", "pinned": false, "event_date": "2025-03-15"}},
   {{"text": "Sarah prefers ECS over Kubernetes for their scale",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical"],
-    "importance": "normal", "pinned": false, "event_date": "{today}"}}
+    "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "store_artifact": false}}
 
 Input: "User: My mom likes sweet drinks, especially Malibu. She loves \
@@ -395,7 +396,7 @@ Output: {{"memories": [
   {{"text": "User wants to implement OIDC authentication for myapp using ALB and Cognito",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical", "project:myapp"],
-    "importance": "normal", "pinned": false, "event_date": "{today}"}}
+    "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "store_artifact": false}}
 
 Input: "User: Our platform doesn't have distributed tracing yet, I want \
@@ -406,7 +407,7 @@ Output: {{"memories": [
   {{"text": "User wants to add distributed tracing to their platform using OpenTelemetry",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical"],
-    "importance": "normal", "pinned": false, "event_date": "{today}"}}
+    "importance": "normal", "pinned": false, "event_date": "2025-03-15"}}
 ], "store_artifact": false}}
 (The user's intent/goal is episodic — it will be fulfilled eventually. \
 The knowledge gap is too transient to store separately.)
@@ -418,7 +419,7 @@ Output: {{"memories": [
   {{"text": "User decided to use PostgreSQL instead of MySQL for the billing service",
     "action": "ADD", "target_id": null, "old_memory": null,
     "memory_type": "episodic", "categories": ["technical", "decisions"],
-    "importance": "high", "pinned": false, "event_date": "{today}"}}
+    "importance": "high", "pinned": false, "event_date": "2025-03-15"}}
 ], "store_artifact": false}}
 (A decision is episodic — it records what was decided at a point in time.)
 
@@ -488,11 +489,13 @@ For each extracted fact, classify:
   core preferences, or critical information that should always be loaded
   at conversation start. Most memories should be false.
 
-{categories_section}
+Available categories are listed in the dynamic parameters section of the
+user message below.
 
 ## Deduplication Rules
 
-Compare each extracted fact against the existing memories below.
+Compare each extracted fact against the existing memories provided in
+the dynamic parameters section of the user message below.
 
 - **ADD**: New information not present in existing memories. Use target_id=null.
 - **UPDATE**: Modifies, enriches, or replaces an existing memory. Set target_id to the existing memory's ID and old_memory to its current text. The text field should contain the NEW, updated content.
@@ -530,8 +533,6 @@ Extracted fact: "User moved to Berlin"
 Existing: [{{"id": "0", "text": "User works at Acme Corp"}}]
 Extracted fact: "User is a senior developer at Acme Corp"
 → action: UPDATE, target_id="0" (adds specific detail: role level)
-
-{existing_section}
 
 ## Artifact Decision
 
@@ -632,7 +633,8 @@ You are a memory manager for an AI assistant. Your job is to:
   language. Preserve proper nouns, names, titles, and specific terms
   in their original form.
 - If no relevant facts can be extracted, return an empty list.
-- Today's date is {today}.
+- Today's date is provided in the dynamic parameters section of the
+  user message below.
 - Each fact has an event_date field (YYYY-MM-DD or null). Use it to
   record WHEN something happened or was mentioned:
   - Set event_date when the fact has a temporal anchor — an event,
@@ -748,11 +750,13 @@ For each extracted fact, classify:
 - **pinned**: true for core identity facts (name, personality traits),
   key capabilities, and critical knowledge. false for most memories.
 
-{categories_section}
+Available categories are listed in the dynamic parameters section of the
+user message below.
 
 ## Deduplication Rules
 
-Compare each extracted fact against the existing memories below.
+Compare each extracted fact against the existing memories provided in
+the dynamic parameters section of the user message below.
 
 - **ADD**: New information not present in existing memories. Use target_id=null.
 - **UPDATE**: Modifies, enriches, or replaces an existing memory. Set target_id to the existing memory's ID and old_memory to its current text. The text field should contain the NEW, updated content.
@@ -786,8 +790,6 @@ Extracted fact: "Assistant is called Bob"
 Existing: [{{"id": "0", "text": "Assistant prefers verbose responses"}}]
 Extracted fact: "Assistant now prefers brief responses"
 → action: UPDATE, target_id="0" (same subject, changed preference)
-
-{existing_section}
 
 ## Artifact Decision
 
@@ -943,32 +945,16 @@ def build_extraction_prompt(
             "Use these exact values:\n" + "\n".join(parts)
         )
 
-    # Select template
+    # Select template — system prompt is STATIC (cacheable by OpenAI).
+    # All per-call dynamic content goes into the user message.
     template = _AGENT_SYSTEM_PROMPT if role == "assistant" else _USER_SYSTEM_PROMPT
 
     system_prompt = template.format(
-        today=today,
         max_length=max_memory_length,
         memory_types=memory_types,
         importance_levels=importance_levels,
-        categories_section=categories_section,
-        existing_section=existing_section,
         anti_injection=ANTI_INJECTION_PREAMBLE,
     )
-
-    if explicit_note:
-        system_prompt += explicit_note
-
-    # Inject additional context (e.g., working directory) when provided.
-    # Helps the LLM identify the project and produce self-contained facts.
-    if context:
-        system_prompt += (
-            "\n\n## Additional Context\n"
-            + wrap_with_boundary(context, "context")
-            + "\nUse this to identify which project or application the "
-            "conversation is about. Include the project/application name "
-            "in extracted facts to make them self-contained."
-        )
 
     # Normalize content for agent role: when content is plain first-person
     # text without a speaker prefix, prepend "assistant: " so the extraction
@@ -982,10 +968,36 @@ def build_extraction_prompt(
         if not has_speaker_prefix:
             content = f"assistant: {content}"
 
-    # Build user message — wrap content in boundary tags to prevent
-    # prompt injection. The LLM is instructed to treat content within
-    # boundary tags as data only, never as instructions.
-    user_content = wrap_with_boundary(content, "user_input")
+    # Build user message with dynamic parameters section followed by content.
+    # Keeping dynamic content in the user message allows OpenAI to cache
+    # the static system prompt across all calls (50% input cost discount).
+    parts = [f"## Dynamic Parameters\n\nToday's date: {today}"]
+
+    parts.append(f"\n\n{categories_section}")
+
+    if existing_section:
+        parts.append(f"\n\n{existing_section}")
+
+    if explicit_note:
+        parts.append(explicit_note)
+
+    # Inject additional context (e.g., working directory) when provided.
+    # Helps the LLM identify the project and produce self-contained facts.
+    if context:
+        parts.append(
+            "\n\n## Additional Context\n"
+            + wrap_with_boundary(context, "context")
+            + "\nUse this to identify which project or application the "
+            "conversation is about. Include the project/application name "
+            "in extracted facts to make them self-contained."
+        )
+
+    # Wrap content in boundary tags to prevent prompt injection.
+    parts.append(
+        "\n\n## Content to Process\n\n" + wrap_with_boundary(content, "user_input")
+    )
+
+    user_content = "".join(parts)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -1834,7 +1846,8 @@ You are a memory extraction system. Your job is to:
   in their original form (e.g., keep "Malibu", "Stephen King",
   "Praha", "Škoda Octavia").
 - If no relevant facts can be extracted, return an empty list.
-- Today's date is {today}.
+- Today's date is provided in the dynamic parameters section of the
+  user message below.
 - Each fact has an event_date field (YYYY-MM-DD or null). Use it to
   record WHEN something happened or was mentioned:
   - Set event_date when the fact has a temporal anchor — an event,
@@ -1965,9 +1978,8 @@ For each extracted fact, classify:
   core preferences, or critical information that should always be loaded
   at conversation start. Most memories should be false.
 
-{categories_section}
-
-{session_context_section}
+Available categories, session context, and today's date are provided
+in the dynamic parameters section of the user message below.
 
 ## Exchange Summary
 
@@ -2255,7 +2267,8 @@ You are a memory extraction system for an AI assistant. Your job is to:
 - Always write extracted facts in English, regardless of the input language.
   Preserve proper nouns, names, titles, and specific terms in their original form.
 - If no relevant facts about the assistant can be extracted, return an empty list.
-- Today's date is {today}.
+- Today's date is provided in the dynamic parameters section of the
+  user message below.
 - Each fact has an event_date field (YYYY-MM-DD or null). Use it to record
   WHEN something happened or was mentioned:
   - Set event_date when the fact has a temporal anchor — an event,
@@ -2341,9 +2354,8 @@ For each extracted fact, classify:
 - **pinned**: true for core identity facts (name, personality traits), key
   capabilities, and critical knowledge. false for most memories.
 
-{categories_section}
-
-{session_context_section}
+Available categories, session context, and today's date are provided
+in the dynamic parameters section of the user message below.
 
 ## Exchange Summary
 
@@ -2657,7 +2669,8 @@ memory types:
   language. Preserve proper nouns, names, titles, and specific terms
   in their original form.
 - If no relevant facts can be extracted, return an empty list.
-- Today's date is {today}.
+- Today's date is provided in the dynamic parameters section of the
+  user message below.
 - Each fact has an event_date field (YYYY-MM-DD or null). Use it to
   record WHEN something happened or was mentioned:
   - Set event_date when the fact has a temporal anchor.
@@ -2747,9 +2760,8 @@ For each extracted fact, classify:
 - **pinned**: true ONLY for essential identity facts (name, job, location),
   core preferences, or critical information. Most memories should be false.
 
-{categories_section}
-
-{session_context_section}
+Available categories, session context, and today's date are provided
+in the dynamic parameters section of the user message below.
 
 ## Exchange Summary
 
@@ -3153,25 +3165,14 @@ def build_remember_extraction_prompt(
         template = _AUTO_REMEMBER_EXTRACTION_SYSTEM_PROMPT
         schema = REMEMBER_EXTRACTION_AUTO_SCHEMA
 
+    # System prompt is STATIC (cacheable by OpenAI).
+    # All per-call dynamic content goes into the user message.
     system_prompt = template.format(
-        today=today,
         max_length=max_memory_length,
         memory_types=memory_types,
         importance_levels=importance_levels,
-        categories_section=categories_section,
-        session_context_section=session_context_section,
         anti_injection=ANTI_INJECTION_PREAMBLE,
     )
-
-    # Inject additional context (e.g., working directory)
-    if context:
-        system_prompt += (
-            "\n\n## Additional Context\n"
-            + wrap_with_boundary(context, "context")
-            + "\nUse this to identify which project or application the "
-            "conversation is about. Include the project/application name "
-            "in extracted facts to make them self-contained."
-        )
 
     # Normalize content for agent role: when content is plain first-person
     # text without a speaker prefix, prepend "assistant: " so the extraction
@@ -3186,7 +3187,32 @@ def build_remember_extraction_prompt(
         if not has_speaker_prefix:
             content = f"assistant: {content}"
 
-    user_content = wrap_with_boundary(content, "user_input")
+    # Build user message with dynamic parameters section followed by content.
+    # Keeping dynamic content in the user message allows OpenAI to cache
+    # the static system prompt across all calls (50% input cost discount).
+    parts = [f"## Dynamic Parameters\n\nToday's date: {today}"]
+
+    parts.append(f"\n\n{categories_section}")
+
+    if session_context_section:
+        parts.append(f"\n\n{session_context_section}")
+
+    # Inject additional context (e.g., working directory)
+    if context:
+        parts.append(
+            "\n\n## Additional Context\n"
+            + wrap_with_boundary(context, "context")
+            + "\nUse this to identify which project or application the "
+            "conversation is about. Include the project/application name "
+            "in extracted facts to make them self-contained."
+        )
+
+    # Wrap content in boundary tags to prevent prompt injection.
+    parts.append(
+        "\n\n## Content to Process\n\n" + wrap_with_boundary(content, "user_input")
+    )
+
+    user_content = "".join(parts)
 
     messages = [
         {"role": "system", "content": system_prompt},

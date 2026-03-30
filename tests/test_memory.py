@@ -404,11 +404,11 @@ class TestDedupSimilarityThreshold:
 
         # Check what was passed to build_extraction_prompt via the LLM call
         call_args = service._llm.generate.call_args
-        system_prompt = call_args[0][0][0]["content"]
-        # The high-similarity memory should be in the prompt
-        assert "User likes cats" in system_prompt
-        # The low-similarity memory should NOT be in the prompt
-        assert "User works at Google" not in system_prompt
+        user_msg = call_args[0][0][1]["content"]
+        # The high-similarity memory should be in the user message
+        assert "User likes cats" in user_msg
+        # The low-similarity memory should NOT be in the user message
+        assert "User works at Google" not in user_msg
 
     def test_all_below_threshold_means_no_existing(self):
         """If all similar results are below threshold, LLM sees no existing."""
@@ -428,8 +428,8 @@ class TestDedupSimilarityThreshold:
 
         service.add_memory(content="test", user_id="filip", infer=True)
 
-        system_prompt = service._llm.generate.call_args[0][0][0]["content"]
-        assert "None yet" in system_prompt
+        user_msg = service._llm.generate.call_args[0][0][1]["content"]
+        assert "None yet" in user_msg
 
     def test_threshold_configurable(self):
         """Custom dedup threshold should be respected."""
@@ -458,9 +458,9 @@ class TestDedupSimilarityThreshold:
 
         service.add_memory(content="test", user_id="filip", infer=True)
 
-        system_prompt = service._llm.generate.call_args[0][0][0]["content"]
-        assert "Fact B" in system_prompt
-        assert "Fact A" not in system_prompt
+        user_msg = service._llm.generate.call_args[0][0][1]["content"]
+        assert "Fact B" in user_msg
+        assert "Fact A" not in user_msg
 
 
 # ── Core memory cache ─────────────────────────────────────────────────
@@ -3026,11 +3026,11 @@ class TestExtractionPromptEnrichedContext:
             "test content",
             existing_memories=existing,
         )
-        system_prompt = messages[0]["content"]
-        assert '"type": "preference"' in system_prompt
-        assert '"type": "fact"' in system_prompt
-        assert '"categories": ["personal"]' in system_prompt
-        assert '"categories": ["work"]' in system_prompt
+        user_msg = messages[1]["content"]
+        assert '"type": "preference"' in user_msg
+        assert '"type": "fact"' in user_msg
+        assert '"personal"' in user_msg
+        assert '"work"' in user_msg
 
     def test_empty_type_and_categories_omitted(self):
         """Existing memories without type/categories should omit them."""
@@ -3052,13 +3052,13 @@ class TestExtractionPromptEnrichedContext:
             "test content",
             existing_memories=existing,
         )
-        system_prompt = messages[0]["content"]
+        user_msg = messages[1]["content"]
         # Extract the JSON block from the existing memories boundary tags
         open_tag = _BOUNDARY_TAGS["existing_memories"][0]
         close_tag = _BOUNDARY_TAGS["existing_memories"][1]
-        json_start = system_prompt.index(open_tag) + len(open_tag) + 1  # +1 for \n
-        json_end = system_prompt.index(close_tag) - 1  # -1 for \n
-        existing_json = json.loads(system_prompt[json_start:json_end])
+        json_start = user_msg.index(open_tag) + len(open_tag) + 1  # +1 for \n
+        json_end = user_msg.index(close_tag) - 1  # -1 for \n
+        existing_json = json.loads(user_msg[json_start:json_end])
         # Empty type and categories should not appear in the memory entries
         assert "type" not in existing_json[0]
         assert "categories" not in existing_json[0]
@@ -5326,12 +5326,12 @@ class TestRememberTwoStagePipeline:
         )
 
         assert result.get("error") is None
-        # Verify extraction LLM was called with session context in the prompt
+        # Verify extraction LLM was called with session context in the user message
         call_args = service._llm.generate.call_args_list[0]
         messages = call_args[0][0]
-        system_prompt = messages[0]["content"]
-        assert "User likes Python" in system_prompt
-        assert "Discussed programming" in system_prompt
+        user_msg = messages[1]["content"]
+        assert "User likes Python" in user_msg
+        assert "Discussed programming" in user_msg
 
     def test_session_context_updated_after_remember(self):
         """Session context should be updated after successful remember."""

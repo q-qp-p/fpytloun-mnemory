@@ -308,34 +308,34 @@ class TestBuildExtractionPrompt:
             "test", existing_memories=existing
         )
         assert id_mapping == {"0": "uuid-abc-123", "1": "uuid-def-456"}
-        # System prompt should contain the integer IDs (within boundary tags)
-        system = messages[0]["content"]
-        assert '"id": "0"' in system
-        assert '"id": "1"' in system
+        # User message should contain the integer IDs (within boundary tags)
+        user_msg = messages[1]["content"]
+        assert '"id": "0"' in user_msg
+        assert '"id": "1"' in user_msg
         # Existing memories should be wrapped in boundary tags
         open_tag = _BOUNDARY_TAGS["existing_memories"][0]
-        assert open_tag in system
+        assert open_tag in user_msg
 
     def test_no_existing_memories(self):
         messages, _, id_mapping = build_extraction_prompt("test")
         assert id_mapping == {}
-        system = messages[0]["content"]
-        assert "None yet" in system
+        user_msg = messages[1]["content"]
+        assert "None yet" in user_msg
 
     def test_available_categories_in_prompt(self):
         cats = ["personal", "work", "project:myapp"]
         messages, _, _ = build_extraction_prompt("test", available_categories=cats)
-        system = messages[0]["content"]
-        assert "project:myapp" in system
+        user_msg = messages[1]["content"]
+        assert "project:myapp" in user_msg
 
     def test_explicit_fields_in_prompt(self):
         messages, _, _ = build_extraction_prompt(
             "test", explicit_fields={"memory_type": "fact", "pinned": True}
         )
-        system = messages[0]["content"]
-        assert "Caller-Provided" in system
-        assert '"memory_type"' in system
-        assert '"fact"' in system
+        user_msg = messages[1]["content"]
+        assert "Caller-Provided" in user_msg
+        assert '"memory_type"' in user_msg
+        assert '"fact"' in user_msg
 
     def test_schema_has_required_structure(self):
         _, schema, _ = build_extraction_prompt("test")
@@ -344,11 +344,11 @@ class TestBuildExtractionPrompt:
 
     def test_today_date_in_prompt(self):
         messages, _, _ = build_extraction_prompt("test")
-        system = messages[0]["content"]
-        # Should contain a date like 2026-02-17
+        user_msg = messages[1]["content"]
+        # Should contain a date like 2026-02-17 in the user message
         import re
 
-        assert re.search(r"\d{4}-\d{2}-\d{2}", system)
+        assert re.search(r"\d{4}-\d{2}-\d{2}", user_msg)
 
     def test_conversation_extraction_rules_in_user_prompt(self):
         """User prompt should guide extraction to focus on user facts
@@ -945,9 +945,9 @@ class TestPromptInjectionSafeguards:
     def test_extraction_prompt_wraps_existing_memories(self):
         existing = [{"id": "uuid-1", "text": "Existing fact"}]
         messages, _, _ = build_extraction_prompt("test", existing_memories=existing)
-        system = messages[0]["content"]
+        user_msg = messages[1]["content"]
         open_tag = _BOUNDARY_TAGS["existing_memories"][0]
-        assert open_tag in system
+        assert open_tag in user_msg
 
     def test_classification_prompt_has_anti_injection(self):
         messages, _ = build_classification_prompt(
@@ -1264,18 +1264,18 @@ class TestBuildRememberExtractionPrompt:
             "User also likes Rust",
             session_context=session_context,
         )
-        system = messages[0]["content"]
-        assert "User likes Python" in system
-        assert "Discussed programming preferences" in system
+        user_msg = messages[1]["content"]
+        assert "User likes Python" in user_msg
+        assert "Discussed programming preferences" in user_msg
 
     def test_context_hint_included(self):
-        """Context hint should be appended to system prompt."""
+        """Context hint should be in the user message."""
         messages, _ = build_remember_extraction_prompt(
             "Working on the API",
             context="Working directory: /home/user/myproject",
         )
-        system = messages[0]["content"]
-        assert "myproject" in system
+        user_msg = messages[1]["content"]
+        assert "myproject" in user_msg
 
     def test_anti_injection_in_prompt(self):
         """Anti-injection preamble should be in the system prompt."""
