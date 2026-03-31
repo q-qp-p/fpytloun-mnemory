@@ -4271,8 +4271,13 @@ type, categories, importance, pinned status, or role is clearly wrong.
 
 ## What to check
 
-1. **Wrong memory_type**: A preference stored as "episodic", a memory \
-with event_date that should be "episodic" but is "fact", etc.
+1. **Wrong memory_type**: The most common error is over-classifying \
+memories as "fact" or "preference" when they should be "episodic" or \
+"context". Facts are PERMANENT (no TTL) — only stable biographical \
+information should be "fact". Be especially skeptical of promoting \
+episodic/context memories to fact/preference — this is the dangerous \
+direction (permanent TTL). Demoting fact → episodic/context is the \
+safe direction (self-correcting via TTL decay).
 2. **Wrong categories**: Missing categories, or categories that don't \
 match the content. Use ONLY categories from the valid list below.
 3. **Wrong importance**: Critical user identity stored as "low", trivial \
@@ -4309,6 +4314,21 @@ These ARE facts:
 - Stable traits: "User has 14 years of experience in DevOps"
 - Stable identity: "Assistant's name is Aria"
 
+**Directional rule**: Be much more willing to demote fact → episodic/context \
+than to promote episodic/context → fact/preference. Promoting to \
+fact/preference makes a memory permanent. If you are unsure, leave the \
+current classification unchanged.
+
+**"User wants X" is always episodic**, not preference. A preference is a \
+stable behavioral choice the user has already adopted ("User prefers dark \
+mode", "User prefers Python"). A request or intent ("User wants to add X", \
+"User wants Mnemory to do X") is episodic — it describes what the user \
+wants at this point in time, not a lasting preference.
+
+**Assistant conclusions about code/system behavior are episodic or context**, \
+never fact. "Assistant confirmed X about the code" is an observation tied \
+to the current state of the code, not a permanent truth.
+
 ## Valid categories
 
 ONLY use categories from this list:
@@ -4325,6 +4345,11 @@ use [].
 corrected fields. Set unchanged fields to null.
 - Only flag CLEAR misclassifications, not borderline cases.
 - Be conservative: when in doubt, skip it.
+- Be ESPECIALLY conservative about promoting to "fact" or "preference" — \
+these types have permanent TTL. Only suggest this when the content is \
+clearly stable biographical information or a long-term behavioral choice.
+- Never report 1.0 confidence unless the misclassification is completely \
+unambiguous (e.g., "User's name is John" stored as "context").
 - If no issues found, return empty "issues" array.
 
 {anti_injection}

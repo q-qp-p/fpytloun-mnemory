@@ -566,12 +566,20 @@ class FsckService:
                 quality_batches * 2
             )  # 2 LLM calls per batch (Pass A + Pass B)
 
-            # Stamp checked_at on all memories in the working set.
-            # All-or-nothing: only stamp after ALL phases complete successfully.
+            # Stamp checked_at on memories WITHOUT issues.
+            # Memories with unresolved issues are intentionally left
+            # unstamped so the next incremental run re-examines them.
+            # If an issue IS auto-applied later, the metadata update
+            # refreshes updated_at_utc, making the memory eligible for
+            # re-check anyway.
             now_utc = datetime.now(timezone.utc).isoformat()
-            checked_ids = [m["id"] for m in memories]
-            if checked_ids:
-                for mid in checked_ids:
+            issue_memory_ids: set[str] = set()
+            for issue in check.issues:
+                for am in issue.affected_memories:
+                    issue_memory_ids.add(am.id)
+            clean_ids = [m["id"] for m in memories if m["id"] not in issue_memory_ids]
+            if clean_ids:
+                for mid in clean_ids:
                     try:
                         self._vector.update_metadata(mid, {"checked_at": now_utc})
                     except Exception:
@@ -581,9 +589,12 @@ class FsckService:
                             exc_info=True,
                         )
                 logger.info(
-                    "Fsck check %s: stamped checked_at on %d memories",
+                    "Fsck check %s: stamped checked_at on %d/%d memories "
+                    "(%d with issues left unstamped for re-check)",
                     check_id,
-                    len(checked_ids),
+                    len(clean_ids),
+                    len(memories),
+                    len(issue_memory_ids),
                 )
 
             # Build summary
@@ -1515,7 +1526,8 @@ class FsckService:
                         if k in allowed and v is not None
                     }
                     if clean_meta:
-                        # Validate memory_type — strip LLM-hallucinated values.
+                        # Validate memory_type — strip LLM-hallucinated values
+                        # and reject promotions that contradict heuristic rules.
                         if "memory_type" in clean_meta:
                             try:
                                 clean_meta["memory_type"] = validate_memory_type(
@@ -1527,6 +1539,31 @@ class FsckService:
                                     "from reclassify action for memory %s",
                                     clean_meta["memory_type"],
                                     action.memory_id,
+                                )
+                                del clean_meta["memory_type"]
+                        # Heuristic safety net: if the fsck model suggests
+                        # promoting to "fact" or "preference", validate the
+                        # memory text against our post-LLM heuristic patterns.
+                        # We test as if the type were "fact" — if the heuristic
+                        # demotes it (→ episodic/context), the text clearly
+                        # shouldn't be permanent, so promoting to fact OR
+                        # preference is wrong.
+                        if "memory_type" in clean_meta and clean_meta[
+                            "memory_type"
+                        ] in ("fact", "preference"):
+                            from mnemory.prompts import _correct_memory_type
+
+                            mem_text = existing.get("memory", "")
+                            corrected = _correct_memory_type("fact", mem_text)
+                            if corrected != "fact":
+                                logger.info(
+                                    "Fsck apply: rejecting promotion to '%s' "
+                                    "for memory %s — heuristic says '%s' "
+                                    "(text: %.80s)",
+                                    clean_meta["memory_type"],
+                                    action.memory_id,
+                                    corrected,
+                                    mem_text,
                                 )
                                 del clean_meta["memory_type"]
                         # Validate importance — strip LLM-hallucinated values.
