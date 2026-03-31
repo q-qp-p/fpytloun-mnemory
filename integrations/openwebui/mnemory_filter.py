@@ -2,14 +2,17 @@
 title: Mnemory - Persistent Memory
 author: mnemory
 description: Automatic memory recall and storage for conversations
-version: 0.3.0
+version: 0.3.1
 """
 
 import asyncio
+import logging
 from typing import Callable, Optional
 
 import aiohttp
 from pydantic import BaseModel, Field
+
+_log = logging.getLogger(__name__)
 
 
 class Filter:
@@ -100,6 +103,7 @@ class Filter:
     # Max tracked sessions before evicting oldest entries.
     # Prevents unbounded memory growth in long-running instances.
     _MAX_SESSIONS = 1000
+    _MAX_PENDING_SESSIONS = 100
 
     # Mnemory MCP tools that the filter handles automatically.
     # Stripped from tool_ids and tools[] to save prompt tokens.
@@ -112,17 +116,17 @@ class Filter:
     def __init__(self):
         self.valves = self.Valves()
         # Track which chats have been initialized.
-        # Maps chat_id -> {"session_id": str, "static_ctx": str | None}
+        # Maps chat_id -> {"session_id": str, "user_id": str, "static_ctx": str | None}
         # static_ctx holds cached instructions + core memories from the
         # first turn, re-injected on every subsequent turn so the LLM
         # always has memory context and managed-mode guidance.
         self._sessions: dict[str, dict] = {}
-        # Pending session from first message when chat_id is not yet
+        # Pending sessions from first messages when chat_id is not yet
         # available.  Open WebUI may not provide chat_id on the first
-        # message of a new chat (chat not yet saved to DB).  This slot
-        # holds the session data until the real chat_id arrives on the
-        # second message.
-        self._pending_session: dict | None = None
+        # message of a new chat (chat not yet saved to DB).  Keyed by
+        # user_id (email) to prevent cross-user session leakage when
+        # multiple users start chats concurrently.
+        self._pending_sessions: dict[str, dict] = {}
 
     # ── Helpers ───────────────────────────────────────────────────────
 
@@ -234,27 +238,52 @@ class Filter:
                 return name
         return ""
 
-    def _get_session(self, chat_id: str) -> dict | None:
+    def _get_session(self, chat_id: str, user_id: str = "") -> dict | None:
         """Look up or adopt a session for the given chat_id.
 
         Handles the first-to-second-message transition where chat_id
         appears after the pending session was already created.
 
-        When adopting, _pending_session is NOT cleared — the inlet may
-        still need it on subsequent turns when chat_id is unavailable
-        (Open WebUI provides chat_id in the outlet but not always in
-        the inlet).  _pending_session is only cleared when a new first
-        turn starts (is_first=True in inlet).
+        Args:
+            chat_id: Open WebUI chat ID (may be empty on first message).
+            user_id: User identifier (email) for pending session lookup.
+                Required for correct multi-user isolation.
+
+        When adopting, the pending session is NOT cleared — the inlet
+        may still need it on subsequent turns when chat_id is
+        unavailable (Open WebUI provides chat_id in the outlet but not
+        always in the inlet).  Pending sessions are only cleared when a
+        new first turn starts (is_first=True in inlet).
+
+        Note: if the same user opens two browser tabs and both send
+        their first message before either receives a chat_id, the
+        second pending session overwrites the first.  This is a known
+        limitation scoped to a single user (not cross-user).
         """
+        if not user_id:
+            return None
         if chat_id:
             sess = self._sessions.get(chat_id)
-            if sess is None and self._pending_session:
-                sess = self._pending_session
-                self._sessions[chat_id] = sess
-                # Don't clear _pending_session — inlet may still need
-                # it when chat_id is not available.
+            if sess is None:
+                pending = self._pending_sessions.get(user_id)
+                if pending:
+                    sess = pending
+                    self._sessions[chat_id] = sess
+                    # Don't clear pending — inlet may still need it
+                    # when chat_id is not available.
+            # Defense-in-depth: verify session belongs to this user.
+            # Prevents cross-user access if chat_ids ever collide.
+            if sess and sess.get("user_id") and sess["user_id"] != user_id:
+                _log.warning(
+                    "Session user_id mismatch: stored=%r requesting=%r "
+                    "chat_id=%r — refusing access",
+                    sess["user_id"],
+                    user_id,
+                    chat_id,
+                )
+                return None
             return sess
-        return self._pending_session
+        return self._pending_sessions.get(user_id)
 
     def _save_session(
         self,
@@ -263,6 +292,7 @@ class Filter:
         static_ctx: str | None = None,
         *,
         update_ctx: bool = False,
+        user_id: str = "",
     ) -> None:
         """Store or update session data for a chat.
 
@@ -273,11 +303,14 @@ class Filter:
             update_ctx: If True, overwrite static_ctx even when the new
                 value is None (used on first turn to set the cache).
                 If False, preserve the existing static_ctx.
+            user_id: User identifier (email) for pending session scoping.
+                Required for correct multi-user isolation.
         """
         if chat_id:
             existing = self._sessions.get(chat_id)
             sess = {
                 "session_id": session_id,
+                "user_id": user_id,
                 "static_ctx": (
                     static_ctx
                     if update_ctx
@@ -285,22 +318,36 @@ class Filter:
                 ),
             }
             self._sessions[chat_id] = sess
-            self._pending_session = None
+            # Clear this user's pending session now that we have a chat_id
+            if user_id:
+                self._pending_sessions.pop(user_id, None)
             # Evict oldest entries if over limit
             if len(self._sessions) > self._MAX_SESSIONS:
                 excess = len(self._sessions) - self._MAX_SESSIONS
                 for key in list(self._sessions)[:excess]:
                     del self._sessions[key]
-        else:
-            existing = self._pending_session
-            self._pending_session = {
+        elif user_id:
+            existing = self._pending_sessions.get(user_id)
+            self._pending_sessions[user_id] = {
                 "session_id": session_id,
+                "user_id": user_id,
                 "static_ctx": (
                     static_ctx
                     if update_ctx
                     else (static_ctx or (existing["static_ctx"] if existing else None))
                 ),
             }
+            # Evict oldest pending entries if over limit
+            if len(self._pending_sessions) > self._MAX_PENDING_SESSIONS:
+                excess = len(self._pending_sessions) - self._MAX_PENDING_SESSIONS
+                for key in list(self._pending_sessions)[:excess]:
+                    del self._pending_sessions[key]
+        else:
+            _log.warning(
+                "mnemory: _save_session called with empty chat_id and "
+                "user_id — session data dropped. Check __user__ "
+                "population in Open WebUI."
+            )
 
     # ── Inlet (before LLM) ───────────────────────────────────────────
 
@@ -337,7 +384,8 @@ class Filter:
                 )
 
         chat_id = body.get("chat_id") or ""
-        sess = self._get_session(chat_id)
+        user_id = __user__.get("email", __user__.get("id", ""))
+        sess = self._get_session(chat_id, user_id)
         session_id = sess["session_id"] if sess else None
 
         # Determine first turn from conversation history, not session
@@ -351,17 +399,18 @@ class Filter:
         await self._debug(
             __event_emitter__,
             f"chat_id={chat_id!r} session_id={session_id!r} "
-            f"is_first={is_first} user_msgs={user_msg_count}",
+            f"user_id={user_id!r} is_first={is_first} user_msgs={user_msg_count}",
         )
 
         # On the first turn, always send session_id=None so the recall
         # endpoint treats it as a fresh session and loads core memories.
-        # A stale _pending_session from a previous chat could otherwise
+        # A stale pending session from a previous chat could otherwise
         # cause the server to skip core memory loading.
         if is_first:
             session_id = None
-            # Clear stale pending session — this is a new conversation
-            self._pending_session = None
+            # Clear stale pending session for THIS user only
+            if user_id:
+                self._pending_sessions.pop(user_id, None)
 
         # In first_only mode, skip recall on subsequent messages.
         # Still inject cached static context so the LLM keeps its
@@ -425,7 +474,6 @@ class Filter:
             f"session_id={session_id!r} is_first={is_first}",
         )
 
-        user_id = __user__.get("email", __user__.get("id", ""))
         result = await self._post("/api/recall", payload, __user__, __event_emitter__)
 
         if result:
@@ -471,9 +519,10 @@ class Filter:
                 result["session_id"],
                 static_ctx,
                 update_ctx=is_first,
+                user_id=user_id,
             )
             # Re-read session after save so we have the latest data
-            sess = self._get_session(chat_id)
+            sess = self._get_session(chat_id, user_id)
 
         # --- Inject context into messages ---
         #
@@ -598,8 +647,9 @@ class Filter:
         if user_valves and hasattr(user_valves, "enabled") and not user_valves.enabled:
             return body
 
-        chat_id = body.get("chat_id", "")
-        sess = self._get_session(chat_id)
+        chat_id = body.get("chat_id") or ""
+        user_id = __user__.get("email", __user__.get("id", ""))
+        sess = self._get_session(chat_id, user_id)
         session_id = sess["session_id"] if sess else None
         messages = body.get("messages", [])
 
