@@ -1742,9 +1742,16 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         has_api_key_auth = bool(cfg.api_keys or cfg.api_key)
         has_auth = has_api_key_auth or validator is not None
 
-        # Skip auth for UI static files and root redirect — no sensitive data.
-        # Auth is enforced on all /api/ calls from the browser.
-        if request.url.path == "/" or request.url.path.startswith("/ui"):
+        # Skip auth for UI static files, root redirect, and the exchange
+        # token endpoint (it validates the token itself).  /health and
+        # /metrics intentionally go through auth on the main port so that
+        # Cognis health checks reflect the real auth state.  Use MGMT_PORT
+        # for unauthenticated health probes (k8s liveness/readiness).
+        if (
+            request.url.path == "/"
+            or request.url.path.startswith("/ui")
+            or request.url.path == "/api/auth/exchange"
+        ):
             self._set_identity_from_headers(request)
             try:
                 return await call_next(request)
@@ -1794,6 +1801,32 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                             {"error": "Invalid or expired download token"},
                             status_code=401,
                         )
+
+            # Check exchange session cookie (cross-service SSO via token exchange)
+            from mnemory.api.auth import get_exchange_session
+
+            exchange_cookie = request.cookies.get("mnemory_exchange_session", "")
+            if exchange_cookie:
+                exchange_session = get_exchange_session(exchange_cookie)
+                if exchange_session:
+                    logger.info(
+                        "Auth resolved via exchange session for user=%s",
+                        exchange_session.user_id,
+                    )
+                    _session_user_id.set(exchange_session.user_id)
+                    _session_user_bound.set(True)
+                    if exchange_session.agent_id:
+                        _session_agent_id.set(exchange_session.agent_id)
+                    header_tz = request.headers.get("x-timezone", "").strip() or None
+                    if header_tz:
+                        _session_timezone.set(header_tz)
+                    try:
+                        return await call_next(request)
+                    finally:
+                        _session_user_id.set(None)
+                        _session_agent_id.set(None)
+                        _session_timezone.set(None)
+                        _session_user_bound.set(False)
 
             # Extract token from Authorization: Bearer, X-API-Key, or cookie
             token = self._extract_token(request)
@@ -2183,10 +2216,14 @@ def create_app() -> Starlette:
     if ui_static_dir.is_dir():
         # Redirect /ui (no trailing slash) → /ui/ so index.html is served
         async def _ui_redirect(request: Request) -> RedirectResponse:
-            return RedirectResponse("/ui/", status_code=301)
+            qs = str(request.query_params)
+            target = f"/ui/?{qs}" if qs else "/ui/"
+            return RedirectResponse(target, status_code=302)
 
         async def _root_redirect(request: Request) -> RedirectResponse:
-            return RedirectResponse("/ui/", status_code=301)
+            qs = str(request.query_params)
+            target = f"/ui/?{qs}" if qs else "/ui/"
+            return RedirectResponse(target, status_code=302)
 
         routes.append(Route("/", _root_redirect))
         routes.append(Route("/ui", _ui_redirect))

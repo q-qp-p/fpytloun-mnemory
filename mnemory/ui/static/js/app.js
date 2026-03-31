@@ -19,6 +19,25 @@ document.addEventListener('alpine:init', () => {
     selectedUser: '',   // currently selected user (for switching)
 
     async init() {
+      // Check for exchange token in URL (Cognis cross-service SSO)
+      const params = new URLSearchParams(window.location.search);
+      const exchangeToken = params.get('token');
+      if (exchangeToken) {
+        try {
+          const resp = await fetch('/api/auth/exchange', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: exchangeToken })
+          });
+          if (resp.ok) {
+            // Clean token from URL after successful exchange
+            window.history.replaceState({}, '', window.location.pathname);
+            // Cookie set by response — proceed with cookie auth
+            await this.tryCookieAuth();
+            if (this.authenticated) return;
+          }
+        } catch (e) { console.warn('Exchange token auth failed, falling back:', e); }
+      }
       // Check if we have a stored key
       const key = MnemoryAPI.getKey();
       if (key) {
