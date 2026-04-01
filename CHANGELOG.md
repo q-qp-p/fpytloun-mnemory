@@ -2,13 +2,40 @@
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-04-01
+
+### Added
+
+- **Hermes Agent plugin** (`integrations/hermes/`): New plugin integration for the Hermes Agent framework with automatic memory recall and capture ([`6ebe8b3`](https://github.com/fpytloun/mnemory/commit/6ebe8b3))
+- **Exchange token endpoint**: `POST /api/auth/exchange` for cross-service SSO token exchange ([`2222e8b`](https://github.com/fpytloun/mnemory/commit/2222e8b))
+- **Cognis session cookie auth**: Support `cognis_session` cookie for cross-service SSO alongside existing API key and JWT auth ([`3be1824`](https://github.com/fpytloun/mnemory/commit/3be1824))
+- **Separate embedding API key**: New `EMBED_API_KEY` config for using a different provider for embeddings than for LLM ([`b5af1c4`](https://github.com/fpytloun/mnemory/commit/b5af1c4))
+
 ### Improved
 
-- **Dashboard category legend** -- The By Category chart now uses a right-side scrollable legend so large project/category sets stay readable.
-- **Graph filters** -- The Graph tab now supports category and memory-layer filters in addition to the existing type toggles.
-- **Core context preview** -- The User tab now shows a read-only preview of the exact default `get_core_memories` context an agent receives, including agent-specific scope when an agent is selected.
-- **Core memories exclude raw layer** -- `get_core_memories`, initialize/recall flows, and the User tab preview now omit provisional raw memories so only consolidated knowledge is injected by default.
-- **User tab stats and cleanup mode** -- The User tab now shows approximate token usage plus compact core-memory stats, and advanced mode can load the actual backing memories as editable cards for cleanup.
+- **Dashboard category legend** — The By Category chart now uses a right-side scrollable legend so large project/category sets stay readable ([`66beccb`](https://github.com/fpytloun/mnemory/commit/66beccb))
+- **Graph filters** — The Graph tab now supports category and memory-layer filters in addition to the existing type toggles ([`66beccb`](https://github.com/fpytloun/mnemory/commit/66beccb))
+- **Core context preview** — The User tab now shows a read-only preview of the exact default `get_core_memories` context an agent receives, including agent-specific scope when an agent is selected ([`66beccb`](https://github.com/fpytloun/mnemory/commit/66beccb))
+- **Core memories exclude raw layer** — `get_core_memories`, initialize/recall flows, and the User tab preview now omit provisional raw memories so only consolidated knowledge is injected by default. Structured stats added to core memories output ([`84a4001`](https://github.com/fpytloun/mnemory/commit/84a4001))
+- **User tab stats and cleanup mode** — The User tab now shows approximate token usage plus compact core-memory stats, and advanced mode can load the actual backing memories as editable cards for cleanup ([`66beccb`](https://github.com/fpytloun/mnemory/commit/66beccb))
+- **Fsck redesign** — Fsck redesigned as an automated maintenance engine with incremental processing, improved metadata normalization accuracy, and incremental re-checking ([`b04fa11`](https://github.com/fpytloun/mnemory/commit/b04fa11), [`deb5eeb`](https://github.com/fpytloun/mnemory/commit/deb5eeb))
+- **Prompt caching** — Extraction prompts restructured for OpenAI prompt caching, placing stable system instructions before variable content ([`b4cdd56`](https://github.com/fpytloun/mnemory/commit/b4cdd56))
+
+### Bug Fixes
+
+- **Fact-vs-episodic misclassification** — Reduced misclassification of facts as episodic memories and vice versa through improved extraction prompt guidance ([`da270b9`](https://github.com/fpytloun/mnemory/commit/da270b9))
+- **Cross-user session leakage in OpenWebUI** — Prevented session leakage in multi-user deployments where one user's memories could be visible to another ([`313f97e`](https://github.com/fpytloun/mnemory/commit/313f97e))
+- **Auth flow hardening** — Hardened authentication flow and fsck incremental checks against edge cases ([`9a02bb7`](https://github.com/fpytloun/mnemory/commit/9a02bb7))
+- **Fsck issue cards** — Affected memories are now included in fsck issue cards, and raw memories are excluded from checks ([`c60a8d0`](https://github.com/fpytloun/mnemory/commit/c60a8d0))
+
+### Documentation
+
+- **Default model update** — Updated default model reference to `gpt-5.4-mini` and documented `gpt-oss-120b` as a recommended budget alternative with comparable benchmark results ([`8df307d`](https://github.com/fpytloun/mnemory/commit/8df307d))
+- **Infer=true guidance** — Clarified guidance for when to use `infer=true` vs `infer=false` in memory storage instructions ([`3f41e3d`](https://github.com/fpytloun/mnemory/commit/3f41e3d))
+
+### Testing
+
+- **Boundary tag injection test** — Softened boundary tag injection e2e test assertions for cautious models that may refuse injection-like content ([`0948b46`](https://github.com/fpytloun/mnemory/commit/0948b46))
 
 ## [1.10.0] — 2026-03-28
 
