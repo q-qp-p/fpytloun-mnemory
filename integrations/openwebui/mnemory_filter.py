@@ -273,7 +273,9 @@ class Filter:
                     # when chat_id is not available.
             # Defense-in-depth: verify session belongs to this user.
             # Prevents cross-user access if chat_ids ever collide.
-            if sess and sess.get("user_id") and sess["user_id"] != user_id:
+            # Note: uses != (not truthiness check) so sessions stored
+            # with user_id="" are never returned to an authenticated user.
+            if sess and sess.get("user_id") != user_id:
                 _log.warning(
                     "Session user_id mismatch: stored=%r requesting=%r "
                     "chat_id=%r — refusing access",
@@ -326,6 +328,11 @@ class Filter:
                 excess = len(self._sessions) - self._MAX_SESSIONS
                 for key in list(self._sessions)[:excess]:
                     del self._sessions[key]
+                _log.warning(
+                    "mnemory: evicted %d oldest sessions (limit=%d)",
+                    excess,
+                    self._MAX_SESSIONS,
+                )
         elif user_id:
             existing = self._pending_sessions.get(user_id)
             self._pending_sessions[user_id] = {
@@ -342,6 +349,11 @@ class Filter:
                 excess = len(self._pending_sessions) - self._MAX_PENDING_SESSIONS
                 for key in list(self._pending_sessions)[:excess]:
                     del self._pending_sessions[key]
+                _log.warning(
+                    "mnemory: evicted %d oldest pending sessions (limit=%d)",
+                    excess,
+                    self._MAX_PENDING_SESSIONS,
+                )
         else:
             _log.warning(
                 "mnemory: _save_session called with empty chat_id and "

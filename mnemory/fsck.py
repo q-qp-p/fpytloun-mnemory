@@ -450,10 +450,16 @@ class FsckService:
                 check.progress.percent = 100
                 return
 
-            # mem_by_id is the working set. In incremental mode, full_corpus
-            # is retained above for potential future cross-referencing, but
-            # duplicate neighbor filtering uses mem_by_id (working set only).
+            # mem_by_id is the working set for phases that only need changed
+            # memories.  full_corpus_by_id includes ALL non-raw memories and
+            # is used by duplicate detection so that a changed memory can be
+            # matched against an unchanged clean memory.
             mem_by_id: dict[str, dict] = {m["id"]: m for m in memories}
+            full_corpus_by_id: dict[str, dict] = (
+                {m["id"]: m for m in full_corpus}
+                if full_corpus is not memories
+                else mem_by_id
+            )
 
             # Phase 0a: Security scan (regex, no LLM) — 0-3%
             check.progress.phase = "security_scan"
@@ -492,6 +498,7 @@ class FsckService:
                     check.llm_calls,
                 )
                 check.budget_exhausted = True
+                self._stamp_clean_memories(check, memories, check_id)
                 check.progress.phase = "done"
                 check.summary = self._build_summary(check.issues)
                 check.status = "completed"
@@ -504,7 +511,7 @@ class FsckService:
                 total,
             )
             dup_issues, clustered_ids = self._phase_duplicate_detection(
-                memories, mem_by_id, check
+                memories, mem_by_id, check, full_corpus_by_id=full_corpus_by_id
             )
             check.issues.extend(dup_issues)
             check.progress.issues_found = len(check.issues)
@@ -524,6 +531,7 @@ class FsckService:
                     check.llm_calls,
                 )
                 check.budget_exhausted = True
+                self._stamp_clean_memories(check, memories, check_id)
                 check.progress.phase = "done"
                 check.summary = self._build_summary(check.issues)
                 check.status = "completed"
@@ -566,36 +574,7 @@ class FsckService:
                 quality_batches * 2
             )  # 2 LLM calls per batch (Pass A + Pass B)
 
-            # Stamp checked_at on memories WITHOUT issues.
-            # Memories with unresolved issues are intentionally left
-            # unstamped so the next incremental run re-examines them.
-            # If an issue IS auto-applied later, the metadata update
-            # refreshes updated_at_utc, making the memory eligible for
-            # re-check anyway.
-            now_utc = datetime.now(timezone.utc).isoformat()
-            issue_memory_ids: set[str] = set()
-            for issue in check.issues:
-                for am in issue.affected_memories:
-                    issue_memory_ids.add(am.id)
-            clean_ids = [m["id"] for m in memories if m["id"] not in issue_memory_ids]
-            if clean_ids:
-                for mid in clean_ids:
-                    try:
-                        self._vector.update_metadata(mid, {"checked_at": now_utc})
-                    except Exception:
-                        logger.warning(
-                            "Failed to stamp checked_at on memory %s",
-                            mid,
-                            exc_info=True,
-                        )
-                logger.info(
-                    "Fsck check %s: stamped checked_at on %d/%d memories "
-                    "(%d with issues left unstamped for re-check)",
-                    check_id,
-                    len(clean_ids),
-                    len(memories),
-                    len(issue_memory_ids),
-                )
+            self._stamp_clean_memories(check, memories, check_id)
 
             # Build summary
             check.progress.phase = "done"
@@ -881,6 +860,46 @@ class FsckService:
             actions=[FsckAction(action="delete", memory_id=mem["id"])],
         )
 
+    # ── checked_at stamping ─────────────────────────────────────────
+
+    def _stamp_clean_memories(
+        self,
+        check: FsckCheck,
+        memories: list[dict],
+        check_id: str,
+    ) -> None:
+        """Stamp ``checked_at`` on memories that have no unresolved issues.
+
+        Memories with issues are intentionally left unstamped so the next
+        incremental run re-examines them.  Called both on normal completion
+        and on budget-exhausted early exits so that already-processed clean
+        memories are not re-checked unnecessarily.
+        """
+        now_utc = datetime.now(timezone.utc).isoformat()
+        issue_memory_ids: set[str] = set()
+        for issue in check.issues:
+            for am in issue.affected_memories:
+                issue_memory_ids.add(am.id)
+        clean_ids = [m["id"] for m in memories if m["id"] not in issue_memory_ids]
+        if clean_ids:
+            for mid in clean_ids:
+                try:
+                    self._vector.update_metadata(mid, {"checked_at": now_utc})
+                except Exception:
+                    logger.warning(
+                        "Failed to stamp checked_at on memory %s",
+                        mid,
+                        exc_info=True,
+                    )
+            logger.info(
+                "Fsck check %s: stamped checked_at on %d/%d memories "
+                "(%d with issues left unstamped for re-check)",
+                check_id,
+                len(clean_ids),
+                len(memories),
+                len(issue_memory_ids),
+            )
+
     # ── Phase 1: Duplicate detection ─────────────────────────────────
 
     def _phase_duplicate_detection(
@@ -888,14 +907,30 @@ class FsckService:
         memories: list[dict],
         mem_by_id: dict[str, dict],
         check: FsckCheck,
+        *,
+        full_corpus_by_id: dict[str, dict] | None = None,
     ) -> tuple[list[FsckIssue], set[str]]:
         """Find duplicate clusters via vector similarity, then evaluate with LLM.
 
         Sub-phase 1a (duplicate_search): Build similarity graph — 5-30%
         Sub-phase 1b (duplicate_eval): Evaluate clusters with LLM — 30-55%
 
+        Args:
+            memories: Working set of memories to iterate over.
+            mem_by_id: Lookup dict for the working set.
+            check: The running FsckCheck instance.
+            full_corpus_by_id: When in incremental mode, includes ALL
+                non-raw memories (not just the changed working set).
+                Used for neighbor filtering and cluster member lookup
+                so that a changed memory can be matched against an
+                unchanged clean memory.
+
         Returns (issues, set of memory IDs that were part of clusters).
         """
+        # For neighbor filtering and cluster lookup, use the full corpus
+        # when available so incremental mode can detect duplicates against
+        # unchanged memories.
+        corpus_by_id = full_corpus_by_id if full_corpus_by_id is not None else mem_by_id
         total = len(memories)
 
         # ── Sub-phase 1a: Build similarity graph ────────────────────
@@ -935,8 +970,10 @@ class FsckService:
                 # Only neighbors that survived the main run_check() filters
                 # may influence duplicate clustering. This prevents excluded
                 # raw memories from acting as graph bridges between durable
-                # memories during union-find.
-                similar = [s for s in similar if s.get("id") in mem_by_id]
+                # memories during union-find.  Uses corpus_by_id (full corpus
+                # in incremental mode) so unchanged clean memories can still
+                # be detected as duplicates of changed memories.
+                similar = [s for s in similar if s.get("id") in corpus_by_id]
 
                 for sim in similar:
                     score = sim.get("score", 0)
@@ -977,7 +1014,9 @@ class FsckService:
         for _root, member_ids in cluster_list:
             member_ids = member_ids[:_MAX_CLUSTER_SIZE]
             clustered_ids.update(member_ids)
-            cluster_mems = [mem_by_id[mid] for mid in member_ids if mid in mem_by_id]
+            cluster_mems = [
+                corpus_by_id[mid] for mid in member_ids if mid in corpus_by_id
+            ]
             if len(cluster_mems) >= 2:
                 cluster_inputs.append((_root, cluster_mems))
 

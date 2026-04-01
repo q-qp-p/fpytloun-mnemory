@@ -239,6 +239,12 @@ class ServerConfig:
     )
     base_url: str = field(default_factory=lambda: _env("SERVER_BASE_URL"))
 
+    # Exchange session cookie security.  Default True (HTTPS only).
+    # Set to False only for localhost development without TLS.
+    exchange_cookie_secure: bool = field(
+        default_factory=lambda: _env_bool("EXCHANGE_COOKIE_SECURE", True)
+    )
+
     @property
     def has_mgmt_port(self) -> bool:
         """Whether a separate management port is configured."""

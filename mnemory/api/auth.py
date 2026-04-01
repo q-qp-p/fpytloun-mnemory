@@ -6,6 +6,20 @@ server-side session, and sets a cookie for subsequent browser requests.
 
 The exchange token is single-use (JTI consumption tracking) and the
 resulting session has a configurable TTL (default 8 hours).
+
+.. warning:: Multi-pod limitation
+
+   ``_sessions`` and ``_consumed_jtis`` are in-memory dicts.  In multi-pod
+   Kubernetes deployments, exchange SSO requires sticky sessions (session
+   affinity) or a shared store (Redis).  Without either:
+
+   - JTI single-use enforcement is per-pod only (replay possible across pods)
+   - Exchange sessions are pod-local (cookie invalid on different pod)
+
+   TODO: Replace with Redis-backed store gated on SESSION_BACKEND config
+   when multi-pod exchange SSO is needed.  The existing SessionStore
+   abstraction (SQLite/Redis/in-memory) in storage/session.py provides
+   the pattern.
 """
 
 from __future__ import annotations
@@ -25,6 +39,7 @@ router = APIRouter(tags=["auth"])
 _SESSION_TTL_SECONDS = 8 * 60 * 60  # 8 hours
 _CLEANUP_THRESHOLD = 100  # Run cleanup when dict exceeds this size
 _COOKIE_NAME = "mnemory_exchange_session"
+_warned_multi_pod = False
 
 
 # ── Exchange session store ────────────────────────────────────────
@@ -103,8 +118,17 @@ async def exchange_token(body: ExchangeRequest, response: Response) -> ExchangeR
     Validates the exchange JWT cryptographically, checks single-use
     enforcement, creates a server-side session, and sets a cookie.
     """
+    global _warned_multi_pod
     from mnemory.auth import get_jwt_validator
     from mnemory.server import _get_config
+
+    if not _warned_multi_pod:
+        _warned_multi_pod = True
+        logger.warning(
+            "Exchange auth uses in-memory session/JTI stores. "
+            "In multi-pod deployments, configure session affinity or "
+            "a shared store. See module docstring for details."
+        )
 
     cfg = _get_config().server
     validator = get_jwt_validator(cfg.jwt_public_key, cfg.jwks_url)
@@ -137,12 +161,15 @@ async def exchange_token(body: ExchangeRequest, response: Response) -> ExchangeR
         logger.info("Exchange token rejected: missing sub claim")
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Single-use enforcement — JTI is mandatory for exchange tokens
+    # Single-use enforcement — JTI and exp are mandatory for exchange tokens
     jti = claims.get("jti")
     if not jti:
         logger.info("Exchange token rejected: missing jti claim")
         raise HTTPException(status_code=401, detail="Invalid token")
-    exp = claims.get("exp", 0)
+    exp = claims.get("exp")
+    if not exp:
+        logger.info("Exchange token rejected: missing exp claim")
+        raise HTTPException(status_code=401, detail="Invalid token")
     if not _consume_jti(jti, exp):
         logger.info("Exchange token rejected: JTI already consumed")
         raise HTTPException(status_code=401, detail="Token already used")
@@ -161,7 +188,8 @@ async def exchange_token(body: ExchangeRequest, response: Response) -> ExchangeR
     if len(_sessions) > _CLEANUP_THRESHOLD:
         _cleanup_expired()
 
-    # Set cookie
+    # Set cookie — secure flag is configurable via EXCHANGE_COOKIE_SECURE
+    # (default True).  Set to False only for localhost dev without TLS.
     response.set_cookie(
         key=_COOKIE_NAME,
         value=session_token,
@@ -169,7 +197,7 @@ async def exchange_token(body: ExchangeRequest, response: Response) -> ExchangeR
         path="/",
         httponly=True,
         samesite="lax",
-        secure=False,  # localhost dev; production behind TLS termination
+        secure=cfg.exchange_cookie_secure,
     )
 
     logger.info("Exchange session created for user=%s", user_id)

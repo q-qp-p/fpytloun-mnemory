@@ -1802,7 +1802,11 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                             status_code=401,
                         )
 
-            # Check exchange session cookie (cross-service SSO via token exchange)
+            # Auth precedence (after download tokens):
+            # 1. mnemory_exchange_session cookie (exchange SSO — server-side session)
+            # 2. Authorization: Bearer JWT (Cognis JWT validation)
+            # 3. Authorization: Bearer / X-API-Key (API key auth)
+            # 4. cognis_session cookie (direct SSO — JWT in cookie, via _extract_token)
             from mnemory.api.auth import get_exchange_session
 
             exchange_cookie = request.cookies.get("mnemory_exchange_session", "")
@@ -2214,19 +2218,15 @@ def create_app() -> Starlette:
     # Mount management UI if static directory exists (graceful degradation)
     ui_static_dir = Path(__file__).parent / "ui" / "static"
     if ui_static_dir.is_dir():
-        # Redirect /ui (no trailing slash) → /ui/ so index.html is served
-        async def _ui_redirect(request: Request) -> RedirectResponse:
+        # Redirect / and /ui (no trailing slash) → /ui/ so index.html is served.
+        # Uses 302 (not 301) to preserve query strings for exchange token flow.
+        async def _redirect_to_ui(request: Request) -> RedirectResponse:
             qs = str(request.query_params)
             target = f"/ui/?{qs}" if qs else "/ui/"
             return RedirectResponse(target, status_code=302)
 
-        async def _root_redirect(request: Request) -> RedirectResponse:
-            qs = str(request.query_params)
-            target = f"/ui/?{qs}" if qs else "/ui/"
-            return RedirectResponse(target, status_code=302)
-
-        routes.append(Route("/", _root_redirect))
-        routes.append(Route("/ui", _ui_redirect))
+        routes.append(Route("/", _redirect_to_ui))
+        routes.append(Route("/ui", _redirect_to_ui))
         routes.append(Mount("/ui", app=StaticFiles(directory=ui_static_dir, html=True)))
 
     routes.extend(
