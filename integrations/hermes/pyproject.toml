@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-mnemory"
+version = "0.1.0"
+description = "Mnemory persistent memory plugin for Hermes Agent"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Filip Pytloun", email = "filip@pytloun.cz" },
+]
+keywords = [
+    "hermes",
+    "hermes-agent",
+    "hermes-plugin",
+    "plugin",
+    "memory",
+    "mnemory",
+    "semantic-memory",
+    "long-term-memory",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.urls]
+Homepage = "https://github.com/fpytloun/mnemory/tree/main/integrations/hermes"
+Repository = "https://github.com/fpytloun/mnemory.git"
+Issues = "https://github.com/fpytloun/mnemory/issues"
+
+[project.entry-points."hermes_agent.plugins"]
+mnemory = "hermes_mnemory"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+exclude = ["tests/", "uv.lock", "pyproject.toml", "dist/", ".venv/", ".pytest_cache/"]
+
+# Map the integration directory root to the hermes_mnemory package name.
+# This renames the package on install so ``import hermes_mnemory`` works.
+# Note: editable installs are not supported with source remapping —
+# use ``PYTHONPATH=. pytest`` for local development instead.
+[tool.hatch.build.targets.wheel.sources]
+"." = "hermes_mnemory"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

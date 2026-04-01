@@ -85,6 +85,7 @@ mnemory works with any MCP-compatible client. Some clients also have dedicated p
 | Claude Code | Yes | Yes ([hooks](integrations/claude-code/)) | [Guide](docs/clients/claude-code.md) |
 | ChatGPT | Yes (MCP connector) | -- | [Guide](docs/clients/chatgpt.md) |
 | Claude Desktop | Yes | -- | [Guide](docs/clients/claude-desktop.md) |
+| Hermes Agent | Yes | Yes ([plugin](integrations/hermes/)) | [Guide](docs/clients/hermes.md) |
 | Open WebUI | Yes | Yes ([filter](integrations/openwebui/)) | [Guide](docs/clients/open-webui.md) |
 | OpenCode | Yes | Yes ([plugin](integrations/opencode/)) | [Guide](docs/clients/opencode.md) |
 | OpenClaw | Yes | Yes ([plugin](integrations/openclaw/)) | [Guide](docs/clients/openclaw.md) |
