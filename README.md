@@ -115,13 +115,14 @@ Evaluated on the [LoCoMo](https://github.com/snap-research/locomo) benchmark —
 | System | single_hop | multi_hop | temporal | open_domain | Overall |
 |---|---|---|---|---|---|
 | **mnemory** | **63.1** | **53.1** | **74.8** | **78.2** | **73.2** |
+| mnemory (gpt-oss-120b) | 66.3 | 59.4 | 68.5 | 73.8 | 70.5 |
 | Memobase | 70.9 | 52.1 | 85.0 | 77.2 | 75.8 |
 | Mem0-Graph | 65.7 | 47.2 | 58.1 | 75.7 | 68.4 |
 | Mem0 | 67.1 | 51.2 | 55.5 | 72.9 | 66.9 |
 | Zep | 61.7 | 41.4 | 49.3 | 76.6 | 66.0 |
 | LangMem | 62.2 | 47.9 | 23.4 | 71.1 | 58.1 |
 
-Configuration: `gpt-5-mini` for extraction, `text-embedding-3-small` for vectors. See [`benchmarks/`](benchmarks/) for reproduction.
+Configuration: `gpt-5-mini` for extraction, `text-embedding-3-small` for vectors. `gpt-oss-120b` via Groq is a budget alternative at ~5x lower cost with comparable quality. See [configuration docs](docs/configuration.md#model-selection) for model options and [`benchmarks/`](benchmarks/) for reproduction.
 
 ## Documentation
 

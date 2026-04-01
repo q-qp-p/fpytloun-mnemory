@@ -48,8 +48,8 @@ For fast iteration (testing models, parameters, etc.):
 python -m benchmarks.locomo run --quick
 
 # Compare models quickly
-python -m benchmarks.locomo run --quick --llm-model gpt-5-nano
-python -m benchmarks.locomo run --quick --llm-model gpt-5-mini
+python -m benchmarks.locomo run --quick --llm-model gpt-5.4-mini
+python -m benchmarks.locomo run --quick --llm-model gpt-oss-120b
 
 # Quick test with reduced reasoning effort
 python -m benchmarks.locomo run --quick --reasoning-effort low
@@ -143,7 +143,7 @@ LangMem            62.2    47.9      23.4    71.1     58.1
 
 ### Cost Estimate
 
-| Stage | Approximate Cost (gpt-5-mini) |
+| Stage | Approximate Cost (gpt-5.4-mini) |
 |---|---|
 | Ingest (default, LLM extraction) | ~$3-5 |
 | Ingest (`--no-infer`, raw) | ~$0.10 |

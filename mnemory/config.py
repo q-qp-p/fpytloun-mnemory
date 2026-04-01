@@ -116,7 +116,7 @@ class VectorConfig:
 class LLMConfig:
     """LLM configuration."""
 
-    model: str = field(default_factory=lambda: _env("LLM_MODEL", "gpt-5-mini"))
+    model: str = field(default_factory=lambda: _env("LLM_MODEL", "gpt-5.4-mini"))
     base_url: str = field(default_factory=_llm_base_url)
     api_key: str = field(default_factory=_llm_api_key)
     temperature: float = 0.1
@@ -404,7 +404,7 @@ class MemoryConfig:
     )
 
     # Input length cap (chars) for infer=True and remember().
-    # ~100k tokens for gpt-5-mini, leaving 50% headroom for output/reasoning.
+    # ~100k tokens for gpt-5.4-mini, leaving 50% headroom for output/reasoning.
     max_input_length: int = field(
         default_factory=lambda: _env_int("MAX_INPUT_LENGTH", 400000)
     )

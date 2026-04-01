@@ -44,7 +44,7 @@ docker run -d \
   -p 8050:8050 \
   -e OPENAI_API_KEY=sk-your-key \
   -e LLM_BASE_URL=https://your-litellm-proxy/v1 \
-  -e LLM_MODEL=gpt-5-mini \
+  -e LLM_MODEL=gpt-5.4-mini \
   -e QDRANT_HOST=qdrant.example.com \
   -e ARTIFACT_BACKEND=s3 \
   -e S3_ENDPOINT=http://minio.example.com:9000 \

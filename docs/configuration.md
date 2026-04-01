@@ -12,12 +12,37 @@ Data is stored in `~/.mnemory/` by default. Override with `DATA_DIR` env var. In
 | `OPENAI_API_BASE` | | OpenAI-compatible API base URL (also used as fallback for `LLM_BASE_URL`) |
 | `LLM_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for LLM provider |
 | `LLM_BASE_URL` | (falls back to `OPENAI_API_BASE`, then `https://api.openai.com/v1`) | OpenAI-compatible API base URL |
-| `LLM_MODEL` | `gpt-5-mini` | LLM model for fact extraction and deduplication |
+| `LLM_MODEL` | `gpt-5.4-mini` | LLM model for fact extraction and deduplication |
 | `LLM_REASONING_EFFORT` | | Reasoning effort for LLM (none/minimal/low/medium/high). Models that don't support it auto-skip. |
 | `EMBED_MODEL` | `text-embedding-3-small` | Embedding model |
 | `EMBED_BASE_URL` | (falls back to `LLM_BASE_URL`) | Separate base URL for embeddings |
 | `EMBED_API_KEY` | (falls back to `LLM_API_KEY`) | Separate API key for embedding provider |
 | `EMBED_DIMS` | `1536` | Embedding dimensions |
+
+### Model Selection
+
+The default `gpt-5.4-mini` provides a good balance of quality and cost. Any OpenAI-compatible model with structured output (JSON schema) support works.
+
+| Model | Provider | Input $/M | Output $/M | LoCoMo Score | Notes |
+|---|---|---|---|---|---|
+| `gpt-5.4-mini` | OpenAI | $0.75 | $4.50 | 73.2* | Default. Supports prompt caching (50% input discount) and batch API (50% off) |
+| `gpt-oss-120b` | Groq | $0.15 | $0.60 | 70.5 | Recommended budget option. ~5x cheaper than gpt-5.4-mini |
+| `gpt-oss-120b` | OpenAI | $0.039 | $0.19 | 70.5 | Same model, cheapest option via OpenAI direct |
+| `gpt-5-mini` | OpenAI | $0.25 | $2.00 | 73.2 | Previous default, still fully supported |
+
+*LoCoMo score measured with `gpt-5-mini`. `gpt-5.4-mini` is expected to match or exceed this.
+
+**`gpt-oss-120b` setup** requires a separate embedding provider since gpt-oss models don't serve embeddings:
+
+```bash
+LLM_MODEL=gpt-oss-120b
+LLM_BASE_URL=https://api.groq.com/openai/v1   # or https://api.openai.com/v1
+LLM_API_KEY=gsk-your-groq-key
+EMBED_API_KEY=sk-your-openai-key               # embeddings stay on OpenAI
+EMBED_BASE_URL=https://api.openai.com/v1
+```
+
+**Not recommended:** `gpt-oss-20b` fails security/injection e2e tests and has lower extraction quality (78/80 vs 80/80 for `gpt-oss-120b`). The smaller model is too aggressive in refusing to extract facts from content that contains boundary tag characters, and occasionally fails to generate session summaries.
 
 ## Data Storage
 
