@@ -90,9 +90,9 @@ class TestManagedInstructions:
         import hashlib
 
         expected = {
-            "passive": (10766, "f568399d14fcd59f"),
-            "proactive": (14773, "80ed0dcb7cbcfbb3"),
-            "personality": (15918, "196478fc710270aa"),
+            "passive": (10832, "e4db10ef0ed12a83"),
+            "proactive": (14839, "3c385ddc50b71a39"),
+            "personality": (15984, "7ac17f05441fca53"),
         }
         for mode, (exp_len, exp_hash) in expected.items():
             text = build_instructions(mode)
@@ -102,8 +102,8 @@ class TestManagedInstructions:
 
         managed = build_managed_instructions()
         h = hashlib.sha256(managed.encode()).hexdigest()[:16]
-        assert len(managed) == 11323, f"managed: length {len(managed)} != 11323"
-        assert h == "14672ad55f8f2c74", f"managed: hash {h} != 14672ad55f8f2c74"
+        assert len(managed) == 11389, f"managed: length {len(managed)} != 11389"
+        assert h == "95de275e55ad5561", f"managed: hash {h} != 95de275e55ad5561"
 
 
 class TestRecallScoreThreshold:

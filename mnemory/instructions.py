@@ -416,10 +416,11 @@ _BASE_INSTRUCTIONS = """\
   CATEGORIES below). Set importance: low/normal/high/critical. Set pinned:
   true for essential facts and identity.
 - Do NOT invent your own categories. Call list_categories if unsure.
-- Set infer=false for faster storage when your content is already a clean,
-  concise fact. This skips LLM-based fact extraction and deduplication,
-  storing content verbatim. Use infer=true (default) when you want the
-  server to extract facts and detect duplicates/contradictions.
+- Always use infer=true (the default). This runs fact extraction,
+  deduplication, and contradiction resolution — ensuring new information
+  is properly merged with existing memories. The infer=false option
+  bypasses ALL of these safeguards and should not be used in normal
+  operation. It exists for server-side maintenance and bulk data import.
 - Use add_memories (batch) when storing multiple memories at once — it
   processes them in a single call, avoiding round-trip latency per item.
 - If add_memory returns an error about auto-classification failure, retry

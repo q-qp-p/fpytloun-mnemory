@@ -496,7 +496,8 @@ async def add_memory(
         importance: low, normal, high, or critical.
         pinned: Load at every conversation start.
         agent_id: Scope to agent. Use "self" for yours.
-        infer: Extract facts and dedup (default true). False = store verbatim.
+        infer: Run fact extraction and deduplication (default true). Leave
+            true unless performing maintenance or bulk import.
         role: "user" (default) or "assistant" (requires agent_id).
         ttl_days: Time-to-live in days. Omit for type defaults.
         event_date: ISO 8601 datetime of when the event occurred.
@@ -567,7 +568,8 @@ async def add_memories(
                   optional: memory_type, categories, importance, pinned,
                   role, ttl_days, event_date, labels.
         agent_id: Scope to agent. Use "self" for yours.
-        infer: Extract facts and dedup (default true). False = store verbatim.
+        infer: Run fact extraction and deduplication (default true). Leave
+              true unless performing maintenance or bulk import.
         role: Default role for all items ("user" or "assistant").
     """
     try:
