@@ -4,7 +4,7 @@ mnemory exposes a `/metrics` endpoint in [Prometheus text exposition format](htt
 
 ## Endpoint Access
 
-By default, `/metrics` and `/health` are served on the main port with standard API key authentication. For production, set `MGMT_PORT` to serve them on a separate port without auth (see [Management Port](configuration.md#management-port)).
+By default, `/metrics` and `/health` are served on the main port with standard API key authentication. When `MGMT_PORT` is set, the same endpoints are also exposed on the management port without auth. For production, scrape and probe the management port to avoid sending credentials and to prevent duplicate ingestion (see [Management Port](configuration.md#management-port)).
 
 ## Available Metrics
 

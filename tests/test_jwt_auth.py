@@ -6,6 +6,7 @@ import importlib
 import json
 import os
 import threading
+from contextlib import asynccontextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -112,6 +113,24 @@ def _create_client(env: dict[str, str]) -> TestClient:
             middleware=[Middleware(srv.APIKeyMiddleware)],
         )
         return TestClient(app)
+
+
+def _load_server_module(env: dict[str, str]):
+    with patch.dict(os.environ, env, clear=False):
+        import mnemory.auth as auth
+        import mnemory.server as srv
+
+        auth._validator = None
+        auth._validator_config = None
+        srv._config = None
+        srv._service = None
+        srv._signing_key = None
+        importlib.reload(srv)
+        return srv
+
+
+def _paths(app: Starlette) -> set[str]:
+    return {route.path for route in app.routes if hasattr(route, "path")}
 
 
 class TestJWTAuth:
@@ -305,3 +324,75 @@ class TestJWTAuth:
 
         assert response.status_code == 200
         assert response.json()["user_id"] == "alice@example.com"
+
+
+class TestManagementRoutes:
+    def test_main_app_keeps_health_and_metrics_when_mgmt_port_set(self):
+        srv = _load_server_module(
+            {
+                "LLM_API_KEY": "test-key",
+                "MCP_API_KEY": "test-api-key",
+                "MCP_API_KEYS": "",
+                "MGMT_PORT": "9090",
+                "ENABLE_METRICS": "true",
+            }
+        )
+
+        app = srv.create_app()
+
+        assert "/health" in _paths(app)
+        assert "/metrics" in _paths(app)
+
+    def test_mgmt_app_exposes_health_and_metrics_without_auth(self):
+        srv = _load_server_module(
+            {
+                "LLM_API_KEY": "test-key",
+                "MCP_API_KEY": "test-api-key",
+                "MCP_API_KEYS": "",
+                "MGMT_PORT": "9090",
+                "ENABLE_METRICS": "true",
+            }
+        )
+
+        mgmt_app = srv.create_mgmt_app()
+
+        assert "/health" in _paths(mgmt_app)
+        assert "/metrics" in _paths(mgmt_app)
+
+    def test_main_app_health_requires_auth_when_mgmt_port_set(self):
+        srv = _load_server_module(
+            {
+                "LLM_API_KEY": "test-key",
+                "MCP_API_KEY": "test-api-key",
+                "MCP_API_KEYS": "",
+                "MGMT_PORT": "9090",
+            }
+        )
+
+        @asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        srv.lifespan = _noop_lifespan
+        client = TestClient(srv.create_app())
+        with client:
+            response = client.get("/health")
+
+        assert response.status_code == 401
+
+    def test_mgmt_app_health_skips_auth_when_mgmt_port_set(self):
+        srv = _load_server_module(
+            {
+                "LLM_API_KEY": "test-key",
+                "MCP_API_KEY": "test-api-key",
+                "MCP_API_KEYS": "",
+                "MGMT_PORT": "9090",
+            }
+        )
+
+        client = TestClient(srv.create_mgmt_app())
+        with client:
+            response = client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "healthy"

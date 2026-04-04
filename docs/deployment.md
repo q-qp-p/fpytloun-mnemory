@@ -116,14 +116,14 @@ API keys remain supported for backward compatibility with standalone clients.
 
 ### Health Probes
 
-Set `MGMT_PORT` to serve `/health` and `/metrics` on a separate port without authentication:
+Set `MGMT_PORT` to serve unauthenticated `/health` and `/metrics` on a separate port:
 
 ```bash
 MGMT_PORT=9090          # /health and /metrics on port 9090, no auth
 MGMT_HOST=127.0.0.1     # Optional: bind management to localhost only
 ```
 
-This is the recommended setup for Kubernetes liveness/readiness probes and Prometheus scraping. See [Configuration](configuration.md#management-port) for details.
+This is the recommended setup for Kubernetes liveness/readiness probes and Prometheus scraping. The main port continues to expose authenticated `/health` and `/metrics` for service-to-service checks such as Cognis provider health. See [Configuration](configuration.md#management-port) for details.
 
 ### Session Persistence
 

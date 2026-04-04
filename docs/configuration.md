@@ -217,7 +217,7 @@ When mnemory runs in JWT-only mode without API keys, artifact download tokens ke
 
 ## Management Port
 
-By default, `/health` and `/metrics` are served on the main port (`MCP_PORT`) and go through standard API key authentication. Set `MGMT_PORT` to run these endpoints on a separate port **without authentication** — useful for Kubernetes probes and Prometheus scraping:
+By default, `/health` and `/metrics` are served on the main port (`MCP_PORT`) and go through standard API key authentication. Set `MGMT_PORT` to run unauthenticated copies of these endpoints on a separate port — useful for Kubernetes probes and Prometheus scraping:
 
 ```bash
 MGMT_PORT=9090          # /health and /metrics on port 9090, no auth
@@ -226,7 +226,7 @@ MGMT_HOST=127.0.0.1     # Optional: bind management to localhost only
 
 When `MGMT_PORT` is set and differs from `MCP_PORT`:
 - `/health` and `/metrics` are served on `MGMT_PORT` without auth
-- The main port (`MCP_PORT`) does NOT serve `/health` or `/metrics`
+- The main port (`MCP_PORT`) still serves authenticated `/health` and `/metrics`
 - All MCP and REST API endpoints remain on the main port with auth
 
 When `MGMT_PORT` is not set (default):

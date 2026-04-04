@@ -2194,10 +2194,10 @@ def _build_mgmt_routes() -> list[Route]:
 def create_app() -> Starlette:
     """Create the main ASGI application.
 
-    When MGMT_PORT is not set (default), /health and /metrics are served
-    on the main port and go through standard API key authentication.
-    When MGMT_PORT is set, management routes are excluded from the main
-    app and served on the separate management port without auth.
+    /health and /metrics are always served on the main port and go through
+    standard API key authentication.
+    When MGMT_PORT is set, the same management routes are also served on a
+    separate management port without auth.
 
     The management UI is mounted at /ui when the static directory exists.
     UI static files are exempt from API key auth (handled in middleware).
@@ -2208,14 +2208,12 @@ def create_app() -> Starlette:
 
     from mnemory.api import create_api_app
 
-    cfg = _get_config()
     middleware = [Middleware(APIKeyMiddleware)]
 
     routes: list[Route | Mount] = []
 
-    # Include management routes on main port only when no separate mgmt port
-    if not cfg.server.has_mgmt_port:
-        routes.extend(_build_mgmt_routes())
+    # Always expose authenticated management routes on the main port.
+    routes.extend(_build_mgmt_routes())
 
     # Mount management UI if static directory exists (graceful degradation)
     ui_static_dir = Path(__file__).parent / "ui" / "static"
