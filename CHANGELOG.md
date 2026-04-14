@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.11.1] — 2026-04-14
+
+### Bug Fixes
+
+- **Authenticated health endpoints on the main port** — Kept authenticated health endpoints available on the main server port so health checks continue to work correctly behind authenticated deployments and proxies ([`5f785a6`](https://github.com/fpytloun/mnemory/commit/5f785a6))
+
 ## [1.11.0] — 2026-04-01
 
 ### Added
