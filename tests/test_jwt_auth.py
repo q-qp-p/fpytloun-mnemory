@@ -38,7 +38,12 @@ def _make_keypair(tmp_path: Path) -> tuple[object, str]:
 
 
 def _make_jwt(
-    private_key: object, *, sub: str, aud: list[str], agent_id: str | None = None
+    private_key: object,
+    *,
+    sub: str,
+    aud: list[str],
+    agent_id: str | None = None,
+    owner_id: str | None = None,
 ) -> str:
     payload = {
         "sub": sub,
@@ -47,6 +52,8 @@ def _make_jwt(
     }
     if agent_id is not None:
         payload["agent_id"] = agent_id
+    if owner_id is not None:
+        payload["aow"] = owner_id
     return jwt.encode(
         payload, private_key, algorithm="ES256", headers={"kid": "test-key"}
     )
@@ -103,6 +110,7 @@ def _create_client(env: dict[str, str]) -> TestClient:
                 {
                     "user_id": srv._session_user_id.get(),
                     "agent_id": srv._session_agent_id.get(),
+                    "owner_id": srv._session_owner_id.get(),
                     "timezone": srv._session_timezone.get(),
                     "can_switch_user": not srv._session_user_bound.get(),
                 }
@@ -161,6 +169,7 @@ class TestJWTAuth:
         assert response.json() == {
             "user_id": "alice@example.com",
             "agent_id": "agent-1",
+            "owner_id": "alice@example.com",
             "timezone": None,
             "can_switch_user": False,
         }
@@ -192,6 +201,38 @@ class TestJWTAuth:
 
         assert response.status_code == 200
         assert response.json()["agent_id"] == "agent-header"
+        assert response.json()["owner_id"] == "alice@example.com"
+
+    def test_owner_claim_and_header_propagate(self, tmp_path):
+        private_key, public_key_path = _make_keypair(tmp_path)
+        token = _make_jwt(
+            private_key,
+            sub="grantee@example.com",
+            aud=["mnemory"],
+            agent_id="agent-shared",
+            owner_id="owner@example.com",
+        )
+
+        client = _create_client(
+            {
+                "LLM_API_KEY": "test-key",
+                "MNEMORY_JWT_PUBLIC_KEY": public_key_path,
+                "MCP_API_KEY": "",
+                "MCP_API_KEYS": "",
+            }
+        )
+        with client:
+            response = client.get(
+                "/api/whoami",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "X-Agent-Owner": "owner@example.com",
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["user_id"] == "grantee@example.com"
+        assert response.json()["owner_id"] == "owner@example.com"
 
     def test_claim_header_agent_mismatch_rejected(self, tmp_path):
         private_key, public_key_path = _make_keypair(tmp_path)

@@ -64,6 +64,9 @@ _session_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _session_agent_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "session_agent_id", default=None
 )
+_session_owner_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "session_owner_id", default=None
+)
 _session_timezone: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "session_timezone", default=None
 )
@@ -344,6 +347,11 @@ def _resolve_agent_id_for_core(
 def _get_session_agent_id() -> str | None:
     """Get the session-level agent_id (from X-Agent-Id header), or None."""
     return _session_agent_id.get()
+
+
+def _get_session_owner_id() -> str | None:
+    """Get the session-level agent owner id, or None."""
+    return _session_owner_id.get()
 
 
 def _get_session_timezone() -> str | None:
@@ -1820,6 +1828,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                         exchange_session.user_id,
                     )
                     _session_user_id.set(exchange_session.user_id)
+                    _session_owner_id.set(exchange_session.user_id)
                     _session_user_bound.set(True)
                     if exchange_session.agent_id:
                         _session_agent_id.set(exchange_session.agent_id)
@@ -1831,6 +1840,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                     finally:
                         _session_user_id.set(None)
                         _session_agent_id.set(None)
+                        _session_owner_id.set(None)
                         _session_timezone.set(None)
                         _session_user_bound.set(False)
 
@@ -1840,18 +1850,22 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
             header_agent_id = request.headers.get("x-agent-id", "").strip() or None
+            header_owner_id = request.headers.get("x-agent-owner", "").strip() or None
             header_tz = request.headers.get("x-timezone", "").strip() or None
 
             if validator is not None and looks_like_jwt(token):
                 try:
                     auth_ctx = validator.validate(
-                        token, header_agent_id=header_agent_id
+                        token,
+                        header_agent_id=header_agent_id,
+                        header_owner_id=header_owner_id,
                     )
                 except InvalidTokenError:
                     logger.info("JWT auth rejected; falling back to API key auth")
                 else:
                     logger.info("Auth resolved via JWT for user=%s", auth_ctx.user_id)
                     _session_user_id.set(auth_ctx.user_id)
+                    _session_owner_id.set(auth_ctx.owner_id or auth_ctx.user_id)
                     _session_user_bound.set(True)
                     if auth_ctx.agent_id:
                         _session_agent_id.set(auth_ctx.agent_id)
@@ -1862,6 +1876,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                     finally:
                         _session_user_id.set(None)
                         _session_agent_id.set(None)
+                        _session_owner_id.set(None)
                         _session_timezone.set(None)
                         _session_user_bound.set(False)
 
@@ -1904,11 +1919,16 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 )
                 if header_uid:
                     _session_user_id.set(header_uid)
+                    _session_owner_id.set(header_owner_id or header_uid)
 
             # Agent ID from header
             header_aid = request.headers.get("x-agent-id", "").strip()
             if header_aid:
                 _session_agent_id.set(header_aid)
+            elif _session_owner_id.get() is None and _session_user_id.get():
+                _session_owner_id.set(_session_user_id.get())
+            if header_owner_id:
+                _session_owner_id.set(header_owner_id)
 
             # Timezone from header (overrides DEFAULT_TIMEZONE for this session)
             header_tz = request.headers.get("x-timezone", "").strip()
@@ -1922,6 +1942,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             # between requests, regardless of auth path taken.
             _session_user_id.set(None)
             _session_agent_id.set(None)
+            _session_owner_id.set(None)
             _session_timezone.set(None)
             _session_user_bound.set(False)
 
@@ -1957,10 +1978,15 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         )
         if header_uid:
             _session_user_id.set(header_uid)
+            _session_owner_id.set(
+                request.headers.get("x-agent-owner", "").strip() or header_uid
+            )
         _session_user_bound.set(False)
         header_aid = request.headers.get("x-agent-id", "").strip()
         if header_aid:
             _session_agent_id.set(header_aid)
+        elif _session_user_id.get() and _session_owner_id.get() is None:
+            _session_owner_id.set(_session_user_id.get())
         header_tz = request.headers.get("x-timezone", "").strip()
         if header_tz:
             _session_timezone.set(header_tz)

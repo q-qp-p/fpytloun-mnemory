@@ -27,6 +27,7 @@ class JWTAuthContext:
 
     user_id: str
     agent_id: str | None = None
+    owner_id: str | None = None
 
 
 class CognisJWTValidator:
@@ -48,7 +49,10 @@ class CognisJWTValidator:
         return bool(self._public_key_path or self._jwks_url)
 
     def validate(
-        self, token: str, header_agent_id: str | None = None
+        self,
+        token: str,
+        header_agent_id: str | None = None,
+        header_owner_id: str | None = None,
     ) -> JWTAuthContext:
         """Validate a Cognis JWT and resolve the effective agent_id.
 
@@ -70,12 +74,19 @@ class CognisJWTValidator:
         claim_agent_id = claims.get("agent_id")
         if claim_agent_id is not None and not isinstance(claim_agent_id, str):
             raise InvalidTokenError("JWT agent_id claim must be a string when present")
+        claim_owner_id = claims.get("aow")
+        if claim_owner_id is not None and not isinstance(claim_owner_id, str):
+            raise InvalidTokenError("JWT aow claim must be a string when present")
 
         if claim_agent_id and header_agent_id and claim_agent_id != header_agent_id:
             raise InvalidTokenError("X-Agent-Id does not match JWT agent_id claim")
+        if claim_owner_id and header_owner_id and claim_owner_id != header_owner_id:
+            raise InvalidTokenError("X-Agent-Owner does not match JWT aow claim")
 
         return JWTAuthContext(
-            user_id=user_id, agent_id=claim_agent_id or header_agent_id
+            user_id=user_id,
+            agent_id=claim_agent_id or header_agent_id,
+            owner_id=claim_owner_id or header_owner_id or user_id,
         )
 
     def decode_claims(self, token: str) -> dict:

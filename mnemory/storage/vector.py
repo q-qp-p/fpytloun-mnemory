@@ -192,7 +192,7 @@ class VectorStore:
 
         name = self.collection_name
         # Keyword/bool indexes for filtering
-        for field in ("user_id", "agent_id", "pinned", "memory_type"):
+        for field in ("user_id", "owner_id", "agent_id", "pinned", "memory_type"):
             try:
                 self._client.create_payload_index(
                     collection_name=name,
@@ -249,6 +249,7 @@ class VectorStore:
         text: str,
         vector: list[float],
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None = None,
         metadata: dict[str, Any],
         role: str = "user",
@@ -278,6 +279,7 @@ class VectorStore:
             "hash": _hash(text.encode()).hexdigest(),
             "created_at": now.isoformat(),
             "user_id": user_id,
+            "owner_id": owner_id or user_id,
             "role": role,
         }
         if agent_id:
@@ -307,7 +309,7 @@ class VectorStore:
     ) -> list[str]:
         """Insert multiple memory points in a single call.
 
-        Each point dict should have: text, vector, user_id, agent_id (optional),
+        Each point dict should have: text, vector, user_id, owner_id (optional), agent_id (optional),
         metadata, role, sparse_vector (optional).
 
         Returns list of generated memory IDs.
@@ -328,6 +330,7 @@ class VectorStore:
                 "hash": _hash(p["text"].encode()).hexdigest(),
                 "created_at": now.isoformat(),
                 "user_id": p["user_id"],
+                "owner_id": p.get("owner_id") or p["user_id"],
                 "role": p.get("role", "user"),
             }
             if p.get("agent_id"):
@@ -359,6 +362,8 @@ class VectorStore:
         query: str,
         *,
         user_id: str,
+        owner_id: str | None = None,
+        subject_user_id: str | None = None,
         agent_id: str | None = None,
         shared_only: bool = False,
         filters: dict | None = None,
@@ -438,8 +443,15 @@ class VectorStore:
 
         # 2. Build filter conditions
         must_conditions: list = [
-            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+            FieldCondition(
+                key="owner_id" if owner_id else "user_id",
+                match=MatchValue(value=owner_id or user_id),
+            ),
         ]
+        if subject_user_id:
+            must_conditions.append(
+                FieldCondition(key="user_id", match=MatchValue(value=subject_user_id))
+            )
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
@@ -607,6 +619,8 @@ class VectorStore:
         vector: list[float],
         *,
         user_id: str,
+        owner_id: str | None = None,
+        subject_user_id: str | None = None,
         agent_id: str | None = None,
         shared_only: bool = False,
         limit: int = 5,
@@ -638,8 +652,15 @@ class VectorStore:
         )
 
         must_conditions: list = [
-            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+            FieldCondition(
+                key="owner_id" if owner_id else "user_id",
+                match=MatchValue(value=owner_id or user_id),
+            ),
         ]
+        if subject_user_id:
+            must_conditions.append(
+                FieldCondition(key="user_id", match=MatchValue(value=subject_user_id))
+            )
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
@@ -747,6 +768,8 @@ class VectorStore:
         self,
         *,
         user_id: str,
+        owner_id: str | None = None,
+        subject_user_id: str | None = None,
         agent_id: str | None = None,
         shared_only: bool = False,
         filters: dict | None = None,
@@ -776,8 +799,15 @@ class VectorStore:
         from qdrant_client.models import IsEmptyCondition
 
         must_conditions: list = [
-            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+            FieldCondition(
+                key="owner_id" if owner_id else "user_id",
+                match=MatchValue(value=owner_id or user_id),
+            ),
         ]
+        if subject_user_id:
+            must_conditions.append(
+                FieldCondition(key="user_id", match=MatchValue(value=subject_user_id))
+            )
         if agent_id:
             must_conditions.append(
                 FieldCondition(key="agent_id", match=MatchValue(value=agent_id))
@@ -1239,6 +1269,8 @@ class VectorStore:
         self,
         *,
         user_id: str,
+        owner_id: str | None = None,
+        subject_user_id: str | None = None,
         agent_id: str | None = None,
         since: datetime,
         limit: int = 50,
@@ -1270,12 +1302,19 @@ class VectorStore:
         )
 
         must_conditions: list = [
-            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+            FieldCondition(
+                key="owner_id" if owner_id else "user_id",
+                match=MatchValue(value=owner_id or user_id),
+            ),
             FieldCondition(
                 key="created_at",
                 range=DatetimeRange(gte=since),
             ),
         ]
+        if subject_user_id:
+            must_conditions.append(
+                FieldCondition(key="user_id", match=MatchValue(value=subject_user_id))
+            )
 
         # Filter by agent_id: if provided, match exactly; if None, match only
         # memories without agent_id (shared user memories).
@@ -1335,6 +1374,8 @@ class VectorStore:
         self,
         *,
         user_id: str,
+        owner_id: str | None = None,
+        subject_user_id: str | None = None,
         agent_id: str | None = None,
         exclude_agent: bool = False,
         exclude_layers: list[str] | None = None,
@@ -1351,6 +1392,8 @@ class VectorStore:
         # Fetch all pinned memories for the user
         all_pinned = self.get_all(
             user_id=user_id,
+            owner_id=owner_id,
+            subject_user_id=subject_user_id,
             filters={"pinned": True},
             exclude_layers=exclude_layers,
             limit=500,
@@ -1500,7 +1543,7 @@ class VectorStore:
             "updated_at": payload.get("updated_at"),
         }
         # Promote standard fields
-        for field in ("user_id", "agent_id", "run_id"):
+        for field in ("user_id", "owner_id", "agent_id", "run_id"):
             if field in payload:
                 memory[field] = payload[field]
         # Collect remaining fields as metadata
@@ -1510,6 +1553,7 @@ class VectorStore:
             "created_at",
             "updated_at",
             "user_id",
+            "owner_id",
             "agent_id",
             "run_id",
             "actor_id",

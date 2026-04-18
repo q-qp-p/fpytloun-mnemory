@@ -67,12 +67,14 @@ def _search_with_scope(
         return service.search_memories_dual_scope(
             query=query,
             user_id=ctx.user_id,
+            owner_id=ctx.owner_id,
             session_agent_id=ctx.agent_id,
             labels=labels,
         )
     return service.search_memories(
         query=query,
         user_id=ctx.user_id,
+        owner_id=ctx.owner_id,
         agent_id=None,
         labels=labels,
     )
@@ -166,6 +168,7 @@ def recall(
         try:
             core_result = service.get_core_memories(
                 user_id=ctx.user_id,
+                owner_id=ctx.owner_id,
                 agent_id=ctx.agent_id,
                 recent_days=req.recent_days,
             )
@@ -198,6 +201,7 @@ def recall(
                 result = service.find_memories(
                     question=query,
                     user_id=ctx.user_id,
+                    owner_id=ctx.owner_id,
                     session_agent_id=ctx.agent_id,
                     agent_id=ctx.agent_id,
                     limit=max_results,

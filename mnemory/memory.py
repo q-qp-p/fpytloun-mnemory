@@ -427,6 +427,7 @@ class MemoryService:
         content: str,
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None = None,
         memory_type: str | None = None,
         categories: list[str] | None = None,
@@ -475,6 +476,7 @@ class MemoryService:
         if role not in ("user", "assistant"):
             raise ValueError("role must be 'user' or 'assistant'")
         user_id = _validate_id(user_id, "user_id")
+        owner_id = _validate_id(owner_id, "owner_id") if owner_id else user_id
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
         if role == "assistant" and not agent_id:
@@ -548,6 +550,7 @@ class MemoryService:
             result = self._add_with_inference(
                 content,
                 user_id=user_id,
+                owner_id=owner_id,
                 agent_id=agent_id,
                 memory_type=memory_type,
                 categories=categories,
@@ -563,6 +566,7 @@ class MemoryService:
             result = self._add_direct(
                 content,
                 user_id=user_id,
+                owner_id=owner_id,
                 agent_id=agent_id,
                 memory_type=memory_type,
                 categories=categories,
@@ -585,6 +589,7 @@ class MemoryService:
         content: str,
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None = None,
         role: str | None = None,
         session_id: str | None = None,
@@ -629,6 +634,7 @@ class MemoryService:
         if role is not None and role not in ("user", "assistant"):
             raise ValueError("role must be 'user', 'assistant', or None")
         user_id = _validate_id(user_id, "user_id")
+        owner_id = _validate_id(owner_id, "owner_id") if owner_id else user_id
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
         if role == "assistant" and not agent_id:
@@ -652,6 +658,7 @@ class MemoryService:
             result = self._remember_pipeline(
                 content,
                 user_id=user_id,
+                owner_id=owner_id,
                 agent_id=agent_id,
                 role=role,
                 session_id=session_id,
@@ -685,6 +692,7 @@ class MemoryService:
         content: str,
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None,
         role: str | None,
         session_id: str | None,
@@ -701,6 +709,7 @@ class MemoryService:
         When role is None (auto mode), the LLM outputs a per-fact role
         field. Each fact is then deduped and stored with its own role.
         """
+        owner_id = owner_id or user_id
         # 1. Get session context (if available)
         session_context: dict[str, Any] | None = None
         if session_id and self._session_store:
@@ -750,6 +759,7 @@ class MemoryService:
         results = self._remember_dedup_and_store(
             facts,
             user_id=user_id,
+            owner_id=owner_id,
             agent_id=agent_id,
             role=role,
             labels=labels,
@@ -903,6 +913,7 @@ class MemoryService:
         facts: list[dict[str, Any]],
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None,
         role: str | None,
         labels: dict[str, Any] | None = None,
@@ -922,6 +933,7 @@ class MemoryService:
 
         Returns list of result dicts from _execute_action.
         """
+        owner_id = owner_id or user_id
         # In auto mode, drop assistant facts when agent_id is not set
         # (the invariant requires agent_id for role="assistant" memories).
         if role is None and not agent_id:
@@ -967,20 +979,34 @@ class MemoryService:
             existing_raw = self.vector.search_similar(
                 vector,
                 user_id=user_id,
+                owner_id=owner_id,
+                subject_user_id=user_id,
                 agent_id=agent_id,
                 limit=5,
                 exclude_layers=["consolidated"],
             )
             # Dual-scope: also check shared memories when agent_id is set
             if agent_id:
-                shared_raw = self.vector.search_similar(
-                    vector,
-                    user_id=user_id,
-                    agent_id=None,
-                    shared_only=True,
-                    limit=5,
-                    exclude_layers=["consolidated"],
-                )
+                if owner_id != user_id:
+                    shared_raw = self.vector.search_similar(
+                        vector,
+                        user_id=user_id,
+                        owner_id=owner_id,
+                        subject_user_id=owner_id,
+                        agent_id=agent_id,
+                        limit=5,
+                        exclude_layers=["consolidated"],
+                    )
+                else:
+                    shared_raw = self.vector.search_similar(
+                        vector,
+                        user_id=user_id,
+                        owner_id=owner_id,
+                        agent_id=None,
+                        shared_only=True,
+                        limit=5,
+                        exclude_layers=["consolidated"],
+                    )
                 seen_ids: set[str] = set()
                 merged: list[dict[str, Any]] = []
                 for mem in sorted(
@@ -1060,6 +1086,7 @@ class MemoryService:
                 result_entry = self._execute_action(
                     action,
                     user_id=user_id,
+                    owner_id=owner_id,
                     agent_id=agent_id,
                     role=effective_role,
                     ttl_days=None,
@@ -1256,6 +1283,7 @@ class MemoryService:
         content: str,
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None,
         memory_type: str | None,
         categories: list[str] | None,
@@ -1291,6 +1319,7 @@ class MemoryService:
                 project). Injected into the extraction prompt to help the
                 LLM identify the project and produce self-contained facts.
         """
+        owner_id = owner_id or user_id
         # 1. Embed the raw content for similarity search
         content_vector = self.vector.embedding.embed(content)
 
@@ -1301,17 +1330,30 @@ class MemoryService:
         existing_raw = self.vector.search_similar(
             content_vector,
             user_id=user_id,
+            owner_id=owner_id,
+            subject_user_id=user_id,
             agent_id=agent_id,
             limit=10,
         )
         if agent_id:
-            shared_raw = self.vector.search_similar(
-                content_vector,
-                user_id=user_id,
-                agent_id=None,
-                shared_only=True,
-                limit=10,
-            )
+            if owner_id != user_id:
+                shared_raw = self.vector.search_similar(
+                    content_vector,
+                    user_id=user_id,
+                    owner_id=owner_id,
+                    subject_user_id=owner_id,
+                    agent_id=agent_id,
+                    limit=10,
+                )
+            else:
+                shared_raw = self.vector.search_similar(
+                    content_vector,
+                    user_id=user_id,
+                    owner_id=owner_id,
+                    agent_id=None,
+                    shared_only=True,
+                    limit=10,
+                )
             # Merge and deduplicate by memory ID, keep highest score
             seen_ids: set[str] = set()
             merged: list[dict[str, Any]] = []
@@ -1406,6 +1448,7 @@ class MemoryService:
                 result_entry = self._execute_action(
                     action,
                     user_id=user_id,
+                    owner_id=owner_id,
                     agent_id=agent_id,
                     role=role,
                     ttl_days=ttl_days,
@@ -1603,6 +1646,7 @@ class MemoryService:
         action: dict[str, Any],
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None,
         role: str,
         ttl_days: int | None,
@@ -1612,6 +1656,7 @@ class MemoryService:
         memory_layer: str = "consolidated",
     ) -> dict[str, Any] | None:
         """Execute a single memory action (ADD, UPDATE, or DELETE)."""
+        owner_id = owner_id or user_id
         # Guard: role must be resolved to a concrete value before execution.
         # The remember pipeline resolves per-fact roles before calling this.
         if role not in ("user", "assistant"):
@@ -1674,6 +1719,7 @@ class MemoryService:
                 text=text,
                 vector=vector,
                 user_id=user_id,
+                owner_id=owner_id,
                 agent_id=agent_id,
                 metadata=metadata,
                 role=role,
@@ -1700,6 +1746,7 @@ class MemoryService:
                 return self._execute_action(
                     action_copy,
                     user_id=user_id,
+                    owner_id=owner_id,
                     agent_id=agent_id,
                     role=role,
                     ttl_days=ttl_days,
@@ -1872,6 +1919,7 @@ class MemoryService:
         content: str,
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None,
         memory_type: str | None,
         categories: list[str] | None,
@@ -1888,6 +1936,7 @@ class MemoryService:
         classification LLM call if AUTO_CLASSIFY is enabled and metadata
         fields are missing.
         """
+        owner_id = owner_id or user_id
         # Validate input length (same cap as infer=True path)
         max_input = self._config.memory.max_input_length
         if len(content) > max_input:
@@ -2025,6 +2074,7 @@ class MemoryService:
             text=store_content,
             vector=vector,
             user_id=user_id,
+            owner_id=owner_id,
             agent_id=agent_id,
             metadata=metadata,
             role=role,
@@ -2113,6 +2163,8 @@ class MemoryService:
         query: str,
         *,
         user_id: str,
+        owner_id: str | None = None,
+        subject_user_id: str | None = None,
         agent_id: str | None = None,
         memory_type: str | None = None,
         categories: list[str] | None = None,
@@ -2145,6 +2197,7 @@ class MemoryService:
             date_end: Optional end date (YYYY-MM-DD) for temporal filtering.
         """
         user_id = _validate_id(user_id, "user_id")
+        owner_id = _validate_id(owner_id, "owner_id") if owner_id else None
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
 
@@ -2170,6 +2223,8 @@ class MemoryService:
         result = self.vector.search(
             query,
             user_id=user_id,
+            owner_id=owner_id,
+            subject_user_id=subject_user_id,
             agent_id=agent_id,
             filters=filters if filters else None,
             categories=expanded_categories,
@@ -2231,6 +2286,7 @@ class MemoryService:
         *,
         user_id: str,
         session_agent_id: str,
+        owner_id: str | None = None,
         memory_type: str | None = None,
         categories: list[str] | None = None,
         role: str | None = None,
@@ -2258,6 +2314,7 @@ class MemoryService:
         """
         user_id = _validate_id(user_id, "user_id")
         session_agent_id = _validate_id(session_agent_id, "agent_id")
+        owner_id = _validate_id(owner_id, "owner_id") if owner_id else user_id
 
         filters = {}
         if memory_type:
@@ -2299,23 +2356,44 @@ class MemoryService:
         if query_sparse_vector is not None:
             search_kwargs["query_sparse_vector"] = query_sparse_vector
 
-        # Search 1: agent-scoped memories
-        agent_result = self.vector.search(
-            query,
-            user_id=user_id,
-            agent_id=session_agent_id,
-            **search_kwargs,
-        )
-        # Search 2: shared memories only (no agent_id).
-        # shared_only=True ensures we only get memories without any agent_id,
-        # preventing sub-agent memories from leaking to the parent agent.
-        shared_result = self.vector.search(
-            query,
-            user_id=user_id,
-            agent_id=None,
-            shared_only=True,
-            **search_kwargs,
-        )
+        if owner_id != user_id:
+            agent_result = self.vector.search(
+                query,
+                user_id=user_id,
+                owner_id=owner_id,
+                subject_user_id=owner_id,
+                agent_id=session_agent_id,
+                **search_kwargs,
+            )
+            shared_result = self.vector.search(
+                query,
+                user_id=user_id,
+                owner_id=owner_id,
+                subject_user_id=user_id,
+                agent_id=session_agent_id,
+                **search_kwargs,
+            )
+        else:
+            # Search 1: agent-scoped memories
+            agent_result = self.vector.search(
+                query,
+                user_id=user_id,
+                owner_id=owner_id,
+                subject_user_id=user_id,
+                agent_id=session_agent_id,
+                **search_kwargs,
+            )
+            # Search 2: shared memories only (no agent_id).
+            # shared_only=True ensures we only get memories without any agent_id,
+            # preventing sub-agent memories from leaking to the parent agent.
+            shared_result = self.vector.search(
+                query,
+                user_id=user_id,
+                owner_id=owner_id,
+                agent_id=None,
+                shared_only=True,
+                **search_kwargs,
+            )
 
         # Merge and deduplicate by memory ID
         seen_ids: set[str] = set()
@@ -2387,6 +2465,7 @@ class MemoryService:
         query_sparse_vector: Any,
         *,
         user_id: str,
+        owner_id: str | None,
         session_agent_id: str | None,
         agent_id: str | None,
         memory_type: str | None,
@@ -2408,6 +2487,7 @@ class MemoryService:
             return self.search_memories_dual_scope(
                 query,
                 user_id=user_id,
+                owner_id=owner_id,
                 session_agent_id=session_agent_id,
                 memory_type=memory_type,
                 categories=categories,
@@ -2424,6 +2504,7 @@ class MemoryService:
         return self.search_memories(
             query,
             user_id=user_id,
+            owner_id=owner_id,
             agent_id=agent_id,
             memory_type=memory_type,
             categories=categories,
@@ -2443,6 +2524,7 @@ class MemoryService:
         question: str,
         *,
         user_id: str,
+        owner_id: str | None = None,
         session_agent_id: str | None = None,
         agent_id: str | None = None,
         memory_type: str | None = None,
@@ -2487,6 +2569,7 @@ class MemoryService:
             ValueError: If LLM calls fail (query generation or reranking).
         """
         user_id = _validate_id(user_id, "user_id")
+        owner_id = _validate_id(owner_id, "owner_id") if owner_id else user_id
         num_queries = self._config.memory.find_memories_queries
         threshold = self._config.memory.search_score_threshold
 
@@ -2601,6 +2684,7 @@ class MemoryService:
                     qvec,
                     svec,
                     user_id=user_id,
+                    owner_id=owner_id,
                     session_agent_id=session_agent_id,
                     agent_id=agent_id,
                     memory_type=memory_type,
@@ -2763,6 +2847,7 @@ class MemoryService:
         question: str,
         *,
         user_id: str,
+        owner_id: str | None = None,
         session_agent_id: str | None = None,
         agent_id: str | None = None,
         memory_type: str | None = None,
@@ -2809,6 +2894,7 @@ class MemoryService:
         find_result = self.find_memories(
             question,
             user_id=user_id,
+            owner_id=owner_id,
             session_agent_id=session_agent_id,
             agent_id=agent_id,
             memory_type=memory_type,
@@ -2936,6 +3022,7 @@ class MemoryService:
         self,
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None = None,
         recent_days: int | None = None,
     ) -> CoreMemoriesResult:
@@ -2959,6 +3046,7 @@ class MemoryService:
         MAX_CORE_CONTEXT_LENGTH. No hard character truncation is applied.
         """
         user_id = _validate_id(user_id, "user_id")
+        owner_id = _validate_id(owner_id, "owner_id") if owner_id else user_id
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
 
@@ -2967,10 +3055,19 @@ class MemoryService:
         recent_days = int(recent_days)
 
         # Check cache
-        cache_key = (user_id, agent_id or "", recent_days)
+        cache_key = (user_id, owner_id, agent_id or "", recent_days)
         cached = self._core_cache.get(cache_key)
         if cached is not None:
             return cached
+
+        if agent_id and owner_id != user_id:
+            return self._get_shared_agent_core_memories(
+                user_id=user_id,
+                owner_id=owner_id,
+                agent_id=agent_id,
+                recent_days=recent_days,
+                cache_key=cache_key,
+            )
 
         max_len = self._config.memory.max_core_context_length
         top_n = self._config.memory.core_top_memories
@@ -3343,6 +3440,205 @@ class MemoryService:
         self._core_cache.set(cache_key, result)
         return result
 
+    def _get_shared_agent_core_memories(
+        self,
+        *,
+        user_id: str,
+        owner_id: str,
+        agent_id: str,
+        recent_days: int,
+        cache_key: tuple[str, str, str, int],
+    ) -> CoreMemoriesResult:
+        """Assemble core memories for a shared agent without leaking personal memory."""
+
+        max_len = self._config.memory.max_core_context_length
+        top_n = self._config.memory.core_top_memories
+        min_importance = self._config.memory.core_min_importance
+        max_per_section = self._config.memory.core_max_per_section
+
+        memory_by_id: dict[str, dict] = {}
+        included_ids: set[str] = set()
+        sections: list[str] = []
+
+        owner_pinned = self.vector.get_pinned_memories(
+            user_id=user_id,
+            owner_id=owner_id,
+            subject_user_id=owner_id,
+            agent_id=agent_id,
+            exclude_layers=_CORE_EXCLUDE_LAYERS,
+        )
+        for memory in owner_pinned:
+            if memory.get("id"):
+                memory_by_id[memory["id"]] = memory
+
+        owner_sections: dict[str, list[tuple[str, str | None]]] = {
+            "identity": [],
+            "knowledge": [],
+            "instructions": [],
+        }
+        for memory in self._sort_memories_by_importance(owner_pinned):
+            key, line = self._classify_agent_memory(memory)
+            owner_sections[key].append((line, memory.get("id")))
+
+        if top_n > 0:
+            imp_levels = importance_levels_at_or_above(min_importance)
+            owner_non_pinned_raw = self.vector.get_all(
+                user_id=user_id,
+                owner_id=owner_id,
+                subject_user_id=owner_id,
+                agent_id=agent_id,
+                filters={"pinned": False, "importance": imp_levels},
+                exclude_layers=_CORE_EXCLUDE_LAYERS,
+                limit=top_n * 3,
+            )
+            seen_pinned = {
+                memory.get("id") for memory in owner_pinned if memory.get("id")
+            }
+            owner_non_pinned = [
+                memory
+                for memory in owner_non_pinned_raw.get("results", [])
+                if memory.get("id") not in seen_pinned and not should_exclude(memory)
+            ]
+            owner_non_pinned = self._sort_memories_by_importance(owner_non_pinned)[
+                :top_n
+            ]
+            for memory in owner_non_pinned:
+                if memory.get("id"):
+                    memory_by_id[memory["id"]] = memory
+                key, line = self._classify_agent_memory(memory)
+                owner_sections[key].append((line, memory.get("id")))
+
+        if max_per_section > 0:
+            for key in owner_sections:
+                owner_sections[key] = owner_sections[key][:max_per_section]
+
+        for entries in owner_sections.values():
+            for _, mid in entries:
+                if mid:
+                    included_ids.add(mid)
+
+        if owner_sections["identity"]:
+            sections.append(
+                "## Agent Identity\n"
+                + "\n".join(line for line, _ in owner_sections["identity"])
+            )
+        if owner_sections["knowledge"]:
+            sections.append(
+                "## Agent Knowledge\n"
+                + "\n".join(line for line, _ in owner_sections["knowledge"])
+            )
+        if owner_sections["instructions"]:
+            sections.append(
+                "## Agent Instructions\n"
+                + "\n".join(line for line, _ in owner_sections["instructions"])
+            )
+
+        since = datetime.now(timezone.utc) - timedelta(days=recent_days)
+        recent_imp_levels = importance_levels_at_or_above(
+            self._config.memory.core_recent_min_importance
+        )
+        user_recent = self.vector.get_recent_memories(
+            user_id=user_id,
+            owner_id=owner_id,
+            subject_user_id=user_id,
+            agent_id=agent_id,
+            since=since,
+            limit=self._config.memory.recent_limit_user,
+            memory_types=self.RECENT_MEMORY_TYPES,
+            importance_levels=recent_imp_levels,
+            exclude_layers=_CORE_EXCLUDE_LAYERS,
+        )
+        recent_user_pairs: list[tuple[str, str | None]] = []
+        for memory in user_recent:
+            if should_exclude(memory) or memory.get("id") in included_ids:
+                continue
+            if memory.get("id"):
+                memory_by_id[memory["id"]] = memory
+            recent_user_pairs.append(
+                (self._format_recent_memory_line(memory), memory.get("id"))
+            )
+
+        recent_user_lines = [line for line, _ in recent_user_pairs]
+        recent_section = self._build_recent_section(recent_user_lines, [])
+        main_text = "\n\n".join(sections) if sections else ""
+        output = "\n\n".join(
+            part for part in [CORE_MEMORIES_PREAMBLE, main_text, recent_section] if part
+        )
+        if len(output) > max_len and recent_user_lines:
+            while len(output) > max_len and recent_user_lines:
+                recent_user_lines.pop()
+                recent_user_pairs.pop()
+                recent_section = self._build_recent_section(recent_user_lines, [])
+                output = "\n\n".join(
+                    part
+                    for part in [CORE_MEMORIES_PREAMBLE, main_text, recent_section]
+                    if part
+                )
+
+        for _, mid in recent_user_pairs:
+            if mid:
+                included_ids.add(mid)
+
+        stats_sections = {
+            "agent_identity": [mid for _, mid in owner_sections["identity"] if mid],
+            "agent_knowledge": [mid for _, mid in owner_sections["knowledge"] if mid],
+            "agent_instructions": [
+                mid for _, mid in owner_sections["instructions"] if mid
+            ],
+            "user_facts": [],
+            "user_preferences": [],
+            "other_user_memories": [],
+            "recent_user_activity": [mid for _, mid in recent_user_pairs if mid],
+            "recent_agent_activity": [],
+        }
+        ordered_memory_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for section_key in _CORE_SECTION_ORDER:
+            for memory_id in stats_sections.get(section_key, []):
+                if memory_id not in seen_ids:
+                    seen_ids.add(memory_id)
+                    ordered_memory_ids.append(memory_id)
+
+        by_type: dict[str, int] = {}
+        by_role: dict[str, int] = {}
+        for memory_id in ordered_memory_ids:
+            memory = memory_by_id.get(memory_id, {})
+            metadata = memory.get("metadata", {})
+            memory_type = metadata.get("memory_type") or "context"
+            role = metadata.get("role") or "user"
+            by_type[memory_type] = by_type.get(memory_type, 0) + 1
+            by_role[role] = by_role.get(role, 0) + 1
+
+        visible_sections = {key: ids for key, ids in stats_sections.items() if ids}
+        by_section = {
+            key: len(visible_sections.get(key, []))
+            for key in _CORE_SECTION_ORDER
+            if key in visible_sections
+        }
+        section_labels = {
+            key: _CORE_SECTION_LABELS[key]
+            for key in _CORE_SECTION_ORDER
+            if key in visible_sections
+        }
+        stats = CoreMemoriesStats(
+            memory_count=len(ordered_memory_ids),
+            char_count=len(output),
+            estimated_tokens=max(1, (len(output) + 3) // 4),
+            by_type=by_type,
+            by_role=by_role,
+            by_section=by_section,
+            section_labels=section_labels,
+            sections=visible_sections,
+            memory_ids=ordered_memory_ids,
+        )
+        result = CoreMemoriesResult(
+            text=output or "No core memories found.",
+            memory_ids=included_ids,
+            stats=stats,
+        )
+        self._core_cache.set(cache_key, result)
+        return result
+
     @staticmethod
     def _build_recent_section(user_lines: list[str], agent_lines: list[str]) -> str:
         """Build the recent context section from pre-formatted lines.
@@ -3366,6 +3662,7 @@ class MemoryService:
         self,
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None = None,
         days: int | None = None,
         scope: str = "all",
@@ -3391,6 +3688,7 @@ class MemoryService:
         Returns formatted text with recent memories.
         """
         user_id = _validate_id(user_id, "user_id")
+        owner_id = _validate_id(owner_id, "owner_id") if owner_id else user_id
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
 
@@ -3436,30 +3734,37 @@ class MemoryService:
                 limit_agent = limit
 
         since = datetime.now(timezone.utc) - timedelta(days=days)
+        owner_scope = owner_id if owner_id != user_id else None
 
         user_recent = []
         agent_recent = []
 
         # Fetch user recent memories
         if limit_user > 0 and scope in ("all", "user"):
-            user_recent = self.vector.get_recent_memories(
-                user_id=user_id,
-                agent_id=None,
-                since=since,
-                limit=limit_user,
-            )
+            kwargs = {
+                "user_id": user_id,
+                "agent_id": None,
+                "since": since,
+                "limit": limit_user,
+            }
+            if owner_scope is not None:
+                kwargs["owner_id"] = owner_scope
+            user_recent = self.vector.get_recent_memories(**kwargs)
             user_recent = [
                 m for m in user_recent if not should_exclude(m, include_decayed)
             ]
 
         # Fetch agent recent memories
         if limit_agent > 0 and scope in ("all", "agent") and agent_id:
-            agent_recent = self.vector.get_recent_memories(
-                user_id=user_id,
-                agent_id=agent_id,
-                since=since,
-                limit=limit_agent,
-            )
+            kwargs = {
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "since": since,
+                "limit": limit_agent,
+            }
+            if owner_scope is not None:
+                kwargs["owner_id"] = owner_scope
+            agent_recent = self.vector.get_recent_memories(**kwargs)
             agent_recent = [
                 m for m in agent_recent if not should_exclude(m, include_decayed)
             ]
@@ -3486,6 +3791,7 @@ class MemoryService:
         self,
         *,
         user_id: str,
+        owner_id: str | None = None,
         agent_id: str | None = None,
         memory_type: str | None = None,
         categories: list[str] | None = None,
@@ -3507,6 +3813,7 @@ class MemoryService:
                 (arbitrary Qdrant scroll order).
         """
         user_id = _validate_id(user_id, "user_id")
+        owner_id = _validate_id(owner_id, "owner_id") if owner_id else None
         if agent_id:
             agent_id = _validate_id(agent_id, "agent_id")
 
@@ -3523,6 +3830,7 @@ class MemoryService:
 
         result = self.vector.get_all(
             user_id=user_id,
+            owner_id=owner_id,
             agent_id=agent_id,
             filters=filters if filters else None,
             limit=limit * 2,  # Fetch extra for post-filtering
@@ -3551,6 +3859,7 @@ class MemoryService:
         *,
         user_id: str,
         session_agent_id: str,
+        owner_id: str | None = None,
         memory_type: str | None = None,
         categories: list[str] | None = None,
         role: str | None = None,
@@ -3570,6 +3879,7 @@ class MemoryService:
         """
         user_id = _validate_id(user_id, "user_id")
         session_agent_id = _validate_id(session_agent_id, "agent_id")
+        owner_id = _validate_id(owner_id, "owner_id") if owner_id else user_id
 
         filters = {}
         if memory_type:
@@ -3583,27 +3893,48 @@ class MemoryService:
         fetch_limit = limit * 2
         order_by = _sort_to_order_by(sort)
 
-        # Fetch 1: agent-scoped memories
-        agent_result = self.vector.get_all(
-            user_id=user_id,
-            agent_id=session_agent_id,
-            filters=filters if filters else None,
-            limit=fetch_limit,
-            order_by=order_by,
-            labels_filter=labels,
-        )
-        # Fetch 2: shared memories only (no agent_id).
-        # shared_only=True ensures we only get memories without any agent_id,
-        # preventing sub-agent memories from leaking to the parent agent.
-        shared_result = self.vector.get_all(
-            user_id=user_id,
-            agent_id=None,
-            shared_only=True,
-            filters=filters if filters else None,
-            limit=fetch_limit,
-            order_by=order_by,
-            labels_filter=labels,
-        )
+        if owner_id != user_id:
+            agent_result = self.vector.get_all(
+                user_id=user_id,
+                owner_id=owner_id,
+                subject_user_id=owner_id,
+                agent_id=session_agent_id,
+                filters=filters if filters else None,
+                limit=fetch_limit,
+                order_by=order_by,
+                labels_filter=labels,
+            )
+            shared_result = self.vector.get_all(
+                user_id=user_id,
+                owner_id=owner_id,
+                subject_user_id=user_id,
+                agent_id=session_agent_id,
+                filters=filters if filters else None,
+                limit=fetch_limit,
+                order_by=order_by,
+                labels_filter=labels,
+            )
+        else:
+            agent_result = self.vector.get_all(
+                user_id=user_id,
+                owner_id=owner_id,
+                subject_user_id=user_id,
+                agent_id=session_agent_id,
+                filters=filters if filters else None,
+                limit=fetch_limit,
+                order_by=order_by,
+                labels_filter=labels,
+            )
+            shared_result = self.vector.get_all(
+                user_id=user_id,
+                owner_id=owner_id,
+                agent_id=None,
+                shared_only=True,
+                filters=filters if filters else None,
+                limit=fetch_limit,
+                order_by=order_by,
+                labels_filter=labels,
+            )
 
         # Merge and deduplicate by memory ID
         seen_ids: set[str] = set()

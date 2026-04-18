@@ -4220,6 +4220,51 @@ class TestFindMemories:
         # Should have called vector.search twice (dual-scope for one query)
         assert service.vector.search.call_count == 2
 
+    def test_shared_agent_scope_separates_owner_and_user(self):
+        """Shared-agent dual scope should search owner identity and user episodic separately."""
+
+        service = _make_service()
+        service.vector.search.side_effect = [
+            {
+                "results": [
+                    {
+                        "id": "owner",
+                        "score": 0.9,
+                        "memory": "Owner identity",
+                        "metadata": {},
+                    }
+                ]
+            },
+            {
+                "results": [
+                    {
+                        "id": "user",
+                        "score": 0.8,
+                        "memory": "User episodic",
+                        "metadata": {},
+                    }
+                ]
+            },
+        ]
+
+        results = service.search_memories_dual_scope(
+            "test query",
+            user_id="grantee",
+            owner_id="owner",
+            session_agent_id="shared-agent",
+            limit=5,
+        )
+
+        assert [memory["id"] for memory in results] == ["owner", "user"]
+        owner_call = service.vector.search.call_args_list[0].kwargs
+        user_call = service.vector.search.call_args_list[1].kwargs
+        assert owner_call["owner_id"] == "owner"
+        assert owner_call["subject_user_id"] == "owner"
+        assert owner_call["agent_id"] == "shared-agent"
+        assert user_call["owner_id"] == "owner"
+        assert user_call["subject_user_id"] == "grantee"
+        assert user_call["agent_id"] == "shared-agent"
+
 
 # ── find_memories prompts ─────────────────────────────────────────────
 

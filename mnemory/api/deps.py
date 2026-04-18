@@ -19,6 +19,7 @@ class SessionContext:
 
     user_id: str
     agent_id: str | None = None
+    owner_id: str | None = None
     timezone: str | None = None
 
 
@@ -40,7 +41,12 @@ def get_session_context() -> SessionContext:
     Raises:
         HTTPException(401): If user_id cannot be resolved.
     """
-    from mnemory.server import _session_agent_id, _session_timezone, _session_user_id
+    from mnemory.server import (
+        _session_agent_id,
+        _session_owner_id,
+        _session_timezone,
+        _session_user_id,
+    )
 
     user_id = _session_user_id.get()
     if not user_id:
@@ -53,5 +59,6 @@ def get_session_context() -> SessionContext:
     return SessionContext(
         user_id=user_id,
         agent_id=_session_agent_id.get(),
+        owner_id=_session_owner_id.get() or user_id,
         timezone=_session_timezone.get(),
     )

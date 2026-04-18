@@ -81,6 +81,7 @@ def add_memory(
         result = service.add_memory(
             content=req.content,
             user_id=ctx.user_id,
+            owner_id=ctx.owner_id,
             agent_id=ctx.agent_id,
             memory_type=req.memory_type,
             categories=req.categories,
@@ -128,6 +129,7 @@ def add_memories_batch(
             result = service.add_memory(
                 content=item.content,
                 user_id=ctx.user_id,
+                owner_id=ctx.owner_id,
                 agent_id=ctx.agent_id,
                 memory_type=item.memory_type,
                 categories=item.categories,
@@ -197,6 +199,7 @@ def search_memories(
             results = service.search_memories_dual_scope(
                 query=req.query,
                 user_id=ctx.user_id,
+                owner_id=ctx.owner_id,
                 session_agent_id=ctx.agent_id,
                 memory_type=req.memory_type,
                 categories=req.categories,
@@ -211,6 +214,7 @@ def search_memories(
             results = service.search_memories(
                 query=req.query,
                 user_id=ctx.user_id,
+                owner_id=ctx.owner_id,
                 agent_id=None,
                 memory_type=req.memory_type,
                 categories=req.categories,
@@ -240,6 +244,7 @@ def find_memories(
         result = service.find_memories(
             question=req.question,
             user_id=ctx.user_id,
+            owner_id=ctx.owner_id,
             session_agent_id=ctx.agent_id,
             agent_id=ctx.agent_id,
             memory_type=req.memory_type,
@@ -269,6 +274,7 @@ def ask_memories(
         result = service.answer_question(
             question=req.question,
             user_id=ctx.user_id,
+            owner_id=ctx.owner_id,
             session_agent_id=ctx.agent_id,
             agent_id=ctx.agent_id,
             memory_type=req.memory_type,
@@ -313,6 +319,7 @@ def get_core_memories(
     service = _get_service()
     core_result = service.get_core_memories(
         user_id=ctx.user_id,
+        owner_id=ctx.owner_id,
         agent_id=ctx.agent_id,
         recent_days=recent_days,
     )
@@ -338,6 +345,7 @@ def get_recent_memories(
     try:
         result = service.get_recent_memories(
             user_id=ctx.user_id,
+            owner_id=ctx.owner_id,
             agent_id=ctx.agent_id,
             days=days,
             scope=scope,
@@ -393,6 +401,7 @@ def list_memories(
         if ctx.agent_id:
             results = service.list_memories_dual_scope(
                 user_id=ctx.user_id,
+                owner_id=ctx.owner_id,
                 session_agent_id=ctx.agent_id,
                 memory_type=memory_type,
                 categories=cat_list,
@@ -405,6 +414,7 @@ def list_memories(
         else:
             results = service.list_memories(
                 user_id=ctx.user_id,
+                owner_id=ctx.owner_id,
                 agent_id=None,
                 memory_type=memory_type,
                 categories=cat_list,

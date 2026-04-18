@@ -110,6 +110,7 @@ def _format_messages(messages: list[MessageParam]) -> str:
 def _process_remember(
     content: str,
     user_id: str,
+    owner_id: str | None,
     agent_id: str | None,
     role: str,
     session_id: str | None,
@@ -126,6 +127,7 @@ def _process_remember(
         result = service.remember(
             content=content,
             user_id=user_id,
+            owner_id=owner_id,
             agent_id=agent_id,
             role=role,
             session_id=session_id,
@@ -209,6 +211,7 @@ def remember(
         _process_remember,
         content=content,
         user_id=ctx.user_id,
+        owner_id=ctx.owner_id,
         agent_id=ctx.agent_id,
         role=req.role,
         session_id=req.session_id,
