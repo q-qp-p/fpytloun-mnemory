@@ -10,6 +10,7 @@ from mnemory.migration import (
     _TEMP_COLLECTION,
     META_COLLECTION,
     AddSparseVectorsMigration,
+    BackfillOwnerIdMigration,
     Migration,
     MigrationRunner,
     get_migrations,
@@ -1050,3 +1051,45 @@ class TestGetMigrations:
         sparse = MagicMock()
         result = get_migrations("memories", sparse)
         assert result[0]._sparse is sparse
+
+    def test_includes_owner_id_backfill_migration(self):
+        """Registry should include the owner_id backfill migration."""
+        sparse = MagicMock()
+        result = get_migrations("memories", sparse)
+        assert any(
+            isinstance(migration, BackfillOwnerIdMigration) for migration in result
+        )
+
+
+class TestBackfillOwnerIdMigration:
+    """Tests for legacy owner_id backfill."""
+
+    def test_backfills_owner_id_from_user_id(self):
+        client = _mock_client(existing_collections=[META_COLLECTION])
+        point_a = MagicMock()
+        point_a.id = "mem-a"
+        point_a.payload = {"user_id": "alice@example.com"}
+        point_b = MagicMock()
+        point_b.id = "mem-b"
+        point_b.payload = {"user_id": "bob@example.com"}
+        client.scroll.side_effect = [([point_a, point_b], None)]
+
+        migration = BackfillOwnerIdMigration("memories")
+        state_callback = MagicMock()
+        state: dict[str, object] = {}
+
+        migration.run(
+            client,
+            progress=None,
+            state_callback=state_callback,
+            state=state,
+        )
+
+        assert client.set_payload.call_count == 2
+        first = client.set_payload.call_args_list[0].kwargs
+        second = client.set_payload.call_args_list[1].kwargs
+        assert first["payload"] == {"owner_id": "alice@example.com"}
+        assert first["points"] == ["mem-a"]
+        assert second["payload"] == {"owner_id": "bob@example.com"}
+        assert second["points"] == ["mem-b"]
+        assert state_callback.called

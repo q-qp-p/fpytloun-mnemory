@@ -939,6 +939,82 @@ class AddMemoryLayerIndexMigration(Migration):
             )
 
 
+# ── Migration 004: Backfill owner_id for legacy memories ───────────────────
+
+
+class BackfillOwnerIdMigration(Migration):
+    """Backfill `owner_id = user_id` for legacy memories missing owner_id."""
+
+    id = "004_backfill_owner_id"
+    description = (
+        "Backfill owner_id on memories created before shared-agent owner scope"
+    )
+
+    def __init__(self, collection_name: str):
+        self._collection_name = collection_name
+
+    def run(
+        self,
+        client: QdrantClient,
+        *,
+        progress: dict[str, Any] | None,
+        state_callback: Callable[[dict[str, Any]], None],
+        state: dict[str, Any],
+    ) -> None:
+        from qdrant_client.models import Filter, IsEmptyCondition, PayloadField
+
+        batch_size = 256
+        offset = (progress or {}).get("offset")
+        processed = int((progress or {}).get("processed", 0) or 0)
+        updated = int((progress or {}).get("updated", 0) or 0)
+        start_time = time.monotonic()
+
+        while True:
+            points, next_offset = client.scroll(
+                collection_name=self._collection_name,
+                scroll_filter=Filter(
+                    must=[IsEmptyCondition(is_empty=PayloadField(key="owner_id"))]
+                ),
+                limit=batch_size,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            if not points:
+                break
+
+            for point in points:
+                payload = dict(point.payload or {})
+                user_id = payload.get("user_id")
+                if not isinstance(user_id, str) or not user_id.strip():
+                    continue
+                client.set_payload(
+                    collection_name=self._collection_name,
+                    payload={"owner_id": user_id},
+                    points=[point.id],
+                )
+                updated += 1
+
+            processed += len(points)
+            elapsed = time.monotonic() - start_time
+            logger.info(
+                "Migration %s: processed=%d updated=%d elapsed=%.1fs",
+                self.id,
+                processed,
+                updated,
+                elapsed,
+            )
+            state[f"{self.id}_progress"] = {
+                "offset": str(next_offset) if next_offset else None,
+                "processed": processed,
+                "updated": updated,
+            }
+            state_callback(state)
+            if next_offset is None:
+                break
+            offset = next_offset
+
+
 # ── Migration registry ───────────────────────────────────────────────
 
 
@@ -955,4 +1031,5 @@ def get_migrations(
         AddSparseVectorsMigration(collection_name, sparse_client),
         CreateSessionsCollectionMigration(),
         AddMemoryLayerIndexMigration(collection_name),
+        BackfillOwnerIdMigration(collection_name),
     ]

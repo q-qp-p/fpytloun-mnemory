@@ -3581,6 +3581,40 @@ class TestVectorGetAllExcludeLayers:
             for condition in scroll_filter.must_not
         )
 
+    def test_get_all_owner_filter_includes_legacy_missing_owner_id(self):
+        """owner-aware queries should still match legacy records with no owner_id."""
+        from mnemory.storage.vector import VectorStore
+
+        store = object.__new__(VectorStore)
+        store._config = MagicMock()
+        store._config.vector.collection_name = "mnemory"
+        store._config.vector.is_remote = False
+        store._client = MagicMock()
+        store._write_lock = None
+        store._client.scroll.return_value = ([], None)
+
+        store.get_all(
+            user_id="grantee@example.com",
+            owner_id="owner@example.com",
+            agent_id="agent-1",
+        )
+
+        scroll_filter = store._client.scroll.call_args.kwargs["scroll_filter"]
+        owner_scope = scroll_filter.must[0]
+        assert owner_scope.should is not None
+        assert getattr(owner_scope.should[0], "key", None) == "owner_id"
+        assert (
+            getattr(getattr(owner_scope.should[0], "match", None), "value", None)
+            == "owner@example.com"
+        )
+        legacy_branch = owner_scope.should[1]
+        assert legacy_branch.must is not None
+        assert getattr(legacy_branch.must[1], "key", None) == "user_id"
+        assert (
+            getattr(getattr(legacy_branch.must[1], "match", None), "value", None)
+            == "owner@example.com"
+        )
+
 
 # ── Vector store search TTL filter (Qdrant integration) ──────────────
 

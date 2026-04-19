@@ -21,6 +21,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    IsEmptyCondition,
     MatchAny,
     MatchValue,
     OrderBy,
@@ -63,6 +64,31 @@ def _build_labels_conditions(labels_filter: dict) -> list[FieldCondition]:
                 FieldCondition(key=f"labels.{key}", match=MatchValue(value=value))
             )
     return conditions
+
+
+def _build_owner_scope_condition(
+    user_id: str, owner_id: str | None
+) -> FieldCondition | Filter:
+    """Build a filter condition for owner-aware backward-compatible queries.
+
+    When `owner_id` is set, legacy memories that predate the owner dimension
+    may still have no `owner_id` payload. Those records should still be visible
+    when their `user_id` matches the requested owner.
+    """
+
+    if not owner_id:
+        return FieldCondition(key="user_id", match=MatchValue(value=user_id))
+    return Filter(
+        should=[
+            FieldCondition(key="owner_id", match=MatchValue(value=owner_id)),
+            Filter(
+                must=[
+                    IsEmptyCondition(is_empty=PayloadField(key="owner_id")),
+                    FieldCondition(key="user_id", match=MatchValue(value=owner_id)),
+                ]
+            ),
+        ]
+    )
 
 
 @contextmanager
@@ -426,13 +452,7 @@ class VectorStore:
             are ~0.01-0.03). In dense-only mode, scores are cosine
             similarity weighted by importance (range 0-1).
         """
-        from qdrant_client.models import (
-            DatetimeRange,
-            Fusion,
-            FusionQuery,
-            IsEmptyCondition,
-            Prefetch,
-        )
+        from qdrant_client.models import DatetimeRange, Fusion, FusionQuery, Prefetch
 
         from mnemory.categories import IMPORTANCE_WEIGHTS
 
@@ -442,12 +462,7 @@ class VectorStore:
         )
 
         # 2. Build filter conditions
-        must_conditions: list = [
-            FieldCondition(
-                key="owner_id" if owner_id else "user_id",
-                match=MatchValue(value=owner_id or user_id),
-            ),
-        ]
+        must_conditions: list = [_build_owner_scope_condition(user_id, owner_id)]
         if subject_user_id:
             must_conditions.append(
                 FieldCondition(key="user_id", match=MatchValue(value=subject_user_id))
@@ -646,17 +661,9 @@ class VectorStore:
 
         Returns simple dicts with "id" and "text" keys.
         """
-        from qdrant_client.models import (
-            DatetimeRange,
-            IsEmptyCondition,
-        )
+        from qdrant_client.models import DatetimeRange
 
-        must_conditions: list = [
-            FieldCondition(
-                key="owner_id" if owner_id else "user_id",
-                match=MatchValue(value=owner_id or user_id),
-            ),
-        ]
+        must_conditions: list = [_build_owner_scope_condition(user_id, owner_id)]
         if subject_user_id:
             must_conditions.append(
                 FieldCondition(key="user_id", match=MatchValue(value=subject_user_id))
@@ -796,14 +803,7 @@ class VectorStore:
 
         Returns dict with "results" key containing list of memory dicts.
         """
-        from qdrant_client.models import IsEmptyCondition
-
-        must_conditions: list = [
-            FieldCondition(
-                key="owner_id" if owner_id else "user_id",
-                match=MatchValue(value=owner_id or user_id),
-            ),
-        ]
+        must_conditions: list = [_build_owner_scope_condition(user_id, owner_id)]
         if subject_user_id:
             must_conditions.append(
                 FieldCondition(key="user_id", match=MatchValue(value=subject_user_id))
@@ -1295,17 +1295,10 @@ class VectorStore:
 
         Returns memories ordered by created_at descending (most recent first).
         """
-        from qdrant_client.models import (
-            DatetimeRange,
-            IsEmptyCondition,
-            MatchAny,
-        )
+        from qdrant_client.models import DatetimeRange, MatchAny
 
         must_conditions: list = [
-            FieldCondition(
-                key="owner_id" if owner_id else "user_id",
-                match=MatchValue(value=owner_id or user_id),
-            ),
+            _build_owner_scope_condition(user_id, owner_id),
             FieldCondition(
                 key="created_at",
                 range=DatetimeRange(gte=since),
