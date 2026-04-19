@@ -3616,6 +3616,169 @@ class TestVectorGetAllExcludeLayers:
         )
 
 
+class TestVectorOwnerScopeFallback:
+    """Tests for owner-scope fallback on legacy records without owner_id."""
+
+    @staticmethod
+    def _make_store():
+        from mnemory.storage.vector import VectorStore
+
+        store = object.__new__(VectorStore)
+        store._config = MagicMock()
+        store._config.vector.collection_name = "mnemory"
+        store._config.vector.is_remote = False
+        store._client = MagicMock()
+        store._write_lock = None
+        store._embedding = MagicMock()
+        store._embedding.embed.return_value = [0.1, 0.2, 0.3, 0.4]
+        store._client.query_points.return_value = MagicMock(points=[])
+        store._client.scroll.return_value = ([], None)
+        return store
+
+    @staticmethod
+    def _assert_owner_fallback(scope_condition, owner_email: str):
+        assert scope_condition.should is not None
+        assert getattr(scope_condition.should[0], "key", None) == "owner_id"
+        assert (
+            getattr(getattr(scope_condition.should[0], "match", None), "value", None)
+            == owner_email
+        )
+        legacy_branch = scope_condition.should[1]
+        assert legacy_branch.must is not None
+        assert getattr(
+            getattr(legacy_branch.must[0], "is_empty", None), "key", None
+        ) == ("owner_id")
+        assert getattr(legacy_branch.must[1], "key", None) == "user_id"
+        assert (
+            getattr(getattr(legacy_branch.must[1], "match", None), "value", None)
+            == owner_email
+        )
+
+    def test_search_owner_filter_includes_legacy_missing_owner_id(self):
+        store = self._make_store()
+
+        store.search(
+            "owner query",
+            user_id="grantee@example.com",
+            owner_id="owner@example.com",
+            subject_user_id="owner@example.com",
+            agent_id="agent-1",
+        )
+
+        query_filter = store._client.query_points.call_args.kwargs["prefetch"].filter
+        self._assert_owner_fallback(query_filter.must[0], "owner@example.com")
+        assert getattr(query_filter.must[1], "key", None) == "user_id"
+        assert getattr(getattr(query_filter.must[1], "match", None), "value", None) == (
+            "owner@example.com"
+        )
+
+    def test_search_similar_owner_filter_includes_legacy_missing_owner_id(self):
+        store = self._make_store()
+
+        store.search_similar(
+            [0.1, 0.2, 0.3, 0.4],
+            user_id="grantee@example.com",
+            owner_id="owner@example.com",
+            subject_user_id="owner@example.com",
+            agent_id="agent-1",
+        )
+
+        query_filter = store._client.query_points.call_args.kwargs["query_filter"]
+        self._assert_owner_fallback(query_filter.must[0], "owner@example.com")
+        assert getattr(query_filter.must[1], "key", None) == "user_id"
+        assert getattr(getattr(query_filter.must[1], "match", None), "value", None) == (
+            "owner@example.com"
+        )
+
+    def test_get_recent_owner_filter_includes_legacy_missing_owner_id(self):
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+
+        store.get_recent_memories(
+            user_id="grantee@example.com",
+            owner_id="owner@example.com",
+            subject_user_id="owner@example.com",
+            agent_id="agent-1",
+            since=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+
+        scroll_filter = store._client.scroll.call_args.kwargs["scroll_filter"]
+        self._assert_owner_fallback(scroll_filter.must[0], "owner@example.com")
+        assert getattr(scroll_filter.must[2], "key", None) == "user_id"
+        assert getattr(
+            getattr(scroll_filter.must[2], "match", None), "value", None
+        ) == ("owner@example.com")
+
+    def test_owner_fallback_does_not_run_without_owner_scope(self):
+        store = self._make_store()
+
+        store.get_all(user_id="filip")
+
+        scroll_filter = store._client.scroll.call_args.kwargs["scroll_filter"]
+        assert getattr(scroll_filter.must[0], "key", None) == "user_id"
+        assert (
+            getattr(getattr(scroll_filter.must[0], "match", None), "value", None)
+            == "filip"
+        )
+
+    def test_search_without_owner_scope_uses_plain_user_filter(self):
+        store = self._make_store()
+
+        store.search("plain query", user_id="filip")
+
+        query_filter = store._client.query_points.call_args.kwargs["prefetch"].filter
+        assert getattr(query_filter.must[0], "key", None) == "user_id"
+        assert (
+            getattr(getattr(query_filter.must[0], "match", None), "value", None)
+            == "filip"
+        )
+
+    def test_search_similar_without_owner_scope_uses_plain_user_filter(self):
+        store = self._make_store()
+
+        store.search_similar([0.1, 0.2, 0.3, 0.4], user_id="filip")
+
+        query_filter = store._client.query_points.call_args.kwargs["query_filter"]
+        assert getattr(query_filter.must[0], "key", None) == "user_id"
+        assert (
+            getattr(getattr(query_filter.must[0], "match", None), "value", None)
+            == "filip"
+        )
+
+    def test_get_recent_without_owner_scope_uses_plain_user_filter(self):
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+
+        store.get_recent_memories(
+            user_id="filip",
+            since=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+
+        scroll_filter = store._client.scroll.call_args.kwargs["scroll_filter"]
+        assert getattr(scroll_filter.must[0], "key", None) == "user_id"
+        assert (
+            getattr(getattr(scroll_filter.must[0], "match", None), "value", None)
+            == "filip"
+        )
+
+    def test_owner_scope_filter_excludes_records_with_different_non_null_owner(self):
+        """Fallback must not match records that already belong to another owner."""
+        from mnemory.storage.vector import _build_owner_scope_condition
+
+        scope_condition = _build_owner_scope_condition(
+            user_id="grantee@example.com",
+            owner_id="owner@example.com",
+        )
+
+        self._assert_owner_fallback(scope_condition, "owner@example.com")
+        legacy_branch = scope_condition.should[1]
+        assert getattr(
+            getattr(legacy_branch.must[0], "is_empty", None), "key", None
+        ) == ("owner_id")
+
+
 # ── Vector store search TTL filter (Qdrant integration) ──────────────
 
 

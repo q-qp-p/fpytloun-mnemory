@@ -1093,3 +1093,51 @@ class TestBackfillOwnerIdMigration:
         assert second["payload"] == {"owner_id": "bob@example.com"}
         assert second["points"] == ["mem-b"]
         assert state_callback.called
+
+    def test_skips_points_without_valid_user_id(self):
+        client = _mock_client(existing_collections=[META_COLLECTION])
+        point = MagicMock()
+        point.id = "mem-invalid"
+        point.payload = {"user_id": "   "}
+        client.scroll.side_effect = [([point], None)]
+
+        migration = BackfillOwnerIdMigration("memories")
+        migration.run(
+            client,
+            progress=None,
+            state_callback=MagicMock(),
+            state={},
+        )
+
+        client.set_payload.assert_not_called()
+
+    def test_backfill_paginates_and_updates_progress(self):
+        client = _mock_client(existing_collections=[META_COLLECTION])
+        first = MagicMock()
+        first.id = "mem-a"
+        first.payload = {"user_id": "alice@example.com"}
+        second = MagicMock()
+        second.id = "mem-b"
+        second.payload = {"user_id": "bob@example.com"}
+        client.scroll.side_effect = [([first], "next-token"), ([second], None)]
+
+        migration = BackfillOwnerIdMigration("memories")
+        state_callback = MagicMock()
+        state: dict[str, object] = {}
+
+        migration.run(
+            client,
+            progress=None,
+            state_callback=state_callback,
+            state=state,
+        )
+
+        assert client.scroll.call_count == 2
+        assert client.scroll.call_args_list[1].kwargs["offset"] == "next-token"
+        assert client.set_payload.call_count == 2
+        assert state["004_backfill_owner_id_progress"] == {
+            "offset": None,
+            "processed": 2,
+            "updated": 2,
+        }
+        assert state_callback.call_count == 2
