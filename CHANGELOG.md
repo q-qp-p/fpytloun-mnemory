@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-04-23
+
+### Added
+
+- **Owner-scoped shared-agent recall** — Added `owner_id`-aware recall, search, recent-memory, and listing flows so shared agents can load owner-shared agent memories without leaking unrelated personal memory. This includes dedicated core-memory assembly for shared-agent sessions ([`3fce5a6`](https://github.com/fpytloun/mnemory/commit/3fce5a6)).
+
+### Bug Fixes
+
+- **Legacy shared-memory backfill** — Backfilled legacy owner IDs during migration and search fallback paths so pre-existing shared memories continue to resolve correctly after the new owner-scoped sharing model landed ([`87ca90f`](https://github.com/fpytloun/mnemory/commit/87ca90f)).
+
+### Testing
+
+- **Owner fallback coverage** — Tightened unit and migration coverage for legacy owner fallback and shared-agent recall edge cases ([`b4d8001`](https://github.com/fpytloun/mnemory/commit/b4d8001)).
+
 ## [1.11.1] — 2026-04-14
 
 ### Bug Fixes
