@@ -4458,9 +4458,34 @@ class TestFindMemories:
         assert owner_call["owner_id"] == "owner"
         assert owner_call["subject_user_id"] == "owner"
         assert owner_call["agent_id"] == "shared-agent"
+        assert owner_call["filters"]["role"] == "assistant"
         assert user_call["owner_id"] == "owner"
         assert user_call["subject_user_id"] == "grantee"
         assert user_call["agent_id"] == "shared-agent"
+
+    def test_shared_agent_role_user_search_skips_owner_identity_scope(self):
+        """role=user queries must not read owner memories on shared agents."""
+
+        service = _make_service()
+        service.vector.search.return_value = {
+            "results": [{"id": "user", "score": 0.8, "memory": "User episodic", "metadata": {}}]
+        }
+
+        results = service.search_memories_dual_scope(
+            "test query",
+            user_id="grantee",
+            owner_id="owner",
+            session_agent_id="shared-agent",
+            role="user",
+            limit=5,
+        )
+
+        assert [memory["id"] for memory in results] == ["user"]
+        assert service.vector.search.call_count == 1
+        user_call = service.vector.search.call_args.kwargs
+        assert user_call["owner_id"] == "owner"
+        assert user_call["subject_user_id"] == "grantee"
+        assert user_call["filters"]["role"] == "user"
 
 
 # ── find_memories prompts ─────────────────────────────────────────────

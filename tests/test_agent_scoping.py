@@ -442,6 +442,45 @@ class TestListMemoriesDualScope:
         assert shared_kwargs["agent_id"] is None
         assert shared_kwargs["shared_only"] is True
 
+    def test_shared_agent_owner_list_filters_to_assistant_identity(self):
+        """Owner side of shared-agent list must only expose assistant identity."""
+        service = self._make_service()
+        service.vector.get_all.side_effect = [
+            {"results": [{"id": "owner", "metadata": {"role": "assistant"}}]},
+            {"results": [{"id": "grantee", "metadata": {"role": "user"}}]},
+        ]
+
+        results = service.list_memories_dual_scope(
+            user_id="grantee@example.com",
+            owner_id="owner@example.com",
+            session_agent_id="shared-agent",
+        )
+
+        assert {memory["id"] for memory in results} == {"owner", "grantee"}
+        _, owner_kwargs = service.vector.get_all.call_args_list[0]
+        assert owner_kwargs["subject_user_id"] == "owner@example.com"
+        assert owner_kwargs["filters"]["role"] == "assistant"
+
+    def test_shared_agent_role_user_list_skips_owner_scope(self):
+        """role=user list must not query owner memories for shared agents."""
+        service = self._make_service()
+        service.vector.get_all.return_value = {
+            "results": [{"id": "grantee", "metadata": {"role": "user"}}]
+        }
+
+        results = service.list_memories_dual_scope(
+            user_id="grantee@example.com",
+            owner_id="owner@example.com",
+            session_agent_id="shared-agent",
+            role="user",
+        )
+
+        assert [memory["id"] for memory in results] == ["grantee"]
+        assert service.vector.get_all.call_count == 1
+        _, grantee_kwargs = service.vector.get_all.call_args
+        assert grantee_kwargs["subject_user_id"] == "grantee@example.com"
+        assert grantee_kwargs["filters"]["role"] == "user"
+
 
 # ── User identity header priority ─────────────────────────────────────
 

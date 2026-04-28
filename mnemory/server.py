@@ -425,6 +425,7 @@ async def initialize_memory(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id_for_core(agent_id)
+        owner_id = _get_session_owner_id()
         collector = get_collector()
         if collector:
             collector.record_operation("initialize_memory", uid, aid)
@@ -432,6 +433,7 @@ async def initialize_memory(
         core_result = await asyncio.to_thread(
             service.get_core_memories,
             user_id=uid,
+            owner_id=owner_id,
             agent_id=aid,
             recent_days=recent_days,
         )
@@ -514,6 +516,7 @@ async def add_memory(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id(agent_id)
+        owner_id = _get_session_owner_id()
         tz = _get_session_timezone()
         collector = get_collector()
         if collector:
@@ -531,6 +534,7 @@ async def add_memory(
             service.add_memory,
             content,
             user_id=uid,
+            owner_id=owner_id,
             agent_id=aid,
             memory_type=memory_type,
             categories=categories,
@@ -583,6 +587,7 @@ async def add_memories(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id(agent_id)
+        owner_id = _get_session_owner_id()
     except ValueError as e:
         return json.dumps({"error": True, "message": str(e)})
 
@@ -633,6 +638,7 @@ async def add_memories(
                 result = service.add_memory(
                     mem["content"],
                     user_id=uid,
+                    owner_id=owner_id,
                     agent_id=aid,
                     memory_type=mem.get("memory_type"),
                     categories=mem.get("categories"),
@@ -714,6 +720,7 @@ async def search_memories(
     try:
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
+        owner_id = _get_session_owner_id()
         collector = get_collector()
         if collector:
             collector.record_operation("search_memories", uid, session_aid)
@@ -733,6 +740,7 @@ async def search_memories(
                 service.search_memories_dual_scope,
                 query,
                 user_id=uid,
+                owner_id=owner_id,
                 session_agent_id=effective_aid,
                 memory_type=memory_type,
                 categories=categories,
@@ -750,6 +758,7 @@ async def search_memories(
                 service.search_memories,
                 query,
                 user_id=uid,
+                owner_id=owner_id,
                 agent_id=aid,
                 memory_type=memory_type,
                 categories=categories,
@@ -806,6 +815,7 @@ async def find_memories(
     try:
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
+        owner_id = _get_session_owner_id()
         collector = get_collector()
         if collector:
             collector.record_operation("find_memories", uid, session_aid)
@@ -823,6 +833,7 @@ async def find_memories(
                 service.find_memories,
                 question,
                 user_id=uid,
+                owner_id=owner_id,
                 session_agent_id=effective_aid,
                 memory_type=memory_type,
                 categories=categories,
@@ -839,6 +850,7 @@ async def find_memories(
                 service.find_memories,
                 question,
                 user_id=uid,
+                owner_id=owner_id,
                 agent_id=aid,
                 memory_type=memory_type,
                 categories=categories,
@@ -904,6 +916,7 @@ async def ask_memories(
     try:
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
+        owner_id = _get_session_owner_id()
         collector = get_collector()
         if collector:
             collector.record_operation("ask_memories", uid, session_aid)
@@ -921,6 +934,7 @@ async def ask_memories(
                 service.answer_question,
                 question,
                 user_id=uid,
+                owner_id=owner_id,
                 session_agent_id=effective_aid,
                 memory_type=memory_type,
                 categories=categories,
@@ -937,6 +951,7 @@ async def ask_memories(
                 service.answer_question,
                 question,
                 user_id=uid,
+                owner_id=owner_id,
                 agent_id=aid,
                 memory_type=memory_type,
                 categories=categories,
@@ -993,6 +1008,7 @@ async def get_core_memories(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id_for_core(agent_id)
+        owner_id = _get_session_owner_id()
         collector = get_collector()
         if collector:
             collector.record_operation("get_core_memories", uid, aid)
@@ -1000,6 +1016,7 @@ async def get_core_memories(
         core_result = await asyncio.to_thread(
             service.get_core_memories,
             user_id=uid,
+            owner_id=owner_id,
             agent_id=aid,
             recent_days=recent_days,
         )
@@ -1038,6 +1055,7 @@ async def get_recent_memories(
     try:
         uid = _resolve_user_id(user_id)
         aid = _resolve_agent_id(agent_id)
+        owner_id = _get_session_owner_id()
         # Auto-resolve agent_id from session for scopes that include
         # agent memories, so the LLM doesn't have to pass it explicitly.
         if aid is None and scope in ("all", "agent"):
@@ -1049,6 +1067,7 @@ async def get_recent_memories(
         return await asyncio.to_thread(
             service.get_recent_memories,
             user_id=uid,
+            owner_id=owner_id,
             agent_id=aid,
             days=days,
             scope=scope,
@@ -1101,6 +1120,7 @@ async def list_memories(
 
         uid = _resolve_user_id(user_id)
         session_aid = _get_session_agent_id()
+        owner_id = _get_session_owner_id()
         collector = get_collector()
         if collector:
             collector.record_operation("list_memories", uid, session_aid)
@@ -1119,6 +1139,7 @@ async def list_memories(
             results = await asyncio.to_thread(
                 service.list_memories_dual_scope,
                 user_id=uid,
+                owner_id=owner_id,
                 session_agent_id=effective_aid,
                 memory_type=memory_type,
                 categories=categories,
@@ -1133,6 +1154,7 @@ async def list_memories(
             results = await asyncio.to_thread(
                 service.list_memories,
                 user_id=uid,
+                owner_id=owner_id,
                 agent_id=aid,
                 memory_type=memory_type,
                 categories=categories,

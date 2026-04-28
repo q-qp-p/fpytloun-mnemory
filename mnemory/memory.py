@@ -988,15 +988,9 @@ class MemoryService:
             # Dual-scope: also check shared memories when agent_id is set
             if agent_id:
                 if owner_id != user_id:
-                    shared_raw = self.vector.search_similar(
-                        vector,
-                        user_id=user_id,
-                        owner_id=owner_id,
-                        subject_user_id=owner_id,
-                        agent_id=agent_id,
-                        limit=5,
-                        exclude_layers=["consolidated"],
-                    )
+                    # Do not expose owner memories as write-side dedup targets
+                    # for grantee remembers on shared agents.
+                    shared_raw = []
                 else:
                     shared_raw = self.vector.search_similar(
                         vector,
@@ -1337,14 +1331,11 @@ class MemoryService:
         )
         if agent_id:
             if owner_id != user_id:
-                shared_raw = self.vector.search_similar(
-                    content_vector,
-                    user_id=user_id,
-                    owner_id=owner_id,
-                    subject_user_id=owner_id,
-                    agent_id=agent_id,
-                    limit=10,
-                )
+                # Shared-agent callers may read owner-authored assistant
+                # identity, but must never use owner memories as write-side
+                # dedup targets. Otherwise a grantee could update/delete the
+                # owner's memories through an inferred dedup action.
+                shared_raw = []
             else:
                 shared_raw = self.vector.search_similar(
                     content_vector,
@@ -2357,14 +2348,19 @@ class MemoryService:
             search_kwargs["query_sparse_vector"] = query_sparse_vector
 
         if owner_id != user_id:
-            agent_result = self.vector.search(
-                query,
-                user_id=user_id,
-                owner_id=owner_id,
-                subject_user_id=owner_id,
-                agent_id=session_agent_id,
-                **search_kwargs,
-            )
+            if role == "user":
+                agent_result = {"results": []}
+            else:
+                owner_filters = dict(filters)
+                owner_filters["role"] = "assistant"
+                agent_result = self.vector.search(
+                    query,
+                    user_id=user_id,
+                    owner_id=owner_id,
+                    subject_user_id=owner_id,
+                    agent_id=session_agent_id,
+                    **{**search_kwargs, "filters": owner_filters},
+                )
             shared_result = self.vector.search(
                 query,
                 user_id=user_id,
@@ -3467,6 +3463,11 @@ class MemoryService:
             agent_id=agent_id,
             exclude_layers=_CORE_EXCLUDE_LAYERS,
         )
+        owner_pinned = [
+            memory
+            for memory in owner_pinned
+            if (memory.get("metadata") or {}).get("role") == "assistant"
+        ]
         for memory in owner_pinned:
             if memory.get("id"):
                 memory_by_id[memory["id"]] = memory
@@ -3487,7 +3488,7 @@ class MemoryService:
                 owner_id=owner_id,
                 subject_user_id=owner_id,
                 agent_id=agent_id,
-                filters={"pinned": False, "importance": imp_levels},
+                filters={"pinned": False, "importance": imp_levels, "role": "assistant"},
                 exclude_layers=_CORE_EXCLUDE_LAYERS,
                 limit=top_n * 3,
             )
@@ -3735,6 +3736,7 @@ class MemoryService:
 
         since = datetime.now(timezone.utc) - timedelta(days=days)
         owner_scope = owner_id if owner_id != user_id else None
+        shared_subject_user_id = user_id if owner_scope is not None else None
 
         user_recent = []
         agent_recent = []
@@ -3749,6 +3751,7 @@ class MemoryService:
             }
             if owner_scope is not None:
                 kwargs["owner_id"] = owner_scope
+                kwargs["subject_user_id"] = shared_subject_user_id
             user_recent = self.vector.get_recent_memories(**kwargs)
             user_recent = [
                 m for m in user_recent if not should_exclude(m, include_decayed)
@@ -3764,6 +3767,7 @@ class MemoryService:
             }
             if owner_scope is not None:
                 kwargs["owner_id"] = owner_scope
+                kwargs["subject_user_id"] = shared_subject_user_id
             agent_recent = self.vector.get_recent_memories(**kwargs)
             agent_recent = [
                 m for m in agent_recent if not should_exclude(m, include_decayed)
@@ -3894,16 +3898,21 @@ class MemoryService:
         order_by = _sort_to_order_by(sort)
 
         if owner_id != user_id:
-            agent_result = self.vector.get_all(
-                user_id=user_id,
-                owner_id=owner_id,
-                subject_user_id=owner_id,
-                agent_id=session_agent_id,
-                filters=filters if filters else None,
-                limit=fetch_limit,
-                order_by=order_by,
-                labels_filter=labels,
-            )
+            if role == "user":
+                agent_result = {"results": []}
+            else:
+                owner_filters = dict(filters)
+                owner_filters["role"] = "assistant"
+                agent_result = self.vector.get_all(
+                    user_id=user_id,
+                    owner_id=owner_id,
+                    subject_user_id=owner_id,
+                    agent_id=session_agent_id,
+                    filters=owner_filters,
+                    limit=fetch_limit,
+                    order_by=order_by,
+                    labels_filter=labels,
+                )
             shared_result = self.vector.get_all(
                 user_id=user_id,
                 owner_id=owner_id,
