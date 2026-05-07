@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.12.1] — 2026-05-07
+
+### Bug Fixes
+
+- **Shared-agent owner isolation** — Isolated shared-agent owner memories so shared-agent recall and access checks do not cross owner boundaries ([`fbf960d`](https://github.com/fpytloun/mnemory/commit/fbf960d)).
+- **Management UI header overflow** — Prevented dashboard header controls from overflowing and kept desktop headers on a single line ([`646c4f5`](https://github.com/fpytloun/mnemory/commit/646c4f5), [`27c0542`](https://github.com/fpytloun/mnemory/commit/27c0542)).
+
 ## [1.12.0] — 2026-04-23
 
 ### Added
