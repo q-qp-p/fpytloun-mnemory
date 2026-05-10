@@ -4,9 +4,90 @@ from __future__ import annotations
 
 import pytest
 
+from mnemory.api import _add_openapi_security, _sanitize_openapi_spec
 from mnemory.api.remember import _check_rate_limit, _format_messages, _rate_limits
 from mnemory.api.schemas import MessageParam
 from mnemory.instructions import build_instructions, build_managed_instructions
+
+
+class TestOpenAPISchemaCompatibility:
+    """Test OpenAPI schema sanitization for tool importers."""
+
+    def test_sanitize_openapi_removes_boolean_defaults_recursively(self):
+        spec = {
+            "paths": {
+                "/items": {
+                    "get": {
+                        "parameters": [
+                            {"schema": {"type": "boolean", "default": False}},
+                        ],
+                        "responses": {
+                            "200": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "ok": {
+                                                    "type": "boolean",
+                                                    "default": True,
+                                                }
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+            },
+            "components": {
+                "schemas": {
+                    "Request": {
+                        "type": "object",
+                        "properties": {
+                            "infer": {"type": "boolean", "default": True},
+                            "limit": {"type": "integer", "default": 10},
+                            "name": {"type": "string", "default": None},
+                        },
+                    }
+                }
+            },
+        }
+
+        sanitized = _sanitize_openapi_spec(spec)
+
+        request_props = sanitized["components"]["schemas"]["Request"]["properties"]
+        assert "default" not in request_props["infer"]
+        assert request_props["limit"]["default"] == 10
+        assert "default" not in request_props["name"]
+        assert (
+            "default"
+            not in sanitized["paths"]["/items"]["get"]["parameters"][0]["schema"]
+        )
+        response_props = sanitized["paths"]["/items"]["get"]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"]["properties"]
+        assert "default" not in response_props["ok"]
+
+    def test_add_openapi_security_documents_runtime_auth(self):
+        spec = {
+            "paths": {
+                "/auth/exchange": {"post": {}},
+                "/memories/search": {"post": {}},
+            }
+        }
+
+        secured = _add_openapi_security(spec)
+
+        schemes = secured["components"]["securitySchemes"]
+        assert schemes["BearerAuth"]["type"] == "http"
+        assert schemes["ApiKeyAuth"]["name"] == "X-API-Key"
+        assert secured["paths"]["/auth/exchange"]["post"]["security"] == []
+        assert secured["paths"]["/memories/search"]["post"]["security"] == [
+            {"BearerAuth": []},
+            {"ApiKeyAuth": []},
+        ]
 
 
 class TestManagedInstructions:

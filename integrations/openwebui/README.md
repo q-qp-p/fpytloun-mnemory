@@ -55,15 +55,39 @@ Use a non-wildcard API key that binds to a specific user:
 MCP_API_KEYS='{"your-api-key": "your-username"}'
 ```
 
-### 5. Optional: Add OpenAPI Tool
+### 5. Optional: Add LLM Tools
 
-For LLM-driven operations (explicit search, delete, etc.), add the OpenAPI spec as a tool:
+For LLM-driven operations (explicit search, update, delete, etc.), use either
+Open WebUI's native MCP support or its OpenAPI tool import. Do not configure
+both for the same mnemory server unless you intentionally want duplicate tools.
+
+#### Option A: MCP SSE / Streamable HTTP
+
+Recent Open WebUI releases include MCP support and it works well with mnemory:
+
+1. Go to **Admin Settings > External Tools > Add Server**
+2. Type: **MCP (Streamable HTTP)**
+3. URL: `http://mnemory:8050/mcp`
+4. Auth: **Bearer**, Key: your mnemory API key
+5. Custom headers: `X-Agent-Id: open-webui`
+6. Enable native function calling on the target models
+
+MCP is the path used by the project maintainer with Open WebUI.
+
+#### Option B: OpenAPI Tool
+
+OpenAPI import is more native to Open WebUI's Workspace > Tools UI:
 
 1. Go to **Workspace > Tools > Add Tool**
 2. Import from URL: `http://mnemory:8050/api/openapi.json`
-3. Enable on your models
+3. Configure authentication for runtime calls using your mnemory API key
+   (`Authorization: Bearer <key>` or `X-API-Key: <key>`, depending on your
+   Open WebUI version)
+4. Enable on your models
 
-This gives the LLM access to search, update, and delete operations alongside the automatic filter.
+This gives the LLM access to search, update, and delete operations alongside
+the automatic filter. The OpenAPI document itself is public metadata, but API
+operations still require authentication.
 
 ## User Valves
 
