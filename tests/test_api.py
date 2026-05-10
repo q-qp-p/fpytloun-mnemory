@@ -13,6 +13,41 @@ from mnemory.instructions import build_instructions, build_managed_instructions
 class TestOpenAPISchemaCompatibility:
     """Test OpenAPI schema sanitization for tool importers."""
 
+    def _boolean_default_paths(self, obj, path="$"):
+        paths = []
+        if isinstance(obj, dict):
+            if isinstance(obj.get("default"), bool):
+                paths.append(path)
+            for key, value in obj.items():
+                paths.extend(self._boolean_default_paths(value, f"{path}.{key}"))
+        elif isinstance(obj, list):
+            for index, value in enumerate(obj):
+                paths.extend(self._boolean_default_paths(value, f"{path}[{index}]"))
+        return paths
+
+    def test_generated_openapi_schema_is_openwebui_import_safe(self):
+        """Generated schema should avoid boolean defaults that break OWUI saves."""
+        from fastapi.openapi.utils import get_openapi
+
+        from mnemory.api import create_api_app
+
+        app = create_api_app()
+        spec = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        spec = _add_openapi_security(_sanitize_openapi_spec(spec))
+
+        assert self._boolean_default_paths(spec) == []
+        assert "ApiKeyAuth" in spec["components"]["securitySchemes"]
+        assert "BearerAuth" in spec["components"]["securitySchemes"]
+        assert spec["paths"]["/whoami"]["get"]["security"] == [
+            {"BearerAuth": []},
+            {"ApiKeyAuth": []},
+        ]
+
     def test_sanitize_openapi_removes_boolean_defaults_recursively(self):
         spec = {
             "paths": {
