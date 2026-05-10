@@ -6,8 +6,10 @@ Open WebUI supports MCP servers and has a filter function system that enables au
 
 | Method | What it does | Setup effort |
 |---|---|---|
-| **MCP only** | LLM-driven memory via tool calls | Add MCP server + one line in system prompt |
-| **MCP + Filter** (recommended) | Automatic recall/remember + LLM tools for explicit ops | Add MCP server + install filter |
+| **MCP only** | LLM-driven memory via Open WebUI's MCP support | Add MCP server + one line in system prompt |
+| **OpenAPI Tools only** | LLM-driven memory via Open WebUI's native Tools UI | Import OpenAPI spec + configure auth |
+| **MCP + Filter** (recommended) | Automatic recall/remember + MCP tools for explicit ops | Add MCP server + install filter |
+| **OpenAPI Tools + Filter** | Automatic recall/remember + OpenAPI tools for explicit ops | Import OpenAPI spec + install filter |
 | **Filter only** | Automatic recall/remember, no explicit tools | Install filter only |
 
 ## MCP Setup
@@ -42,6 +44,23 @@ See [`integrations/openwebui/`](../../integrations/openwebui/) for the filter co
 
 The filter handles recall on inlet (before LLM) and remember on outlet (after LLM). The MCP tools remain available for explicit operations.
 
+## OpenAPI Tools Setup
+
+OpenAPI Tools are the more native option in **Workspace > Tools**. Use this
+instead of MCP if you prefer Open WebUI's built-in OpenAPI tool import UI.
+
+1. Go to **Workspace > Tools > Add Tool**
+2. Import from URL: `http://mnemory:8050/api/openapi.json`
+3. Configure runtime authentication using your mnemory API key
+   (`Authorization: Bearer <key>` or `X-API-Key: <key>`, depending on your
+   Open WebUI version)
+4. Enable the tool on your models
+
+The OpenAPI document is public metadata so Open WebUI can import it. The API
+operations described by the spec still require authentication. Use either MCP
+or OpenAPI Tools for mnemory's LLM tools; configuring both usually creates
+duplicate tools.
+
 ## Multi-User Setup (Recommended)
 
 Enable user identity forwarding so each user gets their own memories:
@@ -71,6 +90,7 @@ MCP_API_KEYS='{"your-api-key": "your-username"}'
 
 ## Tips
 
-- **Filter + MCP together** -- the filter handles automatic recall/remember; MCP tools let the LLM do explicit search, update, delete when the user asks
+- **Filter + tools together** -- the filter handles automatic recall/remember; MCP or OpenAPI tools let the LLM do explicit search, update, delete when the user asks
+- **MCP vs OpenAPI** -- use one LLM-tool path at a time. MCP SSE/Streamable HTTP works well in recent Open WebUI releases; OpenAPI Tools are more native to the Workspace > Tools UI.
 - **`recall_score_threshold`** -- set to 0.5 (default) to filter out weak matches. Lower for more context, higher for precision.
 - **`recall_search_mode`** -- use `search` (default) for fast recall, `find` for AI-powered thorough search (slower but better for first messages)

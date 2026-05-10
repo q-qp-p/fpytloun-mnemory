@@ -368,6 +368,48 @@ class TestJWTAuth:
 
 
 class TestManagementRoutes:
+    def test_openapi_metadata_is_public_when_auth_configured(self):
+        srv = _load_server_module(
+            {
+                "LLM_API_KEY": "test-key",
+                "MCP_API_KEY": "test-api-key",
+                "MCP_API_KEYS": "",
+            }
+        )
+
+        @asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        srv.lifespan = _noop_lifespan
+        client = TestClient(srv.create_app())
+        with client:
+            response = client.get("/api/openapi.json")
+
+        assert response.status_code == 200
+        assert response.json()["info"]["title"] == "mnemory"
+
+    def test_openapi_docs_are_public_when_auth_configured(self):
+        srv = _load_server_module(
+            {
+                "LLM_API_KEY": "test-key",
+                "MCP_API_KEY": "test-api-key",
+                "MCP_API_KEYS": "",
+            }
+        )
+
+        @asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        srv.lifespan = _noop_lifespan
+        client = TestClient(srv.create_app())
+        with client:
+            response = client.get("/api/docs")
+
+        assert response.status_code == 200
+        assert "Swagger UI" in response.text
+
     def test_main_app_keeps_health_and_metrics_when_mgmt_port_set(self):
         srv = _load_server_module(
             {

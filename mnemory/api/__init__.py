@@ -20,21 +20,28 @@ _session_store = SessionStore()
 
 
 def _sanitize_schema_for_openai(schema: dict[str, Any]) -> None:
-    """Recursively sanitize an OpenAPI schema for OpenAI function-calling.
+    """Recursively sanitize an OpenAPI schema for client compatibility.
 
     OpenAI's function-calling JSON Schema validation rejects:
     - ``"default": null`` — null is not valid under any of the given schemas
     - ``"anyOf": [{"type": "X"}, {"type": "null"}]`` — not supported
 
-    This mutates *schema* in place: removes null defaults and collapses
-    ``anyOf`` nullable patterns into a plain type (the parameter stays
-    optional by not being listed in ``required``).
+    Some OpenAPI tool importers also embed JSON schema snippets into Python
+    code and choke on JSON boolean defaults (``true``/``false`` instead of
+    Python's ``True``/``False``). Defaults are metadata only; server-side
+    defaults remain enforced by FastAPI/Pydantic.
+
+    This mutates *schema* in place: removes null/boolean defaults and
+    collapses ``anyOf`` nullable patterns into a plain type (the parameter
+    stays optional by not being listed in ``required``).
     """
     if not isinstance(schema, dict):
         return
 
-    # Remove "default": null
-    if "default" in schema and schema["default"] is None:
+    # Remove defaults that are known to confuse OpenAPI tool importers.
+    if "default" in schema and (
+        schema["default"] is None or isinstance(schema["default"], bool)
+    ):
         del schema["default"]
 
     # Collapse anyOf nullable: [{"type": "X"}, {"type": "null"}] -> {"type": "X"}
@@ -49,40 +56,73 @@ def _sanitize_schema_for_openai(schema: dict[str, Any]) -> None:
             elif non_null:
                 schema["anyOf"] = non_null
 
-    # Recurse into properties
-    for prop_schema in schema.get("properties", {}).values():
-        _sanitize_schema_for_openai(prop_schema)
-
-    # Recurse into items, additionalProperties
-    for key in ("items", "additionalProperties"):
-        if isinstance(schema.get(key), dict):
-            _sanitize_schema_for_openai(schema[key])
-
-    # Recurse into allOf, oneOf, anyOf (remaining after collapse)
-    for key in ("allOf", "oneOf", "anyOf"):
-        if isinstance(schema.get(key), list):
-            for item in schema[key]:
-                _sanitize_schema_for_openai(item)
+    # Recurse through the full nested structure because operation objects can
+    # contain schema dictionaries inside lists (parameters, responses, etc.).
+    for value in schema.values():
+        if isinstance(value, dict):
+            _sanitize_schema_for_openai(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _sanitize_schema_for_openai(item)
 
 
 def _sanitize_openapi_spec(spec: dict[str, Any]) -> dict[str, Any]:
-    """Sanitize an entire OpenAPI spec for OpenAI function-calling compatibility.
+    """Sanitize an entire OpenAPI spec for tool/client compatibility.
 
-    Walks component schemas and path-level parameter schemas, removing
-    null defaults and collapsing nullable ``anyOf`` patterns.
+    Walks component schemas and path operations, removing problematic
+    defaults and collapsing nullable ``anyOf`` patterns.
     """
     # Sanitize component schemas (request/response models)
     for component in spec.get("components", {}).get("schemas", {}).values():
         _sanitize_schema_for_openai(component)
 
-    # Sanitize path-level parameter schemas (query params, path params)
+    # Sanitize path-level parameter, request, and response schemas.
     for methods in spec.get("paths", {}).values():
         for operation in methods.values():
             if not isinstance(operation, dict):
                 continue
-            for param in operation.get("parameters", []):
-                if "schema" in param:
-                    _sanitize_schema_for_openai(param["schema"])
+            _sanitize_schema_for_openai(operation)
+
+    return spec
+
+
+def _add_openapi_security(spec: dict[str, Any]) -> dict[str, Any]:
+    """Document accepted API key auth mechanisms in the OpenAPI spec."""
+    components = spec.setdefault("components", {})
+    security_schemes = components.setdefault("securitySchemes", {})
+    security_schemes.setdefault(
+        "BearerAuth",
+        {
+            "type": "http",
+            "scheme": "bearer",
+            "description": "mnemory API key or Cognis-issued JWT",
+        },
+    )
+    security_schemes.setdefault(
+        "ApiKeyAuth",
+        {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-API-Key",
+            "description": "mnemory API key",
+        },
+    )
+
+    public_operations = {("/auth/exchange", "post")}
+    for path, methods in spec.get("paths", {}).items():
+        if not isinstance(methods, dict):
+            continue
+        for method, operation in methods.items():
+            if not isinstance(operation, dict):
+                continue
+            if (path, method.lower()) in public_operations:
+                operation.setdefault("security", [])
+            else:
+                operation.setdefault(
+                    "security",
+                    [{"BearerAuth": []}, {"ApiKeyAuth": []}],
+                )
 
     return spec
 
@@ -145,6 +185,7 @@ def create_api_app() -> FastAPI:
 
     def _openai_compatible_openapi() -> dict[str, Any]:
         schema = _original_openapi()
+        _add_openapi_security(schema)
         return _sanitize_openapi_spec(schema)
 
     app.openapi = _openai_compatible_openapi  # type: ignore[method-assign]

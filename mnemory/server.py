@@ -1774,14 +1774,16 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         has_api_key_auth = bool(cfg.api_keys or cfg.api_key)
         has_auth = has_api_key_auth or validator is not None
 
-        # Skip auth for UI static files, root redirect, and the exchange
-        # token endpoint (it validates the token itself).  /health and
-        # /metrics intentionally go through auth on the main port so that
-        # Cognis health checks reflect the real auth state.  Use MGMT_PORT
-        # for unauthenticated health probes (k8s liveness/readiness).
+        # Skip auth for UI static files, root redirect, public OpenAPI
+        # metadata, and the exchange token endpoint (it validates the token
+        # itself).  /health and /metrics intentionally go through auth on the
+        # main port so that Cognis health checks reflect the real auth state.
+        # Use MGMT_PORT for unauthenticated health probes (k8s liveness/
+        # readiness).
         if (
             request.url.path == "/"
             or request.url.path.startswith("/ui")
+            or request.url.path in {"/api/openapi.json", "/api/docs", "/api/redoc"}
             or request.url.path == "/api/auth/exchange"
         ):
             self._set_identity_from_headers(request)
