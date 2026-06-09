@@ -24,11 +24,11 @@ MNEMORY_SCORE_THRESHOLD="${MNEMORY_SCORE_THRESHOLD:-0.5}"
 INPUT=$(cat)
 
 # Extract the user's message from the hook input
-# UserPromptSubmit provides: { "sessionId": "...", "message": "..." }
-USER_MESSAGE=$(echo "$INPUT" | jq -r '.message // empty' 2>/dev/null || true)
+# UserPromptSubmit provides: { "session_id": "...", "prompt": "..." }
+USER_MESSAGE=$(echo "$INPUT" | jq -r '.prompt // .message // empty' 2>/dev/null || true)
 
 # Session file for tracking mnemory session ID across hook calls
-SESSION_ID_FROM_INPUT=$(echo "$INPUT" | jq -r '.sessionId // empty' 2>/dev/null || true)
+SESSION_ID_FROM_INPUT=$(echo "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
 SESSION_FILE="/tmp/mnemory_session_${SESSION_ID_FROM_INPUT:-default}"
 
 # Load existing mnemory session ID if available
@@ -115,7 +115,8 @@ fi
 
 # Output additionalContext for Claude Code to inject
 if [ -n "$CONTEXT_PARTS" ]; then
-    jq -n --arg ctx "$CONTEXT_PARTS" '{additionalContext: $ctx}'
+    jq -n --arg ctx "$CONTEXT_PARTS" \
+        '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}'
 else
     echo '{}'
 fi

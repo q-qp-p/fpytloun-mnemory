@@ -23,48 +23,63 @@ MNEMORY_INCLUDE_ASSISTANT="${MNEMORY_INCLUDE_ASSISTANT:-false}"
 # Read hook input from stdin
 INPUT=$(cat)
 
-# Extract the stop reason and transcript from the hook input
-# Stop provides: { "sessionId": "...", "stopReason": "...", "transcript": [...] }
-STOP_REASON=$(echo "$INPUT" | jq -r '.stopReason // empty' 2>/dev/null || true)
+# Stop provides: { "session_id": "...", "transcript_path": "...", "stop_hook_active": bool }
 
-# Only remember on normal stops (not errors or interrupts)
-if [ "$STOP_REASON" = "error" ] || [ "$STOP_REASON" = "interrupt" ]; then
+# Don't re-run while a previous Stop hook is active
+STOP_HOOK_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null || echo "false")
+if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
     echo '{}'
     exit 0
 fi
 
-# Extract the last user + assistant messages from the transcript
-# The transcript is an array of {role, content} objects
+# Read the transcript from transcript_path (fallback: inline .transcript)
+TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+INLINE_TRANSCRIPT=$(echo "$INPUT" | jq -c '.transcript // empty' 2>/dev/null || true)
+
+# Last non-empty text for a role. content is a string or an array of
+# blocks; keep only text blocks (skip tool_result/thinking/tool_use).
+extract_last() {
+    local role="$1"
+    if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+        jq -rs --arg role "$role" '
+            [ .[]
+              | select(.type == $role)
+              | select((.isMeta // false) | not)
+              | select((.isSidechain // false) | not)
+              | .message.content
+              | if type == "string" then .
+                elif type == "array" then ([ .[] | select(.type == "text") | .text ] | join("\n"))
+                else "" end
+            ]
+            | map(select(. != null and . != ""))
+            | last // ""
+        ' "$TRANSCRIPT_PATH" 2>/dev/null || echo ""
+    elif [ -n "$INLINE_TRANSCRIPT" ]; then
+        echo "$INLINE_TRANSCRIPT" | jq -r --arg role "$role" '
+            [ .[] | select(.role == $role) | (.content // "") ]
+            | map(select(. != "")) | last // ""
+        ' 2>/dev/null || echo ""
+    fi
+}
+
+USER_MSG=$(extract_last user)
+
+# Skip if there's no user message to remember
+if [ -z "$USER_MSG" ]; then
+    echo '{}'
+    exit 0
+fi
+
 if [ "$MNEMORY_INCLUDE_ASSISTANT" = "true" ]; then
-    MESSAGES=$(echo "$INPUT" | jq -c '
-        .transcript // [] |
-        # Get the last user message and the last assistant message
-        (map(select(.role == "user")) | last // null) as $user |
-        (map(select(.role == "assistant")) | last // null) as $assistant |
-        [
-            (if $user then {role: "user", content: ($user.content // "")} else null end),
-            (if $assistant then {role: "assistant", content: ($assistant.content // "")} else null end)
-        ] | map(select(. != null and .content != ""))
-    ' 2>/dev/null || echo '[]')
+    ASSISTANT_MSG=$(extract_last assistant)
+    MESSAGES=$(jq -n --arg u "$USER_MSG" --arg a "$ASSISTANT_MSG" \
+        '[{role: "user", content: $u}] + (if $a != "" then [{role: "assistant", content: $a}] else [] end)')
 else
-    MESSAGES=$(echo "$INPUT" | jq -c '
-        .transcript // [] |
-        # Get only the last user message
-        (map(select(.role == "user")) | last // null) as $user |
-        [
-            (if $user then {role: "user", content: ($user.content // "")} else null end)
-        ] | map(select(. != null and .content != ""))
-    ' 2>/dev/null || echo '[]')
-fi
-
-# Skip if no messages to remember
-if [ "$MESSAGES" = "[]" ] || [ "$MESSAGES" = "null" ] || [ -z "$MESSAGES" ]; then
-    echo '{}'
-    exit 0
+    MESSAGES=$(jq -n --arg u "$USER_MSG" '[{role: "user", content: $u}]')
 fi
 
 # Load mnemory session ID
-SESSION_ID_FROM_INPUT=$(echo "$INPUT" | jq -r '.sessionId // empty' 2>/dev/null || true)
+SESSION_ID_FROM_INPUT=$(echo "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
 SESSION_FILE="/tmp/mnemory_session_${SESSION_ID_FROM_INPUT:-default}"
 MNEMORY_SESSION_ID=""
 if [ -f "$SESSION_FILE" ]; then

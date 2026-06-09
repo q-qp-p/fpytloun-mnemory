@@ -2,16 +2,24 @@
   "hooks": {
     "UserPromptSubmit": [
       {
-        "type": "command",
-        "command": "~/.claude/scripts/recall.sh",
-        "timeout": 30000
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/recall.sh",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "type": "command",
-        "command": "~/.claude/scripts/remember.sh",
-        "timeout": 10000
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/remember.sh",
+            "timeout": 15
+          }
+        ]
       }
     ]
   }
